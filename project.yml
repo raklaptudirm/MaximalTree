@@ -1,0 +1,98 @@
+name: MaximalTree
+options:
+  bundleIdPrefix: com.maximaltree
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+# Local dev: ad-hoc sign so the app + hosted tests launch without a team/identity.
+# Distribution signing (hardened runtime, notarization) is layered on later.
+settings:
+  base:
+    SWIFT_VERSION: "5.0"            # language mode v5 for now; tighten to v6 later
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: ""
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  # The plugin SDK, as a dynamic framework. Library evolution is ON so a plugin
+  # compiled against SDK vN keeps loading against a newer host (the ABI contract
+  # that makes in-process bundle plugins viable at step 2). Future .bundle plugin
+  # targets link this framework "Do Not Embed"; the app embeds it once.
+  MaximalTreeKit:
+    type: framework
+    platform: macOS
+    sources: [Sources/MaximalTreeKit]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.kit
+        GENERATE_INFOPLIST_FILE: YES
+        BUILD_LIBRARY_FOR_DISTRIBUTION: YES
+        DEFINES_MODULE: YES
+
+  # A plugin, as a loadable bundle. Links the shared framework but does NOT embed it
+  # (embed: false) — at load time it resolves against the copy the host already
+  # loaded. The rpath reaches the host app's Frameworks dir from Contents/PlugIns.
+  FileSystemPlugin:
+    type: bundle
+    platform: macOS
+    sources: [Sources/FileSystemPlugin]
+    dependencies:
+      - target: MaximalTreeKit
+        embed: false
+    settings:
+      base:
+        PRODUCT_NAME: FileSystem
+        PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.plugin.filesystem
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSPrincipalClass: FileSystemPlugin
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@loader_path/../../../../Frameworks"
+
+  MaximalTree:
+    type: application
+    platform: macOS
+    sources: [Sources/MaximalTree]
+    dependencies:
+      - target: MaximalTreeKit
+      - target: FileSystemPlugin      # built and copied into Contents/PlugIns
+        embed: true                   # enables the copy phase...
+        link: false                   # ...but don't link a loadable bundle into the app
+        copy:
+          destination: plugins        # ...redirected from Frameworks to PlugIns
+          codeSign: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.app
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+
+  MaximalTreeTests:
+    type: bundle.unit-test
+    platform: macOS
+    # Compiles the plugin sources directly so provider logic stays unit-testable
+    # without dlopen. The host skips loading the .bundle under XCTest to avoid a
+    # duplicate principal class in-process.
+    sources: [Tests/MaximalTreeTests, Sources/FileSystemPlugin]
+    dependencies:
+      - target: MaximalTree          # hosts the tests; wires TEST_HOST/BUNDLE_LOADER
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  MaximalTree:
+    build:
+      targets:
+        MaximalTree: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - MaximalTreeTests
