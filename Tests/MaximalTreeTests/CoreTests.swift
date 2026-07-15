@@ -72,4 +72,43 @@ import Foundation
         let home = try #require(NodeID(fileURL: FileManager.default.homeDirectoryForCurrentUser))
         #expect(roots == [home])
     }
+
+    @Test func supportsRenameAndDelete() throws {
+        let provider = FileSystemProvider()
+        let id = try #require(NodeID("file:///tmp/x"))
+        #expect(provider.supports(.rename(id, to: "y")))
+        #expect(provider.supports(.delete([id])))
+    }
+
+    @Test func renameMovesFileAndReportsNewIdentity() async throws {
+        let base = try makeTempTree()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let provider = FileSystemProvider()
+        let src = base.appendingPathComponent("a.txt")
+        let id = try #require(NodeID(fileURL: src))
+
+        let changes = try await provider.apply(.rename(id, to: "renamed.txt"))
+
+        let dst = base.appendingPathComponent("renamed.txt")
+        #expect(!FileManager.default.fileExists(atPath: src.path))
+        #expect(FileManager.default.fileExists(atPath: dst.path))
+        let newID = try #require(NodeID(fileURL: dst))
+        #expect(changes.contains {
+            if case .renamed(let from, let to) = $0 { return from == id && to == newID }
+            return false
+        })
+    }
+
+    @Test func deleteTrashesFileAndReportsRemoval() async throws {
+        let base = try makeTempTree()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let provider = FileSystemProvider()
+        let target = base.appendingPathComponent("b.txt")
+        let id = try #require(NodeID(fileURL: target))
+
+        let changes = try await provider.apply(.delete([id]))
+
+        #expect(!FileManager.default.fileExists(atPath: target.path))
+        #expect(changes.contains { if case .removed(let r) = $0 { return r == id } else { return false } })
+    }
 }

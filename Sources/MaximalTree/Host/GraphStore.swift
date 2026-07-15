@@ -6,11 +6,13 @@ import MaximalTreeKit
 @MainActor
 final class Registry: PluginRegistry {
     private(set) var providers: [NodeProvider] = []
-    private(set) var renderers: [TypeID: TypeRenderer] = [:]
+    private(set) var canvases: [CanvasContribution] = []
+    private(set) var inspectors: [InspectorContribution] = []
     private(set) var actions: [Action] = []
 
     func register(provider: NodeProvider) { providers.append(provider) }
-    func register(renderer: TypeRenderer) { renderers[renderer.typeID] = renderer }
+    func register(canvas: CanvasContribution) { canvases.append(canvas) }
+    func register(inspector: InspectorContribution) { inspectors.append(inspector) }
     func register(action: Action) { actions.append(action) }
 }
 
@@ -20,6 +22,7 @@ final class Registry: PluginRegistry {
 @MainActor
 final class GraphStore: GraphBackend {
     let context: HostContext
+    let nav: NavigationModel
     private let registry: Registry
 
     // In-flight de-duplication. Kept here (not on HostContext) precisely because
@@ -27,13 +30,23 @@ final class GraphStore: GraphBackend {
     private var childrenInFlight: Set<NodeID> = []
     private var relatedInFlight: Set<NodeID> = []
 
-    init(context: HostContext, registry: Registry) {
+    init(context: HostContext, registry: Registry, nav: NavigationModel) {
         self.context = context
         self.registry = registry
+        self.nav = nav
         context.backend = self
     }
 
-    func renderer(for type: TypeID) -> TypeRenderer? { registry.renderers[type] }
+    /// Highest-priority canvas whose matcher accepts the node.
+    func canvas(for node: Node) -> CanvasContribution? {
+        registry.canvases.filter { $0.matches(node) }.max { $0.priority < $1.priority }
+    }
+
+    /// All matching inspector sections, most-specific (highest priority) first.
+    func inspectors(for node: Node) -> [InspectorContribution] {
+        registry.inspectors.filter { $0.matches(node) }.sorted { $0.priority > $1.priority }
+    }
+
     var actions: [Action] { registry.actions }
 
     private func provider(for id: NodeID) -> NodeProvider? {
@@ -48,13 +61,26 @@ final class GraphStore: GraphBackend {
 
     // MARK: Commands
 
-    func open(_ id: NodeID) {
-        context._setFocus(id)
-        context._setSelection([id])
-        if context.node(id) == nil { ingestNode(id) }
-    }
+    // The plugin-facing `open` navigates the active tab; all navigation flows
+    // through `didNavigate()` so focus/selection and the tab model stay in sync.
+    func open(_ id: NodeID) { nav.navigate(to: id); didNavigate() }
 
     func select(_ ids: [NodeID]) { context._setSelection(ids) }
+
+    // MARK: Host-only navigation (not in GraphBackend; driven by the UI)
+
+    func back() { nav.back(); didNavigate() }
+    func forward() { nav.forward(); didNavigate() }
+    func newTab(with id: NodeID?) { nav.newTab(with: id); didNavigate() }
+    func closeTab(_ tabID: NavigationModel.Tab.ID) { nav.closeTab(tabID); didNavigate() }
+    func selectTab(_ i: Int) { nav.selectTab(i); didNavigate() }
+
+    private func didNavigate() {
+        let current = nav.current
+        context._setFocus(current)
+        context._setSelection(current.map { [$0] } ?? [])
+        if let current, context.node(current) == nil { ingestNode(current) }
+    }
 
     func mount(_ uri: String) {
         guard let p = provider(forURI: uri), let id = p.resolve(uri) else { return }
@@ -68,6 +94,61 @@ final class GraphStore: GraphBackend {
     func openURI(_ uri: String) {
         guard let p = provider(forURI: uri), let id = p.resolve(uri) else { return }
         open(id)
+    }
+
+    // MARK: Writes
+
+    func canApply(_ mutation: GraphMutation) -> Bool {
+        mutatingProvider(for: mutation)?.supports(mutation) ?? false
+    }
+
+    func apply(_ mutation: GraphMutation) {
+        guard let provider = mutatingProvider(for: mutation), provider.supports(mutation) else { return }
+        Task { @MainActor in
+            do {
+                let changes = try await provider.apply(mutation)
+                process(changes)
+            } catch {
+                NSLog("[MaximalTree] mutation failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Apply reported changes to caches + navigation, then re-sync focus to whatever
+    /// the active tab now points at. This is the single funnel that future external
+    /// change-feed events will also flow through.
+    private func process(_ changes: [NodeChange]) {
+        for change in changes {
+            switch change {
+            case .renamed(let from, let to):
+                nav.remap(from: from, to: to)
+                context._remap(from: from, to: to)
+                context._invalidateChildren(of: to)   // descendant URIs changed
+                ingestNode(to)
+            case .removed(let id):
+                nav.remove(id)
+                context._remove(id)
+            case .childrenChanged(let parent):
+                context._invalidateChildren(of: parent)
+            @unknown default:
+                break
+            }
+        }
+        let current = nav.current
+        context._setFocus(current)
+        context._setSelection(current.map { [$0] } ?? [])
+        if let current, context.node(current) == nil { ingestNode(current) }
+    }
+
+    private func mutatingProvider(for mutation: GraphMutation) -> MutatingNodeProvider? {
+        let anchor: NodeID?
+        switch mutation {
+        case .rename(let id, _): anchor = id
+        case .delete(let ids): anchor = ids.first
+        @unknown default: anchor = nil
+        }
+        guard let anchor else { return nil }
+        return provider(for: anchor) as? MutatingNodeProvider
     }
 
     func setRoots(_ ids: [NodeID]) {

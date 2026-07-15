@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import MaximalTreeKit
 
 /// The three-pane shell. All three panes are generic and registry-driven: the
@@ -22,8 +23,12 @@ struct ContentView: View {
                     }
                 }
         } content: {
-            CanvasPane()
-                .navigationSplitViewColumnWidth(min: 340, ideal: 560)
+            VStack(spacing: 0) {
+                TabStrip()
+                Divider()
+                CanvasPane()
+            }
+            .navigationSplitViewColumnWidth(min: 340, ideal: 560)
         } detail: {
             InspectorPane()
                 .navigationSplitViewColumnWidth(min: 240, ideal: 300)
@@ -68,6 +73,7 @@ struct ExplorerSidebar: View {
 struct NodeRow: View {
     let nodeID: NodeID
     @Environment(HostContext.self) private var host
+    @Environment(AppModel.self) private var model
     @State private var expanded = false
 
     var body: some View {
@@ -96,7 +102,87 @@ struct NodeRow: View {
         }
         .fontWeight(isFocused ? .semibold : .regular)
         .contentShape(Rectangle())
-        .onTapGesture { host.open(nodeID) }
+        .onTapGesture {
+            // ⌘-click opens in a new tab, like a browser.
+            if NSEvent.modifierFlags.contains(.command) {
+                model.openInNewTab(nodeID)
+            } else {
+                host.open(nodeID)
+            }
+        }
+    }
+}
+
+// MARK: - Tab strip (top of the canvas column)
+
+struct TabStrip: View {
+    @Environment(AppModel.self) private var model
+    @Environment(HostContext.self) private var host
+
+    var body: some View {
+        let nav = model.navigation
+        HStack(spacing: 6) {
+            Button { model.goBack() } label: { Image(systemName: "chevron.left") }
+                .disabled(!nav.canGoBack)
+                .help("Back")
+            Button { model.goForward() } label: { Image(systemName: "chevron.right") }
+                .disabled(!nav.canGoForward)
+                .help("Forward")
+
+            Divider().frame(height: 16)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(Array(nav.tabs.enumerated()), id: \.element.id) { i, tab in
+                        TabChip(title: title(of: tab),
+                                active: i == nav.activeIndex,
+                                closable: nav.tabs.count > 1,
+                                select: { model.selectTab(i) },
+                                close: { model.closeTab(tab.id) })
+                    }
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            Button { model.newTab() } label: { Image(systemName: "plus") }
+                .help("New Tab")
+        }
+        .buttonStyle(.borderless)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+    }
+
+    private func title(of tab: NavigationModel.Tab) -> String {
+        tab.current.flatMap { host.node($0)?.displayName } ?? "New Tab"
+    }
+}
+
+private struct TabChip: View {
+    let title: String
+    let active: Bool
+    let closable: Bool
+    let select: () -> Void
+    let close: () -> Void
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(title).lineLimit(1).font(.callout)
+            if closable {
+                Button(action: close) {
+                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .frame(maxWidth: 170)
+        .background(active ? Color.accentColor.opacity(0.22) : Color.secondary.opacity(0.10),
+                    in: RoundedRectangle(cornerRadius: 6))
+        .contentShape(Rectangle())
+        .onTapGesture(perform: select)
     }
 }
 
@@ -108,8 +194,8 @@ struct CanvasPane: View {
 
     var body: some View {
         if let id = host.focusedNode {
-            if let node = host.node(id), let renderer = model.store?.renderer(for: node.type) {
-                renderer.canvas(id, host)
+            if let node = host.node(id), let canvas = model.store?.canvas(for: node) {
+                canvas.make(id, host)
             } else {
                 ContentUnavailableView("Loading…", systemImage: "hourglass")
             }
@@ -127,10 +213,19 @@ struct InspectorPane: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        if let id = host.focusedNode,
-           let node = host.node(id),
-           let renderer = model.store?.renderer(for: node.type) {
-            renderer.inspector(id, host)
+        if let id = host.focusedNode, let node = host.node(id) {
+            let sections = model.store?.inspectors(for: node) ?? []
+            if sections.isEmpty {
+                ContentUnavailableView("No Inspector", systemImage: "sidebar.right")
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(sections.enumerated()), id: \.offset) { _, section in
+                            section.make(id, host)
+                        }
+                    }
+                }
+            }
         } else {
             ContentUnavailableView("No Inspector", systemImage: "sidebar.right")
         }

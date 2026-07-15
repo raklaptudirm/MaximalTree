@@ -60,6 +60,13 @@ public final class HostContext {
     /// it as a root. This is how the inspector follows a reference.
     public func openURI(_ uri: String) { backend?.openURI(uri) }
 
+    /// Perform a write. Fire-and-forget: the host runs it and updates caches/nav from
+    /// the reported changes; failures are logged. Check `canApply` first for UI state.
+    public func apply(_ mutation: GraphMutation) { backend?.apply(mutation) }
+
+    /// Whether the owning provider can perform `mutation` right now (for enabling UI).
+    public func canApply(_ mutation: GraphMutation) -> Bool { backend?.canApply(mutation) ?? false }
+
     // MARK: Backend-facing mutation (host only)
 
     public func _ingest(_ node: Node) { nodes[node.id] = node }
@@ -68,6 +75,38 @@ public final class HostContext {
     public func _setRoots(_ ids: [NodeID]) { roots = ids }
     public func _setFocus(_ id: NodeID?) { focusedNode = id }
     public func _setSelection(_ ids: [NodeID]) { selection = ids }
+
+    /// Rewrite every cached reference to `old` as `new` after a rename. Note this is
+    /// shallow: for a directory rename, descendant URIs also change, so the caller
+    /// should also invalidate the renamed node's children (they refetch under the new
+    /// path). Files (the common case) have no descendants and remap exactly.
+    public func _remap(from old: NodeID, to new: NodeID) {
+        if let node = nodes.removeValue(forKey: old) { nodes[new] = node }
+        if let kids = childrenByParent.removeValue(forKey: old) { childrenByParent[new] = kids }
+        for (parent, kids) in childrenByParent where kids.contains(old) {
+            childrenByParent[parent] = kids.map { $0 == old ? new : $0 }
+        }
+        if let related = relatedByNode.removeValue(forKey: old) { relatedByNode[new] = related }
+        roots = roots.map { $0 == old ? new : $0 }
+        if focusedNode == old { focusedNode = new }
+        selection = selection.map { $0 == old ? new : $0 }
+    }
+
+    /// Drop a node that no longer exists from every cache and from open state.
+    public func _remove(_ id: NodeID) {
+        nodes[id] = nil
+        childrenByParent[id] = nil
+        relatedByNode[id] = nil
+        for (parent, kids) in childrenByParent where kids.contains(id) {
+            childrenByParent[parent] = kids.filter { $0 != id }
+        }
+        roots = roots.filter { $0 != id }
+        if focusedNode == id { focusedNode = nil }
+        selection = selection.filter { $0 != id }
+    }
+
+    /// Forget a node's children so they're re-fetched on next access.
+    public func _invalidateChildren(of id: NodeID) { childrenByParent[id] = nil }
 }
 
 /// Implemented by the host's graph store. Everything the plugin API can trigger
@@ -79,6 +118,8 @@ public protocol GraphBackend: AnyObject {
     func select(_ ids: [NodeID])
     func mount(_ uri: String)
     func openURI(_ uri: String)
+    func apply(_ mutation: GraphMutation)
+    func canApply(_ mutation: GraphMutation) -> Bool
     func requestChildren(of id: NodeID)
     func requestRelated(of id: NodeID)
 }

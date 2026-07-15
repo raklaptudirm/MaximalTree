@@ -56,23 +56,47 @@ public struct Action: Identifiable {
 
 // MARK: - Rendering
 
-/// A plugin's views for one node type. `canvas` is the center-pane escape hatch
-/// (arbitrary SwiftUI). `inspector` is the right-pane controls. `AnyView` erasure
-/// is the deliberate cost of a heterogeneous registry keyed by `TypeID`.
+/// A plugin's canvas for the nodes it can draw. Renderers are resolved by **matcher
+/// + priority**, not by node ownership — so a plugin can render node types produced
+/// by a *different* plugin's provider (e.g. a text editor drawing filesystem files),
+/// and a more specific renderer can override a general one. The host picks the single
+/// highest-priority contribution whose `matches` returns true for the focused node.
+///
+/// `AnyView` erasure at the boundary is the cost of a heterogeneous registry.
 @MainActor
-public struct TypeRenderer {
-    public let typeID: TypeID
-    public let canvas: (NodeID, HostContext) -> AnyView
-    public let inspector: (NodeID, HostContext) -> AnyView
+public struct CanvasContribution {
+    public let priority: Int
+    public let matches: (Node) -> Bool
+    public let make: (NodeID, HostContext) -> AnyView
 
     public init(
-        typeID: TypeID,
-        canvas: @escaping (NodeID, HostContext) -> AnyView,
-        inspector: @escaping (NodeID, HostContext) -> AnyView
+        priority: Int = 0,
+        matches: @escaping (Node) -> Bool,
+        make: @escaping (NodeID, HostContext) -> AnyView
     ) {
-        self.typeID = typeID
-        self.canvas = canvas
-        self.inspector = inspector
+        self.priority = priority
+        self.matches = matches
+        self.make = make
+    }
+}
+
+/// A plugin's inspector section. Unlike the canvas, **all** matching inspector
+/// contributions are shown, stacked by descending priority — so a file's metadata
+/// section and an editor's settings section can coexist for the same node.
+@MainActor
+public struct InspectorContribution {
+    public let priority: Int
+    public let matches: (Node) -> Bool
+    public let make: (NodeID, HostContext) -> AnyView
+
+    public init(
+        priority: Int = 0,
+        matches: @escaping (Node) -> Bool,
+        make: @escaping (NodeID, HostContext) -> AnyView
+    ) {
+        self.priority = priority
+        self.matches = matches
+        self.make = make
     }
 }
 
@@ -83,8 +107,28 @@ public struct TypeRenderer {
 @MainActor
 public protocol PluginRegistry: AnyObject {
     func register(provider: NodeProvider)
-    func register(renderer: TypeRenderer)
+    func register(canvas: CanvasContribution)
+    func register(inspector: InspectorContribution)
     func register(action: Action)
+}
+
+public extension PluginRegistry {
+    /// Convenience for the common "render exactly this type" case.
+    func registerCanvas(
+        forType typeID: TypeID, priority: Int = 0,
+        make: @escaping (NodeID, HostContext) -> AnyView
+    ) {
+        register(canvas: CanvasContribution(priority: priority,
+                                            matches: { $0.type == typeID }, make: make))
+    }
+
+    func registerInspector(
+        forType typeID: TypeID, priority: Int = 0,
+        make: @escaping (NodeID, HostContext) -> AnyView
+    ) {
+        register(inspector: InspectorContribution(priority: priority,
+                                                  matches: { $0.type == typeID }, make: make))
+    }
 }
 
 /// The entry point every plugin implements. In step 1 these are compiled into the

@@ -1,4 +1,5 @@
 import SwiftUI
+import Quartz          // QLPreviewView
 import MaximalTreeKit
 
 /// Canvas for a directory: an icon grid of its children. Clicking focuses a child,
@@ -37,26 +38,41 @@ struct DirectoryCanvas: View {
     }
 }
 
-/// Canvas for a leaf file. A real preview renderer would live here; v0 shows a stub.
+/// Canvas for a leaf file: a live Quick Look preview (text, images, PDFs, media, …).
+/// This is the canvas "escape hatch" in action — a plugin dropping a raw AppKit view
+/// into the center pane.
 struct FileCanvas: View {
     let nodeID: NodeID
     @Environment(HostContext.self) private var host
 
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "doc")
-                .font(.system(size: 64))
-                .foregroundStyle(.secondary)
-            Text(host.node(nodeID)?.displayName ?? nodeID.uri)
-                .font(.title3)
-            Text(nodeID.uri)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
+        Group {
+            if let url = nodeID.fileURL {
+                QuickLookPreview(url: url)
+            } else {
+                ContentUnavailableView("No Preview", systemImage: "doc")
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding()
         .navigationTitle(host.node(nodeID)?.displayName ?? "")
+    }
+}
+
+/// Wraps `QLPreviewView` for SwiftUI. Rebinds its item when the focused file changes
+/// so the same view is reused across navigation rather than recreated per node.
+private struct QuickLookPreview: NSViewRepresentable {
+    let url: URL
+
+    func makeNSView(context: Context) -> QLPreviewView {
+        let view = QLPreviewView(frame: .zero, style: .normal) ?? QLPreviewView()
+        view.autostarts = true
+        view.previewItem = url as NSURL
+        return view
+    }
+
+    func updateNSView(_ view: QLPreviewView, context: Context) {
+        if (view.previewItem as? URL) != url {
+            view.previewItem = url as NSURL
+        }
     }
 }
 
@@ -65,13 +81,20 @@ struct FileCanvas: View {
 struct FileInspector: View {
     let nodeID: NodeID
     @Environment(HostContext.self) private var host
+    @State private var draftName = ""
+    @FocusState private var nameFocused: Bool
 
     var body: some View {
         let node = host.node(nodeID)
         Form {
             Section("Node") {
-                LabeledContent("Name", value: node?.displayName ?? "—")
+                // Editable: committing a new name applies a rename mutation. The
+                // inspector doubles as the manipulation surface.
+                TextField("Name", text: $draftName)
+                    .focused($nameFocused)
+                    .onSubmit(commitRename)
                 LabeledContent("Type", value: node?.type.raw ?? "—")
+                if let uti = node?.uti { LabeledContent("Content Type", value: uti) }
             }
             if let size = sizeString(node) {
                 Section("File") {
@@ -91,6 +114,17 @@ struct FileInspector: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear { draftName = host.node(nodeID)?.displayName ?? "" }
+        .onChange(of: nodeID) { draftName = host.node(nodeID)?.displayName ?? "" }
+        .onChange(of: host.node(nodeID)?.displayName) { _, newValue in
+            if !nameFocused { draftName = newValue ?? "" }   // don't clobber while editing
+        }
+    }
+
+    private func commitRename() {
+        let trimmed = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != host.node(nodeID)?.displayName else { return }
+        host.apply(.rename(nodeID, to: trimmed))
     }
 
     private func sizeString(_ node: Node?) -> String? {

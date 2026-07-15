@@ -23,6 +23,7 @@ struct MaximalTreeApp: App {
 @Observable
 final class AppModel {
     let host: HostContext
+    let navigation = NavigationModel()
     private let pluginHost = PluginHost()
     private let workspaceStore = WorkspaceStore()
     private(set) var store: GraphStore?
@@ -31,6 +32,15 @@ final class AppModel {
     var paletteVisible = false
 
     init(host: HostContext) { self.host = host }
+
+    // Navigation commands surfaced to the toolbar, tab strip, and menu bar.
+    func goBack() { store?.back() }
+    func goForward() { store?.forward() }
+    func newTab() { store?.newTab(with: host.focusedNode) }   // duplicate current node
+    func openInNewTab(_ id: NodeID) { store?.newTab(with: id) }
+    func closeActiveTab() { store?.closeTab(navigation.activeTab.id) }
+    func closeTab(_ id: NavigationModel.Tab.ID) { store?.closeTab(id) }
+    func selectTab(_ i: Int) { store?.selectTab(i) }
 
     /// Actions (from any plugin) that apply to the current selection. Feeds both
     /// the menu bar and the command palette from the one registry.
@@ -52,7 +62,7 @@ final class AppModel {
         // collides. Tests exercise provider logic without the running host.
         let underTest = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
         if !underTest { pluginHost.loadAll() }
-        let store = GraphStore(context: host, registry: pluginHost.registry)
+        let store = GraphStore(context: host, registry: pluginHost.registry, nav: navigation)
         self.store = store
 
         let providers = pluginHost.registry.providers

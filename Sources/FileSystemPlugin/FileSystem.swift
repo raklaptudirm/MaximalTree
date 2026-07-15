@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import MaximalTreeKit
 
 // File-scheme identity helpers. Kept in the plugin — the host core never assumes
@@ -57,9 +58,11 @@ struct FileSystemProvider: NodeProvider {
     static func node(url: URL, id: NodeID, isDir: Bool) -> Node {
         let name = url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
         var attrs = Attributes.named(name)
-        if let vals = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]) {
+        if let vals = try? url.resourceValues(
+            forKeys: [.fileSizeKey, .contentModificationDateKey, .contentTypeKey]) {
             if let size = vals.fileSize { attrs["size"] = .int(size) }
             if let mod = vals.contentModificationDate { attrs["modified"] = .date(mod) }
+            if let uti = vals.contentType?.identifier { attrs["uti"] = .string(uti) }
         }
         return Node(id: id, type: isDir ? directoryType : fileType, attributes: attrs, hasChildren: isDir)
     }
@@ -85,6 +88,64 @@ struct FileSystemProvider: NodeProvider {
     }
 }
 
+enum FileSystemError: LocalizedError {
+    case notAFile
+    case badDestination
+    var errorDescription: String? {
+        switch self {
+        case .notAFile: return "Not a filesystem node."
+        case .badDestination: return "Invalid destination path."
+        }
+    }
+}
+
+extension FileSystemProvider: MutatingNodeProvider {
+    func supports(_ mutation: GraphMutation) -> Bool {
+        switch mutation {
+        case .rename(let id, _): return id.fileURL != nil
+        case .delete(let ids): return !ids.isEmpty && ids.allSatisfy { $0.fileURL != nil }
+        @unknown default: return false
+        }
+    }
+
+    func apply(_ mutation: GraphMutation) async throws -> [NodeChange] {
+        // Do the IO off the main actor.
+        try await Task.detached(priority: .userInitiated) {
+            try Self.perform(mutation)
+        }.value
+    }
+
+    static func perform(_ mutation: GraphMutation) throws -> [NodeChange] {
+        let fm = FileManager.default
+        switch mutation {
+        case .rename(let id, let newName):
+            guard let url = id.fileURL else { throw FileSystemError.notAFile }
+            let parentURL = url.deletingLastPathComponent()
+            let dest = parentURL.appendingPathComponent(newName)
+            try fm.moveItem(at: url, to: dest)
+            guard let newID = NodeID(fileURL: dest) else { throw FileSystemError.badDestination }
+            var changes: [NodeChange] = [.renamed(from: id, to: newID)]
+            if let parent = NodeID(fileURL: parentURL) { changes.append(.childrenChanged(parent)) }
+            return changes
+
+        case .delete(let ids):
+            var changes: [NodeChange] = []
+            for id in ids {
+                guard let url = id.fileURL else { continue }
+                try fm.trashItem(at: url, resultingItemURL: nil)   // reversible: to Trash
+                changes.append(.removed(id))
+                if let parent = NodeID(fileURL: url.deletingLastPathComponent()) {
+                    changes.append(.childrenChanged(parent))
+                }
+            }
+            return changes
+
+        @unknown default:
+            return []
+        }
+    }
+}
+
 /// Entry point and the bundle's `NSPrincipalClass`. Must be Obj-C-discoverable for
 /// `Bundle.principalClass` to find it: `@objc(FileSystemPlugin)` pins the unmangled
 /// runtime name (Swift would otherwise mangle it to `FileSystem.FileSystemPlugin`),
@@ -96,16 +157,20 @@ final class FileSystemPlugin: NSObject, Plugin {
     func register(with registry: PluginRegistry) {
         registry.register(provider: FileSystemProvider())
 
-        registry.register(renderer: TypeRenderer(
-            typeID: directoryType,
-            canvas: { id, host in AnyView(DirectoryCanvas(nodeID: id).environment(host)) },
-            inspector: { id, host in AnyView(FileInspector(nodeID: id).environment(host)) }
-        ))
-        registry.register(renderer: TypeRenderer(
-            typeID: fileType,
-            canvas: { id, host in AnyView(FileCanvas(nodeID: id).environment(host)) },
-            inspector: { id, host in AnyView(FileInspector(nodeID: id).environment(host)) }
-        ))
+        registry.registerCanvas(forType: directoryType) { id, host in
+            AnyView(DirectoryCanvas(nodeID: id).environment(host))
+        }
+        // Baseline (priority 0) canvas for any file — Quick Look. A more specific
+        // plugin (e.g. the text editor) can register a higher-priority canvas that
+        // matches a narrower content type and win.
+        registry.registerCanvas(forType: fileType) { id, host in
+            AnyView(FileCanvas(nodeID: id).environment(host))
+        }
+        // One inspector section for anything filesystem-backed.
+        registry.register(inspector: InspectorContribution(
+            matches: { $0.type.raw.hasPrefix("file.") }) { id, host in
+                AnyView(FileInspector(nodeID: id).environment(host))
+        })
 
         registry.register(action: Action(
             id: "file.reveal",
@@ -131,6 +196,16 @@ final class FileSystemPlugin: NSObject, Plugin {
                     NSWorkspace.shared.open(url)
                 }
             }
+        ))
+
+        registry.register(action: Action(
+            id: "file.trash",
+            title: "Move to Trash",
+            systemImage: "trash",
+            appliesTo: .custom { ctx in
+                !ctx.selection.isEmpty && ctx.selectedNodes.allSatisfy { $0.type.raw.hasPrefix("file.") }
+            },
+            handler: { ctx in ctx.host.apply(.delete(ctx.selection)) }
         ))
     }
 }

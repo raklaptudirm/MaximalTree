@@ -129,6 +129,14 @@ public struct Node: Identifiable, Hashable, Sendable {
         }
         return s
     }
+
+    /// The content-type identifier (UTI string) a provider attached, if any.
+    /// Renderers match on this to target content types (e.g. plain text) without an
+    /// explosion of `TypeID`s. The structural `type` stays coarse for the tree.
+    public var uti: String? {
+        if case .string(let value)? = attributes["uti"] { return value }
+        return nil
+    }
 }
 
 // MARK: - Pagination

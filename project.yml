@@ -10,7 +10,7 @@ options:
 # Distribution signing (hardened runtime, notarization) is layered on later.
 settings:
   base:
-    SWIFT_VERSION: "5.0"            # language mode v5 for now; tighten to v6 later
+    SWIFT_VERSION: "6.0"            # Swift 6 language mode: complete data-race checking
     CODE_SIGN_IDENTITY: "-"
     CODE_SIGN_STYLE: Manual
     DEVELOPMENT_TEAM: ""
@@ -52,6 +52,22 @@ targets:
         LD_RUNPATH_SEARCH_PATHS:
           - "@loader_path/../../../../Frameworks"
 
+  TextEditorPlugin:
+    type: bundle
+    platform: macOS
+    sources: [Sources/TextEditorPlugin]
+    dependencies:
+      - target: MaximalTreeKit
+        embed: false
+    settings:
+      base:
+        PRODUCT_NAME: TextEditor
+        PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.plugin.texteditor
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSPrincipalClass: TextEditorPlugin
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@loader_path/../../../../Frameworks"
+
   MaximalTree:
     type: application
     platform: macOS
@@ -63,6 +79,12 @@ targets:
         link: false                   # ...but don't link a loadable bundle into the app
         copy:
           destination: plugins        # ...redirected from Frameworks to PlugIns
+          codeSign: true
+      - target: TextEditorPlugin
+        embed: true
+        link: false
+        copy:
+          destination: plugins
           codeSign: true
     settings:
       base:

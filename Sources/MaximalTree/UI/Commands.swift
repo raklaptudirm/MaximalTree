@@ -7,6 +7,20 @@ struct AppCommands: Commands {
     var model: AppModel
 
     var body: some Commands {
+        CommandMenu("Navigate") {
+            Button("Back") { model.goBack() }
+                .keyboardShortcut("[", modifiers: .command)
+                .disabled(!model.navigation.canGoBack)
+            Button("Forward") { model.goForward() }
+                .keyboardShortcut("]", modifiers: .command)
+                .disabled(!model.navigation.canGoForward)
+            Divider()
+            Button("New Tab") { model.newTab() }
+                .keyboardShortcut("t", modifiers: .command)
+            Button("Close Tab") { model.closeActiveTab() }
+                .keyboardShortcut("w", modifiers: .command)
+                .disabled(model.navigation.tabs.count <= 1)
+        }
         CommandMenu("Actions") {
             Button("Command Palette…") { model.paletteVisible = true }
                 .keyboardShortcut("p", modifiers: [.command, .shift])

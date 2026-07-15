@@ -46,16 +46,19 @@ Sources/
   MaximalTreeKit/               # the plugin SDK (dynamic framework)
     Core.swift                  #   NodeID, TypeID, Node, Attributes, Page, Related
     Provider.swift              #   NodeProvider protocol
+    Mutation.swift              #   GraphMutation, NodeChange, MutatingNodeProvider
     HostContext.swift           #   @Observable HostContext + GraphBackend seam
-    Interface.swift             #   Action, TypeRenderer, Plugin, PluginRegistry
+    Interface.swift             #   Action, Canvas/InspectorContribution, Plugin, Registry
   MaximalTree/                  # the host app
     App.swift                   #   @main, AppModel wiring
-    Host/                       #   Registry, GraphStore, Workspace, PluginHost
-    UI/                         #   Shell (3 panes) + Commands (menu/palette)
-  FileSystemPlugin/             # the reference plugin (loadable bundle)
-    FileSystem.swift            #   provider, principal class, actions
-    FileViews.swift             #   canvas + inspector SwiftUI views
-Tests/MaximalTreeTests/         # swift-testing suite
+    Host/                       #   Registry, GraphStore, NavigationModel, Workspace, PluginHost
+    UI/                         #   Shell (3 panes + tabs) + Commands (menu/palette)
+  FileSystemPlugin/             # reference provider plugin (loadable bundle)
+    FileSystem.swift            #   provider, mutations, principal class, actions
+    FileViews.swift             #   canvas (Quick Look) + inspector (editable)
+  TextEditorPlugin/             # reference cross-plugin renderer (loadable bundle)
+    TextEditor.swift            #   high-priority text canvas over filesystem files
+Tests/MaximalTreeTests/         # swift-testing suite (26 tests)
 ```
 
 The generated `MaximalTree.xcodeproj` is **not** committed — regenerate it (below).
@@ -138,6 +141,19 @@ main actor** (they hit filesystems, APIs, DBs). Views are `@MainActor`. Reading
 the backend; when it lands, the observable cache updates and the view re-renders. Never
 block the main actor in a provider.
 
+### Writes
+
+Structural edits go through a small, host-defined vocabulary — `GraphMutation`
+(`.rename`, `.delete`; more later) — that providers opt into by conforming to
+`MutatingNodeProvider`. `apply(_:)` **returns the `NodeChange`s it caused**
+(`.renamed(from:to:)`, `.removed`, `.childrenChanged`), and the host applies those to
+its caches and remaps navigation history/selection — crucial because a rename changes a
+node's `NodeID`. Call `HostContext.apply(_:)` to trigger one, `canApply(_:)` to gate UI.
+
+*Content* editing (a file's bytes) is **not** a `GraphMutation` — that vocabulary is for
+tree structure. Content is type-specific manipulation a plugin does directly via its
+canvas (see `TextEditorPlugin` writing files). Keep the two distinct.
+
 ### The plugin model (option A)
 
 Plugins are **in-process loadable bundles** that link the shared
@@ -186,19 +202,34 @@ struct MyProvider: NodeProvider {
 Do slow work off-main (e.g. wrap it in `Task.detached`). Canonicalize any URI you
 mint through `NodeID`.
 
-### 2. A `TypeRenderer` per type
+### 2. Canvas / inspector contributions
 
-Maps a `TypeID` to canvas + inspector views. `AnyView` erasure at the boundary is the
-cost of a registry keyed by type; inside your views, write ordinary strongly-typed
-SwiftUI. Pass `HostContext` into the environment so your views can observe it.
+Renderers are resolved by **matcher + priority**, not by exact type — so a plugin can
+render node types owned by a *different* plugin, and a more specific renderer can
+override a general one. The host picks the single highest-priority matching **canvas**,
+and composes **all** matching **inspectors** as stacked sections.
 
 ```swift
-TypeRenderer(
-    typeID: "myscheme.thing",
-    canvas:    { id, host in AnyView(ThingCanvas(id: id).environment(host)) },
-    inspector: { id, host in AnyView(ThingInspector(id: id).environment(host)) }
-)
+// Match a content type and outrank the default renderer:
+registry.register(canvas: CanvasContribution(
+    priority: 100,
+    matches: { node in node.uti == "public.plain-text" },
+    make: { id, host in AnyView(MyEditor(id: id).environment(host)) }))
+
+// Or the common "exactly this structural type" case:
+registry.registerCanvas(forType: "myscheme.thing") { id, host in
+    AnyView(ThingCanvas(id: id).environment(host))
+}
+registry.registerInspector(forType: "myscheme.thing") { id, host in
+    AnyView(ThingInspector(id: id).environment(host))
+}
 ```
+
+`AnyView` erasure at the boundary is the cost of a heterogeneous registry; inside your
+views write ordinary strongly-typed SwiftUI. Pass `HostContext` into the environment so
+your views can observe it. Providers should attach a UTI via `attributes["uti"]` so
+content-type matchers work (`TextEditorPlugin` is the reference for cross-plugin
+rendering).
 
 ### 3. `Action`s (optional)
 
@@ -271,8 +302,8 @@ Run `xcodegen generate` and build. Watch the console for
 
 ## Conventions
 
-- **Language mode** is Swift 5 for now (`SWIFT_VERSION: "5.0"`) to avoid strict-
-  concurrency churn on a young codebase; we'll tighten to 6 later.
+- **Swift 6 language mode** is on (`SWIFT_VERSION: "6.0"`) with complete data-race
+  checking. Keep providers `Sendable` and do UI/host work on `@MainActor`.
 - **The host stays type-agnostic.** If you find yourself writing `if type == "file.…"`
   in `Sources/MaximalTree/`, that's a smell — the knowledge belongs in a plugin.
 - **Route through `HostContext`.** Plugins must never reach into host internals; the
@@ -284,13 +315,14 @@ Run `xcodegen generate` and build. Watch the console for
 
 ## What's not done yet
 
-The current state is a working, **read-only** v0. Known gaps, roughly in order:
+Working today: navigation (tabs + history), cross-plugin rendering, and structural
+writes (rename + delete-to-Trash). Known gaps, roughly in order:
 
-- **Writes** — no `GraphMutation`, no rename events. Navigation/rendering only.
+- **More mutations** — `.move` (needs tree drag-and-drop) and `.create`; content-write
+  isn't modelled beyond direct plugin file writes.
+- **External change feed** — the host reacts to changes *it* makes, but nothing watches
+  for edits by other apps yet. `NodeChange` is designed to carry these when a provider
+  change-stream (FSEvents/`DispatchSource`) is added.
 - **Dynamic plugins** — loading is launch-time from the bundled `PlugIns/`. No external
   user plugin directory, enable/disable, or revocable registrations yet.
-- **One provider** — everything has been validated against FileSystem only.
-- **Smaller**: context-menu action surface, cache invalidation via a provider change
-  stream, richer previews.
-
-See the project's design notes for the reasoning behind these being deferred.
+- **Smaller**: context-menu action surface, richer inspector composition, undo.
