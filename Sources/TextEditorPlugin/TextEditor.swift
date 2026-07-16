@@ -105,7 +105,6 @@ struct TextEditorCanvas: View {
             load()
             loadedNode = nodeID  // set either way: this node is resolved, error or not
         }
-        .navigationTitle(host.node(nodeID)?.label ?? "")
     }
 
     private var header: some View {

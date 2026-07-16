@@ -67,37 +67,100 @@ import Foundation
 
 @MainActor
 @Suite struct WorkspaceStoreTests {
-    private func tempFile() -> URL {
-        URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("ws-\(UUID().uuidString).json")
+    /// Fresh directory per test so libraries and legacy files can't collide.
+    private func tempLibraryURL() throws -> URL {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ws-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("workspaces.json")
     }
 
-    @Test func roundTripsRoots() throws {
-        let file = tempFile()
-        defer { try? FileManager.default.removeItem(at: file) }
-        let dir = FileManager.default.temporaryDirectory
-        let root = try #require(NodeID(fileURL: dir))
+    @Test func roundTripsActiveRoots() throws {
+        let file = try tempLibraryURL()
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        let root = try #require(NodeID(fileURL: FileManager.default.temporaryDirectory))
 
-        WorkspaceStore(fileURL: file).save(roots: [root])
+        WorkspaceStore(fileURL: file).saveRoots([root])
 
-        // A brand-new store (fresh launch) restores the same root.
         let restored = WorkspaceStore(fileURL: file)
-            .resolvedRoots(using: [FileSystemProvider()]) { [] }
+            .resolvedRoots(using: [FileSystemProvider()])
         #expect(restored == [root])
     }
 
-    @Test func unresolvableRootsDegradeToSeed() throws {
-        let file = tempFile()
-        defer { try? FileManager.default.removeItem(at: file) }
+    @Test func unresolvableRootsAreDropped() throws {
+        let file = try tempLibraryURL()
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
         let gone = try #require(NodeID("file:///does/not/exist/zzz-\(UUID())"))
-        let seed = try #require(NodeID(fileURL: FileManager.default.temporaryDirectory))
 
-        WorkspaceStore(fileURL: file).save(roots: [gone])
+        WorkspaceStore(fileURL: file).saveRoots([gone])
 
-        // The stale root is dropped (renamed/removed while the app was closed) and
-        // the empty result falls back to the seed.
+        // The stale root is dropped; no silent reseeding — an emptied workspace
+        // stays empty (seeding is first-launch-only, gated by wasFreshlyCreated).
         let restored = WorkspaceStore(fileURL: file)
-            .resolvedRoots(using: [FileSystemProvider()]) { [seed] }
-        #expect(restored == [seed])
+            .resolvedRoots(using: [FileSystemProvider()])
+        #expect(restored.isEmpty)
+    }
+
+    @Test func freshLibraryIsFlaggedOnce() throws {
+        let file = try tempLibraryURL()
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        #expect(WorkspaceStore(fileURL: file).wasFreshlyCreated)
+        #expect(!WorkspaceStore(fileURL: file).wasFreshlyCreated)   // second launch
+    }
+
+    @Test func createSwitchAndPersistPerWorkspaceRoots() throws {
+        let file = try tempLibraryURL()
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        let rootA = try #require(NodeID(fileURL: FileManager.default.temporaryDirectory))
+
+        let store = WorkspaceStore(fileURL: file)
+        store.saveRoots([rootA])                       // into "Main"
+        let b = store.create(named: "B")
+        store.setActive(b.id)
+        store.saveRoots([])                            // B is empty
+
+        // Relaunch: B is still active and empty; switching back to Main restores A.
+        let relaunched = WorkspaceStore(fileURL: file)
+        #expect(relaunched.active.name == "B")
+        #expect(relaunched.resolvedRoots(using: [FileSystemProvider()]).isEmpty)
+        let main = try #require(relaunched.library.workspaces.first { $0.name == "Main" })
+        relaunched.setActive(main.id)
+        #expect(relaunched.resolvedRoots(using: [FileSystemProvider()]) == [rootA])
+    }
+
+    @Test func deleteActiveActivatesRemainingAndKeepsAtLeastOne() throws {
+        let file = try tempLibraryURL()
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        let store = WorkspaceStore(fileURL: file)
+        let b = store.create(named: "B")
+        store.setActive(b.id)
+
+        store.delete(b.id)
+        #expect(store.active.name == "Main")
+
+        store.delete(store.active.id)                  // refused: last one
+        #expect(store.library.workspaces.count == 1)
+    }
+
+    @Test func renamePersists() throws {
+        let file = try tempLibraryURL()
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        let store = WorkspaceStore(fileURL: file)
+        store.rename(store.active.id, to: "Projects")
+        #expect(WorkspaceStore(fileURL: file).active.name == "Projects")
+    }
+
+    @Test func migratesLegacySingleWorkspaceFile() throws {
+        let file = try tempLibraryURL()
+        let dir = file.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let legacy = #"{"name":"Untitled","rootURIs":["file:///tmp"]}"#
+        try legacy.write(to: dir.appendingPathComponent("workspace.json"),
+                         atomically: true, encoding: .utf8)
+
+        let store = WorkspaceStore(fileURL: file)
+        #expect(!store.wasFreshlyCreated, "migration is not a fresh start — don't reseed")
+        #expect(store.active.rootURIs == ["file:///tmp"])
+        #expect(store.active.name == "Main")           // legacy placeholder upgraded
     }
 }

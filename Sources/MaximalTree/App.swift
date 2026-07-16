@@ -30,8 +30,48 @@ final class AppModel {
 
     /// Whether the command palette overlay is showing.
     var paletteVisible = false
+    /// Prompt state for the workspace name alerts, settable from any surface
+    /// (toolbar menu, menu bar); ContentView presents the alerts.
+    var showingCreateWorkspace = false
+    var showingRenameWorkspace = false
 
     init(host: HostContext) { self.host = host }
+
+    // MARK: Workspaces
+
+    var workspaces: [Workspace] { workspaceStore.library.workspaces }
+    var activeWorkspaceID: UUID? { workspaceStore.library.activeID }
+    var activeWorkspaceName: String { workspaceStore.active.name }
+
+    func switchWorkspace(to id: UUID) {
+        guard id != activeWorkspaceID else { return }
+        workspaceStore.setActive(id)
+        reloadActiveWorkspaceRoots()
+    }
+
+    func createWorkspace(named name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let workspace = workspaceStore.create(named: trimmed.isEmpty ? "Untitled" : trimmed)
+        workspaceStore.setActive(workspace.id)
+        store?.switchRoots([])              // a new workspace starts empty
+    }
+
+    func renameActiveWorkspace(to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let id = activeWorkspaceID else { return }
+        workspaceStore.rename(id, to: trimmed)
+    }
+
+    func deleteActiveWorkspace() {
+        guard let id = activeWorkspaceID, workspaces.count > 1 else { return }
+        workspaceStore.delete(id)           // store activates the first remaining
+        reloadActiveWorkspaceRoots()
+    }
+
+    private func reloadActiveWorkspaceRoots() {
+        let roots = workspaceStore.resolvedRoots(using: pluginHost.registry.providers)
+        store?.switchRoots(roots)
+    }
 
     // Navigation commands surfaced to the toolbar, tab strip, and menu bar.
     func goBack() { store?.back() }
@@ -68,12 +108,16 @@ final class AppModel {
         // Persist on every root-set change, no matter who mounted (UI or plugin).
         store.onRootsChanged = { [weak self] in
             guard let self else { return }
-            self.workspaceStore.save(roots: self.host.roots)
+            self.workspaceStore.saveRoots(self.host.roots)
         }
 
         let providers = pluginHost.registry.providers
-        let roots = workspaceStore.resolvedRoots(using: providers) {
-            providers.flatMap { $0.roots() }   // empty workspace → provider defaults (home dir)
+        var roots = workspaceStore.resolvedRoots(using: providers)
+        // Seed provider defaults (home directory) only on the very first launch —
+        // a workspace the user deliberately emptied stays empty.
+        if roots.isEmpty && workspaceStore.wasFreshlyCreated {
+            roots = providers.flatMap { $0.roots() }
+            workspaceStore.saveRoots(roots)
         }
         store.setRoots(roots)
     }

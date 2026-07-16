@@ -100,6 +100,16 @@ import Foundation
         #expect(nav.current == id("file:///c"))
     }
 
+    @Test func resetReturnsToSingleEmptyTab() {
+        let nav = NavigationModel()
+        nav.navigate(to: id("file:///a"))
+        nav.newTab(with: id("file:///b"))
+        nav.reset()
+        #expect(nav.tabs.count == 1)
+        #expect(nav.current == nil)
+        #expect(!nav.canGoBack && !nav.canGoForward)
+    }
+
     @Test func removeCurrentFallsBack() {
         let nav = NavigationModel()
         nav.navigate(to: id("file:///a"))

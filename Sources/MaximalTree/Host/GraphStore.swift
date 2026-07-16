@@ -182,6 +182,16 @@ final class GraphStore: GraphBackend {
         for id in ids { ingestNode(id) }
     }
 
+    /// Swap the whole root set for a workspace switch: tabs, history, focus, and
+    /// selection all reset. Deliberately does NOT fire `onRootsChanged` — a switch
+    /// restores persisted state, it doesn't create any. (Node caches are kept: they
+    /// are keyed by identity and stay valid across workspaces.)
+    func switchRoots(_ ids: [NodeID]) {
+        nav.reset()
+        setRoots(ids)
+        didNavigate()
+    }
+
     // MARK: Async loads
 
     private func ingestNode(_ id: NodeID) {

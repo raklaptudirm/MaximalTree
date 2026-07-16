@@ -7,6 +7,9 @@ struct AppCommands: Commands {
     var model: AppModel
 
     var body: some Commands {
+        CommandMenu("Workspace") {
+            WorkspaceMenuItems(model: model, showShortcuts: true)
+        }
         CommandMenu("Navigate") {
             Button("Back") { model.goBack() }
                 .keyboardShortcut("[", modifiers: .command)
@@ -27,6 +30,40 @@ struct AppCommands: Commands {
             Divider()
             ActionMenuItems(model: model)
         }
+    }
+}
+
+/// The workspace switcher, shared by the menu bar (with ⌘⌥1–9 shortcuts) and the
+/// sidebar toolbar menu (without, so the two surfaces don't register duplicate
+/// shortcuts for the same keys).
+struct WorkspaceMenuItems: View {
+    var model: AppModel
+    var showShortcuts: Bool
+
+    var body: some View {
+        let workspaces = model.workspaces
+        ForEach(Array(workspaces.enumerated()), id: \.element.id) { index, workspace in
+            let button = Button {
+                model.switchWorkspace(to: workspace.id)
+            } label: {
+                if workspace.id == model.activeWorkspaceID {
+                    Label(workspace.name, systemImage: "checkmark")
+                } else {
+                    Text(workspace.name)
+                }
+            }
+            if showShortcuts, index < 9,
+               let key = "\(index + 1)".first {
+                button.keyboardShortcut(KeyEquivalent(key), modifiers: [.command, .option])
+            } else {
+                button
+            }
+        }
+        Divider()
+        Button("New Workspace…") { model.showingCreateWorkspace = true }
+        Button("Rename Workspace…") { model.showingRenameWorkspace = true }
+        Button("Delete Workspace", role: .destructive) { model.deleteActiveWorkspace() }
+            .disabled(workspaces.count <= 1)
     }
 }
 

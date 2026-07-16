@@ -216,6 +216,19 @@ own opaque token (the git provider uses a log offset). The host caches it: UI sh
 `loadMoreChildren(of:)` fetches the next page and appends it to the cached children.
 Providers that vend everything at once just return `next: nil`.
 
+### Workspaces
+
+A **workspace** is a named set of root URIs — host-owned, persisted as an app-managed
+library (`workspaces.json` in Application Support; the pre-workspaces single
+`workspace.json` migrates automatically). At least one workspace always exists, and
+exactly one is active. Switching (toolbar menu, or the Workspace menu with ⌘⌥1–9)
+saves nothing and restores everything: tabs, history, focus, and selection reset;
+node caches are kept because `NodeID`s stay valid across workspaces. Mount/unmount
+persists into the active workspace automatically, no matter who initiated it (UI or a
+plugin action). Providers are entirely workspace-unaware.
+
+Seeding is **first-launch-only**: an empty workspace the user made stays empty.
+
 ### The plugin model (option A)
 
 Plugins are **in-process loadable bundles** that link the shared
@@ -393,6 +406,9 @@ committed and builds aren't byte-for-byte reproducible across machines.
   in `Sources/MaximalTree/`, that's a smell — the knowledge belongs in a plugin.
 - **Route through `HostContext`.** Plugins must never reach into host internals; the
   context is the whole contract.
+- **Don't set `navigationTitle` in a canvas.** The window title belongs to the host
+  (workspace name, focused node as subtitle); a canvas that sets its own title
+  hijacks it. Your node's name is already shown by the tab strip and subtitle.
 - `MaximalTreeKit` is built with library evolution on. Keep its public API additive so
   plugins compiled against an older SDK keep loading.
 

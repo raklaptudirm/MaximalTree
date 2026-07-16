@@ -32,7 +32,6 @@ struct DirectoryCanvas: View {
                 }
             }
         }
-        .navigationTitle(host.node(nodeID)?.label ?? "")
     }
 
     @ViewBuilder
@@ -74,7 +73,6 @@ struct FileCanvas: View {
                 ContentUnavailableView("No Preview", systemImage: "doc")
             }
         }
-        .navigationTitle(host.node(nodeID)?.label ?? "")
     }
 }
 

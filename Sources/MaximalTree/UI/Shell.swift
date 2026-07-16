@@ -7,9 +7,12 @@ import MaximalTreeKit
 /// node's `TypeRenderer`. None of them know what a `file.directory` is.
 struct ContentView: View {
     @Environment(AppModel.self) private var model
+    @Environment(HostContext.self) private var host
     @State private var inspectorVisible = true
+    @State private var workspaceNameDraft = ""
 
     var body: some View {
+        @Bindable var model = model
         // Two columns + a real trailing inspector. (A three-column split view makes
         // the *detail* column the flexible one, which handed the inspector all the
         // slack; `.inspector` keeps the canvas flexible and the inspector sized.)
@@ -17,6 +20,14 @@ struct ContentView: View {
             ExplorerSidebar()
                 .navigationSplitViewColumnWidth(min: 180, ideal: 240)
                 .toolbar {
+                    ToolbarItem {
+                        Menu {
+                            WorkspaceMenuItems(model: model, showShortcuts: false)
+                        } label: {
+                            Label(model.activeWorkspaceName, systemImage: "square.stack.3d.up")
+                        }
+                        .help("Switch workspace")
+                    }
                     ToolbarItem {
                         Button {
                             model.addFolder()
@@ -45,7 +56,26 @@ struct ContentView: View {
                 }
             }
         }
-        .navigationTitle("MaximalTree")
+        // The window title belongs to the workspace; the focused node rides in the
+        // subtitle. Plugin canvases must not set navigationTitle (see HACKING.md).
+        .navigationTitle(model.activeWorkspaceName)
+        .navigationSubtitle(host.focusedNode.flatMap { host.node($0)?.label } ?? "")
+        .alert("New Workspace", isPresented: $model.showingCreateWorkspace) {
+            TextField("Name", text: $workspaceNameDraft)
+            Button("Create") { model.createWorkspace(named: workspaceNameDraft) }
+            Button("Cancel", role: .cancel) {}
+        }
+        .alert("Rename Workspace", isPresented: $model.showingRenameWorkspace) {
+            TextField("Name", text: $workspaceNameDraft)
+            Button("Rename") { model.renameActiveWorkspace(to: workspaceNameDraft) }
+            Button("Cancel", role: .cancel) {}
+        }
+        .onChange(of: model.showingCreateWorkspace) { _, showing in
+            if showing { workspaceNameDraft = "" }
+        }
+        .onChange(of: model.showingRenameWorkspace) { _, showing in
+            if showing { workspaceNameDraft = model.activeWorkspaceName }
+        }
         .overlay {
             if model.paletteVisible {
                 ZStack(alignment: .top) {

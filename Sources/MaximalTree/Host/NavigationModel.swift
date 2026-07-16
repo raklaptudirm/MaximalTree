@@ -55,6 +55,13 @@ final class NavigationModel {
 
     func selectTab(_ i: Int) { if tabs.indices.contains(i) { activeIndex = i } }
 
+    /// Back to the launch state: one empty tab. Used when the workspace switches —
+    /// history entries reference nodes from the previous workspace's context.
+    func reset() {
+        tabs = [Tab(history: [], index: -1)]
+        activeIndex = 0
+    }
+
     /// A node was renamed: rewrite it throughout every tab's history.
     func remap(from old: NodeID, to new: NodeID) {
         for i in tabs.indices where tabs[i].history.contains(old) {

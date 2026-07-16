@@ -56,7 +56,6 @@ struct CommitCanvas: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
         }
-        .navigationTitle(node?.label ?? "Commit")
     }
 }
 
@@ -102,7 +101,6 @@ struct GitListCanvas: View {
                 }
             }
         }
-        .navigationTitle(host.node(nodeID)?.label ?? "")
     }
 
     /// A commit row gets an author + relative-date subtitle; other kinds stay plain.
