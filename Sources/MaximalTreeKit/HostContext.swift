@@ -24,6 +24,9 @@ public final class HostContext {
     internal var nodes: [NodeID: Node] = [:]
     internal var childrenByParent: [NodeID: [NodeID]] = [:]
     internal var relatedByNode: [NodeID: [Related]] = [:]
+    /// Cursor for the *next* page of a node's children, when the provider reported
+    /// one. Presence means "there's more to load".
+    internal var childCursors: [NodeID: Cursor] = [:]
 
     /// Set by the host when it constructs the store. Weak to avoid a retain cycle.
     public weak var backend: GraphBackend?
@@ -46,10 +49,18 @@ public final class HostContext {
         return relatedByNode[id] ?? []
     }
 
+    /// Whether the provider reported more children beyond what's cached.
+    public func hasMoreChildren(_ id: NodeID) -> Bool { childCursors[id] != nil }
+
+    /// Fetch the next page of `id`'s children and append it to the cached list.
+    /// No-op when there is no further page or a fetch is already in flight.
+    public func loadMoreChildren(of id: NodeID) { backend?.requestMoreChildren(of: id) }
+
     /// Peek at the caches without triggering a load. For the host/backend, which
     /// needs to ask "already fetched?" without kicking off another request.
     public func cachedChildren(of id: NodeID) -> [NodeID]? { childrenByParent[id] }
     public func cachedRelated(of id: NodeID) -> [Related]? { relatedByNode[id] }
+    public func cachedChildCursor(of id: NodeID) -> Cursor? { childCursors[id] }
 
     // MARK: Commands (routed to the host)
 
@@ -67,6 +78,12 @@ public final class HostContext {
     /// Whether the owning provider can perform `mutation` right now (for enabling UI).
     public func canApply(_ mutation: GraphMutation) -> Bool { backend?.canApply(mutation) ?? false }
 
+    /// Report changes that happened outside the mutation path — an action created a
+    /// file, an editor saved bytes, a provider observed an external edit. The host
+    /// updates its caches and navigation exactly as it does for `apply(_:)` results.
+    /// This is how a plugin keeps the host truthful about side effects it caused.
+    public func notify(_ changes: [NodeChange]) { backend?.notify(changes) }
+
     // MARK: Backend-facing mutation (host only)
 
     public func _ingest(_ node: Node) { nodes[node.id] = node }
@@ -83,6 +100,7 @@ public final class HostContext {
     public func _remap(from old: NodeID, to new: NodeID) {
         if let node = nodes.removeValue(forKey: old) { nodes[new] = node }
         if let kids = childrenByParent.removeValue(forKey: old) { childrenByParent[new] = kids }
+        if let cursor = childCursors.removeValue(forKey: old) { childCursors[new] = cursor }
         for (parent, kids) in childrenByParent where kids.contains(old) {
             childrenByParent[parent] = kids.map { $0 == old ? new : $0 }
         }
@@ -97,6 +115,7 @@ public final class HostContext {
         nodes[id] = nil
         childrenByParent[id] = nil
         relatedByNode[id] = nil
+        childCursors[id] = nil
         for (parent, kids) in childrenByParent where kids.contains(id) {
             childrenByParent[parent] = kids.filter { $0 != id }
         }
@@ -105,8 +124,14 @@ public final class HostContext {
         selection = selection.filter { $0 != id }
     }
 
-    /// Forget a node's children so they're re-fetched on next access.
-    public func _invalidateChildren(of id: NodeID) { childrenByParent[id] = nil }
+    /// Forget a node's children so they're re-fetched on next access. Clears the
+    /// pagination cursor too — the refetch restarts from the first page.
+    public func _invalidateChildren(of id: NodeID) {
+        childrenByParent[id] = nil
+        childCursors[id] = nil
+    }
+
+    public func _setChildCursor(_ cursor: Cursor?, of id: NodeID) { childCursors[id] = cursor }
 }
 
 /// Implemented by the host's graph store. Everything the plugin API can trigger
@@ -120,6 +145,8 @@ public protocol GraphBackend: AnyObject {
     func openURI(_ uri: String)
     func apply(_ mutation: GraphMutation)
     func canApply(_ mutation: GraphMutation) -> Bool
+    func notify(_ changes: [NodeChange])
     func requestChildren(of id: NodeID)
+    func requestMoreChildren(of id: NodeID)
     func requestRelated(of id: NodeID)
 }

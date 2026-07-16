@@ -19,6 +19,9 @@ public enum NodeChange: Sendable {
     case removed(NodeID)
     /// A node's child list changed; host should re-fetch its children.
     case childrenChanged(NodeID)
+    /// A node changed in place (content/attributes) without changing identity —
+    /// e.g. an editor saved its bytes. Host re-fetches the node record.
+    case modified(NodeID)
 }
 
 /// A provider that can be written to. Separate from `NodeProvider` so read-only

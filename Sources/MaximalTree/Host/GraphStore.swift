@@ -134,6 +134,10 @@ final class GraphStore: GraphBackend {
         }
     }
 
+    /// Plugin-initiated change reports (actions, content saves) flow into the same
+    /// funnel as mutation results — one code path keeps the cache truthful.
+    func notify(_ changes: [NodeChange]) { process(changes) }
+
     /// Apply reported changes to caches + navigation, then re-sync focus to whatever
     /// the active tab now points at. This is the single funnel that future external
     /// change-feed events will also flow through.
@@ -150,6 +154,8 @@ final class GraphStore: GraphBackend {
                 context._remove(id)
             case .childrenChanged(let parent):
                 context._invalidateChildren(of: parent)
+            case .modified(let id):
+                ingestNode(id)          // same identity; refresh the record in place
             @unknown default:
                 break
             }
@@ -194,6 +200,24 @@ final class GraphStore: GraphBackend {
             let page = await p.children(of: id, page: nil)
             for n in page.items { context._ingest(n) }
             context._setChildren(page.items.map(\.id), of: id)
+            context._setChildCursor(page.next, of: id)
+            childrenInFlight.remove(id)
+        }
+    }
+
+    /// Fetch the next page of children and append. Only runs when the provider
+    /// reported a cursor on the previous page.
+    func requestMoreChildren(of id: NodeID) {
+        guard let cursor = context.cachedChildCursor(of: id),
+              !childrenInFlight.contains(id),
+              let p = provider(for: id) else { return }
+        childrenInFlight.insert(id)
+        Task { @MainActor in
+            let page = await p.children(of: id, page: cursor)
+            for n in page.items { context._ingest(n) }
+            let existing = context.cachedChildren(of: id) ?? []
+            context._setChildren(existing + page.items.map(\.id), of: id)
+            context._setChildCursor(page.next, of: id)
             childrenInFlight.remove(id)
         }
     }

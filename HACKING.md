@@ -202,6 +202,20 @@ node's `NodeID`. Call `HostContext.apply(_:)` to trigger one, `canApply(_:)` to 
 tree structure. Content is type-specific manipulation a plugin does directly via its
 canvas (see `TextEditorPlugin` writing files). Keep the two distinct.
 
+**Side effects outside the mutation path** (an action created a file, an editor saved
+bytes) must be reported with `HostContext.notify(_ changes: [NodeChange])` so the host's
+caches stay truthful — same funnel, plugin-initiated. `.childrenChanged` refetches a
+child list, `.modified` refetches one node record in place. The FileSystem plugin's
+"New Folder" action and the TextEditor's save are the reference uses.
+
+### Pagination
+
+`children(of:page:)` may return `Page(items:, next: Cursor(...))`. The cursor is your
+own opaque token (the git provider uses a log offset). The host caches it: UI shows a
+"More…" affordance when `HostContext.hasMoreChildren(id)`, and
+`loadMoreChildren(of:)` fetches the next page and appends it to the cached children.
+Providers that vend everything at once just return `next: nil`.
+
 ### The plugin model (option A)
 
 Plugins are **in-process loadable bundles** that link the shared
@@ -389,11 +403,11 @@ committed and builds aren't byte-for-byte reproducible across machines.
 Working today: navigation (tabs + history), cross-plugin rendering, and structural
 writes (rename + delete-to-Trash). Known gaps, roughly in order:
 
-- **More mutations** — `.move` (needs tree drag-and-drop) and `.create`; content-write
-  isn't modelled beyond direct plugin file writes.
-- **External change feed** — the host reacts to changes *it* makes, but nothing watches
-  for edits by other apps yet. `NodeChange` is designed to carry these when a provider
-  change-stream (FSEvents/`DispatchSource`) is added.
+- **More mutations** — `.move` (needs tree drag-and-drop) and `.create` as first-class
+  vocabulary (creation currently works via actions + `notify`).
+- **External change feed** — plugins report their *own* side effects via `notify`, but
+  nothing watches for edits by other apps yet. A provider change-stream
+  (FSEvents/`DispatchSource`) would feed the same `NodeChange` funnel.
 - **Dynamic plugins** — loading is launch-time from the bundled `PlugIns/`. No external
   user plugin directory, enable/disable, or revocable registrations yet.
-- **Smaller**: context-menu action surface, richer inspector composition, undo.
+- **Smaller**: richer inspector composition, undo, multi-select in the directory grid.

@@ -154,6 +154,9 @@ struct TextEditorCanvas: View {
         do {
             try text.write(to: url, atomically: true, encoding: .utf8)
             savedText = text
+            // Tell the host we changed the file in place, so the FileSystem plugin's
+            // inspector (size, modified date) doesn't go stale.
+            host.notify([.modified(nodeID)])
         } catch {
             loadError = error.localizedDescription
         }

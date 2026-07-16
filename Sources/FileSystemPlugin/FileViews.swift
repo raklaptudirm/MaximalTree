@@ -1,9 +1,11 @@
 import SwiftUI
+import AppKit
 import Quartz          // QLPreviewView
 import MaximalTreeKit
 
-/// Canvas for a directory: an icon grid of its children. Clicking focuses a child,
-/// which re-drives the whole shell through the renderer lookup.
+/// Canvas for a directory: a Finder-like icon grid. Single click selects (driving
+/// the inspector and actions), double click opens — matching what fingers already
+/// expect from Finder.
 struct DirectoryCanvas: View {
     let nodeID: NodeID
     @Environment(HostContext.self) private var host
@@ -11,29 +13,49 @@ struct DirectoryCanvas: View {
     private let columns = [GridItem(.adaptive(minimum: 96, maximum: 140), spacing: 16)]
 
     var body: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 16) {
-                ForEach(host.children(of: nodeID), id: \.self) { cid in
-                    let node = host.node(cid)
-                    Button {
-                        host.open(cid)
-                    } label: {
-                        VStack(spacing: 6) {
-                            NodeIconView(node?.icon)
-                                .font(.system(size: 34))
-                            Text(node?.label ?? cid.uri)
-                                .font(.caption)
-                                .lineLimit(2)
-                                .multilineTextAlignment(.center)
+        let children = host.children(of: nodeID)
+        Group {
+            if children.isEmpty {
+                if host.cachedChildren(of: nodeID) == nil {
+                    ProgressView()                       // still loading
+                } else {
+                    ContentUnavailableView("Empty Folder", systemImage: "folder")
+                }
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 16) {
+                        ForEach(children, id: \.self) { cid in
+                            item(cid)
                         }
-                        .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.plain)
+                    .padding()
                 }
             }
-            .padding()
         }
         .navigationTitle(host.node(nodeID)?.label ?? "")
+    }
+
+    @ViewBuilder
+    private func item(_ cid: NodeID) -> some View {
+        let node = host.node(cid)
+        let selected = host.selection.contains(cid)
+        VStack(spacing: 6) {
+            NodeIconView(node?.icon)
+                .font(.system(size: 34))
+            Text(node?.label ?? cid.uri)
+                .font(.caption)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(selected ? Color.accentColor.opacity(0.18) : .clear,
+                    in: RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
+        // Double-tap attached first so it wins; the single-tap select that fires on
+        // a double's first click is harmless (Finder selects then opens, too).
+        .onTapGesture(count: 2) { host.open(cid) }
+        .onTapGesture { host.select([cid]) }
     }
 }
 
@@ -94,6 +116,24 @@ struct FileInspector: View {
                     .onSubmit(commitRename)
                 LabeledContent("Type", value: node?.type.raw ?? "—")
                 if let uti = node?.uti { LabeledContent("Content Type", value: uti) }
+                if let url = nodeID.fileURL {
+                    LabeledContent("Location") {
+                        HStack(spacing: 4) {
+                            Text(url.deletingLastPathComponent().path)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .foregroundStyle(.secondary)
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(url.path, forType: .string)
+                            } label: {
+                                Image(systemName: "doc.on.doc")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Copy full path")
+                        }
+                    }
+                }
             }
             if let size = sizeString(node) {
                 Section("File") {

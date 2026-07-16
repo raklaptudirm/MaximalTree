@@ -51,7 +51,7 @@ import Foundation
     @Test func logReturnsCommits() throws {
         let repo = try makeTempRepo()
         defer { try? FileManager.default.removeItem(atPath: repo) }
-        let commits = GitProvider.logCommits(repo)
+        let commits = GitProvider.logCommits(repo).items
         #expect(commits.count >= 1)
         let first = try #require(commits.first)
         #expect(first.type == TypeID("git.commit"))
@@ -99,7 +99,7 @@ import Foundation
     @Test func changedFilesForCommit() throws {
         let repo = try makeTempRepo()
         defer { try? FileManager.default.removeItem(atPath: repo) }
-        let sha = try #require(GitProvider.logCommits(repo).first?.attributes["sha"])
+        let sha = try #require(GitProvider.logCommits(repo).items.first?.attributes["sha"])
         guard case .string(let shaValue) = sha else { Issue.record("no sha"); return }
         let files = GitProvider.changedFiles(repo, sha: shaValue)
         #expect(files.contains { $0.label == "a.txt" })

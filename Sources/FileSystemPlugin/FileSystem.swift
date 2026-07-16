@@ -231,6 +231,35 @@ final class FileSystemPlugin: NSObject, Plugin {
             }
         ))
 
+        // Creation isn't in the GraphMutation vocabulary yet (needs a "what kind of
+        // node?" story), but an action + notify() covers the common case cleanly:
+        // do the IO, then tell the host what changed.
+        registry.register(action: Action(
+            id: "file.newFolder",
+            title: "New Folder",
+            systemImage: "folder.badge.plus",
+            appliesTo: .custom { ctx in
+                ctx.selectedNodes.count == 1 && ctx.selectedNodes[0].type == directoryType
+            },
+            handler: { ctx in
+                guard let dir = ctx.selection.first, let base = dir.fileURL else { return }
+                let fm = FileManager.default
+                var name = "untitled folder"
+                var counter = 2
+                while fm.fileExists(atPath: base.appendingPathComponent(name).path) {
+                    name = "untitled folder \(counter)"
+                    counter += 1
+                }
+                do {
+                    try fm.createDirectory(at: base.appendingPathComponent(name),
+                                           withIntermediateDirectories: false)
+                    ctx.host.notify([.childrenChanged(dir)])
+                } catch {
+                    NSLog("[FileSystemPlugin] new folder failed: \(error.localizedDescription)")
+                }
+            }
+        ))
+
         registry.register(action: Action(
             id: "file.trash",
             title: "Move to Trash",

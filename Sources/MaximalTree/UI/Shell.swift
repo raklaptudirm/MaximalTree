@@ -171,6 +171,16 @@ struct NodeRow: View {
                     ForEach(host.children(of: nodeID), id: \.self) { child in
                         NodeRow(nodeID: child)
                     }
+                    if host.hasMoreChildren(nodeID) {
+                        Button {
+                            host.loadMoreChildren(of: nodeID)
+                        } label: {
+                            Label("More…", systemImage: "ellipsis")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 } label: {
                     rowLabel(node)
                 }
@@ -315,8 +325,14 @@ struct InspectorPane: View {
     @Environment(HostContext.self) private var host
     @Environment(AppModel.self) private var model
 
+    /// A single selected node wins over the focused one — selecting an item inside a
+    /// canvas (Finder-style click) should inspect that item, not its container.
+    private var subject: NodeID? {
+        host.selection.count == 1 ? host.selection[0] : host.focusedNode
+    }
+
     var body: some View {
-        if let id = host.focusedNode, let node = host.node(id) {
+        if let id = subject, let node = host.node(id) {
             let sections = model.store?.inspectors(for: node) ?? []
             let actions = model.applicableActions()
             if sections.isEmpty && actions.isEmpty {

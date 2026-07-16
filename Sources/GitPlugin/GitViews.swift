@@ -77,14 +77,16 @@ struct GitListCanvas: View {
                     if !children.isEmpty {
                         Section(host.node(nodeID)?.label ?? "") {
                             ForEach(children, id: \.self) { cid in
+                                row(cid)
+                            }
+                            // Provider reported more history (Page.next) — the host
+                            // appends each page to the cached child list.
+                            if host.hasMoreChildren(nodeID) {
                                 Button {
-                                    host.open(cid)
+                                    host.loadMoreChildren(of: nodeID)
                                 } label: {
-                                    HStack(spacing: 8) {
-                                        NodeIconView(host.node(cid)?.icon).frame(width: 16)
-                                        Text(host.node(cid)?.label ?? cid.uri).lineLimit(1)
-                                        Spacer()
-                                    }
+                                    Label("Load More…", systemImage: "ellipsis.circle")
+                                        .foregroundStyle(.secondary)
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -101,6 +103,38 @@ struct GitListCanvas: View {
             }
         }
         .navigationTitle(host.node(nodeID)?.label ?? "")
+    }
+
+    /// A commit row gets an author + relative-date subtitle; other kinds stay plain.
+    @ViewBuilder
+    private func row(_ cid: NodeID) -> some View {
+        let node = host.node(cid)
+        Button {
+            host.open(cid)
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                NodeIconView(node?.icon).frame(width: 16)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(node?.label ?? cid.uri).lineLimit(1)
+                    if let subtitle = commitSubtitle(node) {
+                        Text(subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer()
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func commitSubtitle(_ node: Node?) -> String? {
+        guard let author = gitString(node, "author") else { return nil }
+        if case .date(let date)? = node?.attributes["date"] {
+            return "\(author) — \(date.formatted(.relative(presentation: .named)))"
+        }
+        return author
     }
 }
 

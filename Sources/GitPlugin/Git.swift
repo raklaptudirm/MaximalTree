@@ -102,7 +102,7 @@ struct GitProvider: NodeProvider {
 
     func children(of id: NodeID, page cursor: Cursor?) async -> Page<Node> {
         guard let ref = GitRef(uri: id.uri) else { return Page(items: []) }
-        var items = await Task.detached(priority: .userInitiated) { Self.children(ref) }.value.items
+        let page = await Task.detached(priority: .userInitiated) { Self.children(ref, cursor: cursor) }.value
 
         // A repo isn't just git metadata — it's a working tree. Ask whoever owns
         // file:// for the directory's children rather than re-listing it here, so the
@@ -111,9 +111,10 @@ struct GitProvider: NodeProvider {
         // cohesive: Branches, Commits, and the actual files, in one place.
         if ref.kind == .repo {
             let workingTree = URL(fileURLWithPath: ref.repo).absoluteString
-            items += await broker.children(of: workingTree, page: nil).items
+            let files = await broker.children(of: workingTree, page: nil).items
+            return Page(items: page.items + files, next: page.next)
         }
-        return Page(items: items)
+        return page
     }
 
     func related(to id: NodeID) async -> [Related] {
@@ -161,14 +162,15 @@ struct GitProvider: NodeProvider {
         }
     }
 
-    static func children(_ ref: GitRef) -> Page<Node> {
+    static func children(_ ref: GitRef, cursor: Cursor? = nil) -> Page<Node> {
         switch ref.kind {
         case .repo:
             let nodes = [GitRef(repo: ref.repo, kind: .branches),
                          GitRef(repo: ref.repo, kind: .commits)].compactMap(makeNode)
             return Page(items: nodes)
         case .commits:
-            return Page(items: logCommits(ref.repo))
+            // The cursor is our own token: the offset into the log.
+            return logCommits(ref.repo, skip: cursor.flatMap { Int($0.token) } ?? 0)
         case .branches:
             return Page(items: branches(ref.repo))
         case .commit:
@@ -180,11 +182,11 @@ struct GitProvider: NodeProvider {
 
     // MARK: git queries
 
-    static func logCommits(_ repo: String, limit: Int = 50) -> [Node] {
-        guard let out = Git.run(repo, ["log", "-n", "\(limit)",
-                                       "--format=%H%x1f%an%x1f%aI%x1f%s%x1f%P"]) else { return [] }
+    static func logCommits(_ repo: String, skip: Int = 0, limit: Int = 50) -> Page<Node> {
+        guard let out = Git.run(repo, ["log", "--skip", "\(skip)", "-n", "\(limit)",
+                                       "--format=%H%x1f%an%x1f%aI%x1f%s%x1f%P"]) else { return Page(items: []) }
         let iso = ISO8601DateFormatter()
-        return out.split(separator: "\n").compactMap { line -> Node? in
+        let nodes = out.split(separator: "\n").compactMap { line -> Node? in
             let f = line.components(separatedBy: "\u{1f}")
             guard f.count >= 4 else { return nil }
             let sha = f[0]
@@ -200,6 +202,10 @@ struct GitProvider: NodeProvider {
                         icon: NodeIcon("circle.fill", tint: .blue),
                         attributes: attrs, hasChildren: true)
         }
+        // A full page means there may be more history; a short one means we hit the
+        // root. (A history length that's an exact multiple costs one empty fetch.)
+        let next = nodes.count == limit ? Cursor("\(skip + limit)") : nil
+        return Page(items: nodes, next: next)
     }
 
     static func branches(_ repo: String) -> [Node] {
