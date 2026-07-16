@@ -46,8 +46,10 @@ struct TextEditorCanvas: View {
     @State private var language: CodeLanguage = .default
     @State private var editorState = SourceEditorState()
     @State private var loadError: String?
-    /// Gates editor construction until `text` holds the file's contents — see below.
-    @State private var loaded = false
+    /// Which node `text` currently holds. Gating on this rather than a `loaded` flag
+    /// is what keeps the editor from ever being built with another file's contents —
+    /// see the note in `body`.
+    @State private var loadedNode: NodeID?
 
     private var dirty: Bool { text != savedText }
 
@@ -56,15 +58,27 @@ struct TextEditorCanvas: View {
             header
             Divider()
 
-            if let loadError {
+            // Order matters: until `text` belongs to *this* node, show neither the
+            // editor nor a stale error from the previous file.
+            if loadedNode != nodeID {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let loadError {
                 ContentUnavailableView("Can't Open", systemImage: "exclamationmark.triangle",
                                        description: Text(loadError))
-            } else if loaded {
+            } else {
                 // SourceEditor reads the text binding exactly once, in
                 // makeNSViewController — updateNSViewController never pushes external
-                // changes in (so it can't clobber typing). So the editor must not be
-                // built until `text` is populated, and it needs a per-file identity or
-                // switching files would reuse the controller and show stale contents.
+                // changes in (so it can't clobber typing). So it must never be built
+                // while `text` still holds another file.
+                //
+                // Gating on `loadedNode == nodeID` rather than a Bool is deliberate: on
+                // the render right after a click, nodeID is already the new file while
+                // text is still the old one. A `loaded` flag is still true at that
+                // instant, so the editor got built with the previous file's contents —
+                // and because the task's `loaded = false; load(); loaded = true` is
+                // synchronous, SwiftUI saw no net change and never tore it down, so the
+                // stale controller stuck. Deriving the gate from identity can't race.
                 SourceEditor(
                     $text,
                     language: language,
@@ -84,15 +98,12 @@ struct TextEditorCanvas: View {
                 // header. The host clips the canvas pane (so it can't reach the tab
                 // strip); keeping it off our header is this plugin's job.
                 .clipped()
-            } else {
-                ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .task(id: nodeID) {
-            loaded = false
+            loadedNode = nil     // stop showing the previous file immediately
             load()
-            loaded = loadError == nil
+            loadedNode = nodeID  // set either way: this node is resolved, error or not
         }
         .navigationTitle(host.node(nodeID)?.label ?? "")
     }
