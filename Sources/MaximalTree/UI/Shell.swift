@@ -76,8 +76,21 @@ struct ExplorerSidebar: View {
                 NodeRow(nodeID: root)
             }
         }
-        .listStyle(.sidebar)
+        // .sidebar enforces roomy source-list row metrics that neither
+        // defaultMinListRowHeight (only a floor) nor row insets can shrink — the row
+        // height simply isn't content-driven. .plain lets rows size to their content,
+        // which is what actually closes the gaps.
+        .listStyle(.plain)
         .environment(\.defaultMinListRowHeight, 18)
+        // …but .plain also paints an opaque content background, so the sidebar stopped
+        // reading as a sidebar. Drop that and put the real vibrant material back, which
+        // buys the density of .plain and the look of .sidebar.
+        .scrollContentBackground(.hidden)
+        // ignoresSafeArea so the material runs *under* the toolbar. Without it the
+        // background stops at the safe area and the toolbar strip reads as a bare
+        // transparent bar behind the buttons; the scroll-edge gradient needs material
+        // beneath it to fade into.
+        .background(SidebarMaterial().ignoresSafeArea())
         // List-level rather than per-row: SwiftUI hands us exactly the rows the menu
         // applies to, and gives the native semantics for free (right-clicking outside
         // the selection targets just that row; inside it targets the whole selection).
@@ -124,6 +137,21 @@ struct ExplorerSidebar: View {
     }
 }
 
+/// The genuine macOS sidebar vibrancy. `.listStyle(.sidebar)` supplies this for free
+/// but forces roomy rows with it; since we need `.plain` for density, we paint the
+/// material ourselves.
+private struct SidebarMaterial: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .sidebar
+        view.blendingMode = .behindWindow
+        view.state = .followsWindowActiveState
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
+}
+
 /// One recursive sidebar entry. Containment only — walks `children(of:)`.
 struct NodeRow: View {
     let nodeID: NodeID
@@ -147,12 +175,18 @@ struct NodeRow: View {
             }
         }
         .tag(nodeID)                      // what List(selection:) selects
+        // Vertical insets zeroed for density; horizontal kept so the root disclosure
+        // triangle isn't jammed against the edge. (DisclosureGroup adds the hierarchy
+        // indent on top of this, so nesting still reads.)
+        .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
+        .listRowSeparator(.hidden)        // .plain draws separators; a tree wants none
     }
 
     @ViewBuilder
     private func rowLabel(_ node: Node?) -> some View {
-        // No manual highlight or tap handling: List(selection:) draws the selection
-        // and hit-tests the whole row for us.
+        // Items stay their normal size — it's the row gap we're closing, not the
+        // content. No manual highlight or tap handling either: List(selection:)
+        // draws the selection and hit-tests the whole row.
         HStack(spacing: 5) {
             // Icon and label come from the owning plugin — the host knows nothing
             // about what kind of thing this node is.
@@ -160,7 +194,6 @@ struct NodeRow: View {
             Text(node?.label ?? nodeID.uri)
                 .lineLimit(1)
         }
-        .padding(.vertical, 1)
     }
 }
 
