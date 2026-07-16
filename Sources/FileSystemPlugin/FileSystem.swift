@@ -152,15 +152,25 @@ extension FileSystemProvider: MutatingNodeProvider {
             return changes
 
         case .delete(let ids):
+            // Trash items independently: a failure mid-batch must not discard the
+            // changes for files that ARE already in the Trash, or the host cache
+            // keeps showing them. Throw only if nothing succeeded.
             var changes: [NodeChange] = []
+            var firstError: Error?
             for id in ids {
                 guard let url = id.fileURL else { continue }
-                try fm.trashItem(at: url, resultingItemURL: nil)   // reversible: to Trash
-                changes.append(.removed(id))
-                if let parent = NodeID(fileURL: url.deletingLastPathComponent()) {
-                    changes.append(.childrenChanged(parent))
+                do {
+                    try fm.trashItem(at: url, resultingItemURL: nil)   // reversible
+                    changes.append(.removed(id))
+                    if let parent = NodeID(fileURL: url.deletingLastPathComponent()) {
+                        changes.append(.childrenChanged(parent))
+                    }
+                } catch {
+                    NSLog("[FileSystemPlugin] trash failed for \(url.path): \(error.localizedDescription)")
+                    firstError = firstError ?? error
                 }
             }
+            if changes.isEmpty, let firstError { throw firstError }
             return changes
 
         @unknown default:

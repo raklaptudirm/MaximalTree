@@ -34,6 +34,11 @@ final class GraphStore: GraphBackend {
     private var childrenInFlight: Set<NodeID> = []
     private var relatedInFlight: Set<NodeID> = []
 
+    /// Fired after the root set changes (mount/unmount) so the owner can persist the
+    /// workspace. Lives here because mounting isn't only a UI affordance — plugins
+    /// mount too (e.g. "Open as Git Repository"), and those must persist as well.
+    var onRootsChanged: (() -> Void)?
+
     init(context: HostContext, registry: Registry, nav: NavigationModel) {
         self.context = context
         self.registry = registry
@@ -93,6 +98,17 @@ final class GraphStore: GraphBackend {
         roots.append(id)
         context._setRoots(roots)
         ingestNode(id)
+        onRootsChanged?()
+    }
+
+    /// Host-only: take a root out of the sidebar. The node itself is untouched —
+    /// this is the inverse of `mount`, not a delete.
+    func unmount(_ id: NodeID) {
+        var roots = context.roots
+        guard roots.contains(id) else { return }
+        roots.removeAll { $0 == id }
+        context._setRoots(roots)
+        onRootsChanged?()
     }
 
     func openURI(_ uri: String) {

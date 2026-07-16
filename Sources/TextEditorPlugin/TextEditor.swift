@@ -79,6 +79,11 @@ struct TextEditorCanvas: View {
                     state: $editorState
                 )
                 .id(nodeID)
+                // The editor is AppKit-backed and won't honour its SwiftUI frame on
+                // its own — scrolling paints the line-number gutter up over our own
+                // header. The host clips the canvas pane (so it can't reach the tab
+                // strip); keeping it off our header is this plugin's job.
+                .clipped()
             } else {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

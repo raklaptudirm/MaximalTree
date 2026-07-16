@@ -30,7 +30,12 @@ final class PluginHost {
         }
         NSLog("[MaximalTree] scanning for plugins in \(pluginsURL.path)")
 
-        for url in contents where url.pathExtension == "bundle" {
+        // Sorted so load order — and therefore any equal-priority renderer tie —
+        // is deterministic across launches, not directory-enumeration order.
+        let bundles = contents
+            .filter { $0.pathExtension == "bundle" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        for url in bundles {
             guard let bundle = Bundle(url: url) else {
                 NSLog("[MaximalTree] \(url.lastPathComponent): not a readable bundle")
                 continue

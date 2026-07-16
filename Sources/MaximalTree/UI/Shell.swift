@@ -98,6 +98,10 @@ struct ExplorerSidebar: View {
             let targets = Array(items)
             if targets.count == 1 {
                 Button("Open in New Tab") { model.openInNewTab(targets[0]) }
+                if host.roots.contains(targets[0]) {
+                    // Inverse of mounting — removes the sidebar entry, not the node.
+                    Button("Remove from Sidebar") { model.removeRoot(targets[0]) }
+                }
                 Divider()
             }
             let actions = model.applicableActions(for: targets)
@@ -297,6 +301,11 @@ struct CanvasPane: View {
         // that expands, so it sizes to content and centres everything — which looks
         // like the tab strip claiming half the pane.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // A canvas is arbitrary plugin SwiftUI, and AppKit-backed ones don't respect
+        // the SwiftUI frame on their own (a plugin's scroll view happily painted its
+        // line-number gutter up over the tab strip). Containment is the host's job:
+        // no plugin gets to draw on host chrome.
+        .clipped()
     }
 }
 

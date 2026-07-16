@@ -65,6 +65,11 @@ final class AppModel {
         if !underTest { pluginHost.loadAll() }
         let store = GraphStore(context: host, registry: pluginHost.registry, nav: navigation)
         self.store = store
+        // Persist on every root-set change, no matter who mounted (UI or plugin).
+        store.onRootsChanged = { [weak self] in
+            guard let self else { return }
+            self.workspaceStore.save(roots: self.host.roots)
+        }
 
         let providers = pluginHost.registry.providers
         let roots = workspaceStore.resolvedRoots(using: providers) {
@@ -73,7 +78,8 @@ final class AppModel {
         store.setRoots(roots)
     }
 
-    /// Prompt for a folder and mount it as a new root, then persist the workspace.
+    /// Prompt for a folder and mount it as a new root. (Persistence happens in the
+    /// store's onRootsChanged, same as any plugin-initiated mount.)
     func addFolder() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -84,6 +90,8 @@ final class AppModel {
         // Pass the raw file URL; the FileSystem provider owns `file:` and canonicalizes
         // it on resolve. The host stays ignorant of what a path is.
         store?.mount(url.absoluteString)
-        workspaceStore.save(roots: host.roots)
     }
+
+    /// Remove a root from the sidebar (the node itself is untouched).
+    func removeRoot(_ id: NodeID) { store?.unmount(id) }
 }

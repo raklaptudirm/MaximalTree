@@ -20,14 +20,19 @@ final class WorkspaceStore {
     private let fileURL: URL
     private(set) var workspace: Workspace
 
-    init() {
-        let dir = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MaximalTree", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        self.fileURL = dir.appendingPathComponent("workspace.json")
+    /// - Parameter fileURL: Overridable for tests; defaults to Application Support.
+    init(fileURL: URL? = nil) {
+        if let fileURL {
+            self.fileURL = fileURL
+        } else {
+            let dir = FileManager.default
+                .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("MaximalTree", isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            self.fileURL = dir.appendingPathComponent("workspace.json")
+        }
 
-        if let data = try? Data(contentsOf: fileURL),
+        if let data = try? Data(contentsOf: self.fileURL),
            let ws = try? JSONDecoder().decode(Workspace.self, from: data) {
             self.workspace = ws
         } else {
