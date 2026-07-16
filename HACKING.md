@@ -58,7 +58,8 @@ Sources/
     FileSystem.swift            #   provider, mutations, principal class, actions
     FileViews.swift             #   canvas (Quick Look) + inspector (editable)
   TextEditorPlugin/             # reference cross-plugin renderer (loadable bundle)
-    TextEditor.swift            #   high-priority text canvas over filesystem files
+    TextEditor.swift            #   CodeEditSourceEditor canvas over filesystem files
+Vendor/SwiftLintPlugin/         # stub overriding a dependency's build-tool plugin
   GitPlugin/                    # reference non-file provider (loadable bundle)
     Git.swift                   #   git:// URI model, git CLI, provider, mount action
     GitViews.swift              #   commit / list canvases + inspector
@@ -86,15 +87,33 @@ xcodegen generate
 # Build
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
   xcodebuild -project MaximalTree.xcodeproj -scheme MaximalTree \
-  -destination 'platform=macOS' build
+  -destination 'platform=macOS' -skipPackagePluginValidation build
 
 # Test
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
   xcodebuild -project MaximalTree.xcodeproj -scheme MaximalTree \
-  -destination 'platform=macOS' test
+  -destination 'platform=macOS' -skipPackagePluginValidation test
 ```
 
 Or just open `MaximalTree.xcodeproj` in Xcode and ⌘R / ⌘U.
+
+> `-skipPackagePluginValidation` is needed because a dependency ships a build-tool
+> plugin, and Xcode otherwise demands interactive "Trust & Enable" approval that a CLI
+> build can't answer. See [Vendored overrides](#vendored-overrides).
+
+### When the app launches but does nothing
+
+If the window appears but the sidebar is empty and the console shows no
+`[MaximalTree] scanning for plugins…` line, SwiftUI **state restoration** is wedged.
+The restoration identifier is derived from the *full generic type* of the view tree, so
+changing that tree (adding an `.environment`/`.task` modifier, say) can leave AppKit
+restoring a window without ever mounting a live `ContentView` — so `.task` never fires
+and no plugin ever loads. Symptom: a visible window, an idle main thread, a tiny memory
+footprint, and total log silence. Fix:
+
+```sh
+rm -rf ~/Library/Saved\ Application\ State/com.maximaltree.app.savedState
+```
 
 ---
 
@@ -334,6 +353,23 @@ Run `xcodegen generate` and build. Watch the console for
 >   plugin means relaunching the host.
 
 ---
+
+## Vendored overrides
+
+`Vendor/SwiftLintPlugin` is a **stub that deliberately overrides a transitive
+dependency**. CodeEditSourceEditor attaches a SwiftLint build-tool plugin to its own
+target, so merely depending on it makes SwiftLint run over *their* sources during *our*
+build — and its pinned binary can't load `sourcekitd` on current toolchains, failing the
+build outright. A local package overrides a remote one of the same identity, so the stub
+satisfies the plugin reference and emits no build commands.
+
+We don't want a dependency's linter in our build regardless, but be aware it's there: if
+CodeEditSourceEditor ever drops the plugin, delete `Vendor/SwiftLintPlugin` and its
+`packages:` entry.
+
+Note that dependency versions are pinned only by `project.yml` constraints —
+`Package.resolved` lives inside the generated (gitignored) `.xcodeproj`, so it isn't
+committed and builds aren't byte-for-byte reproducible across machines.
 
 ## Conventions
 

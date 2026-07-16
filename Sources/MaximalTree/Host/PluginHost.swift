@@ -16,13 +16,25 @@ final class PluginHost {
     /// Names of bundles that loaded successfully — surfaced for diagnostics.
     private(set) var loaded: [String] = []
 
+    /// Every exit path logs. Silence here is indistinguishable from "never ran", which
+    /// is exactly the ambiguity that makes a non-loading plugin painful to diagnose.
     func loadAll() {
-        guard let pluginsURL = Bundle.main.builtInPlugInsURL,
-              let contents = try? FileManager.default.contentsOfDirectory(
-                at: pluginsURL, includingPropertiesForKeys: nil) else { return }
+        guard let pluginsURL = Bundle.main.builtInPlugInsURL else {
+            NSLog("[MaximalTree] no PlugIns directory in the app bundle")
+            return
+        }
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: pluginsURL, includingPropertiesForKeys: nil) else {
+            NSLog("[MaximalTree] couldn't read PlugIns at \(pluginsURL.path)")
+            return
+        }
+        NSLog("[MaximalTree] scanning for plugins in \(pluginsURL.path)")
 
         for url in contents where url.pathExtension == "bundle" {
-            guard let bundle = Bundle(url: url) else { continue }
+            guard let bundle = Bundle(url: url) else {
+                NSLog("[MaximalTree] \(url.lastPathComponent): not a readable bundle")
+                continue
+            }
             guard bundle.load() else {
                 NSLog("[MaximalTree] failed to load \(url.lastPathComponent)")
                 continue
@@ -37,6 +49,8 @@ final class PluginHost {
             loaded.append(url.lastPathComponent)
             NSLog("[MaximalTree] loaded plugin \(url.lastPathComponent)")
         }
+
+        NSLog("[MaximalTree] loaded \(loaded.count) plugin(s): \(loaded.joined(separator: ", "))")
 
         // Every provider is now registered — publish them to the broker plugins were
         // handed during registration, so cross-plugin lookups can resolve.

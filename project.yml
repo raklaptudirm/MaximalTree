@@ -8,6 +8,21 @@ options:
 
 # Local dev: ad-hoc sign so the app + hosted tests launch without a team/identity.
 # Distribution signing (hardened runtime, notarization) is layered on later.
+# A plugin bringing its own third-party dependencies — the source editor and its
+# tree-sitter grammars. CodeEditSourceEditor pins CodeEditLanguages to exactly
+# 0.1.20, so we match that to avoid an unsatisfiable resolution.
+packages:
+  CodeEditSourceEditor:
+    url: https://github.com/CodeEditApp/CodeEditSourceEditor.git
+    from: "0.15.2"
+  CodeEditLanguages:
+    url: https://github.com/CodeEditApp/CodeEditLanguages.git
+    exactVersion: "0.1.20"
+  # Local override (same identity wins over the transitive remote) that stubs out
+  # CodeEditSourceEditor's SwiftLint build-tool plugin. See Vendor/SwiftLintPlugin.
+  SwiftLintPlugin:
+    path: Vendor/SwiftLintPlugin
+
 settings:
   base:
     SWIFT_VERSION: "6.0"            # Swift 6 language mode: complete data-race checking
@@ -59,6 +74,10 @@ targets:
     dependencies:
       - target: MaximalTreeKit
         embed: false
+      - package: CodeEditSourceEditor
+        product: CodeEditSourceEditor
+      - package: CodeEditLanguages
+        product: CodeEditLanguages
     settings:
       base:
         PRODUCT_NAME: TextEditor
