@@ -58,7 +58,10 @@ Sources/
     FileViews.swift             #   canvas (Quick Look) + inspector (editable)
   TextEditorPlugin/             # reference cross-plugin renderer (loadable bundle)
     TextEditor.swift            #   high-priority text canvas over filesystem files
-Tests/MaximalTreeTests/         # swift-testing suite (26 tests)
+  GitPlugin/                    # reference non-file provider (loadable bundle)
+    Git.swift                   #   git:// URI model, git CLI, provider, mount action
+    GitViews.swift              #   commit / list canvases + inspector
+Tests/MaximalTreeTests/         # swift-testing suite (32 tests)
 ```
 
 The generated `MaximalTree.xcodeproj` is **not** committed — regenerate it (below).
@@ -179,8 +182,12 @@ exists. Nothing is instantiated per-node until a node of that type is focused.
 
 ## Writing a plugin
 
-The FileSystem plugin (`Sources/FileSystemPlugin/`) is the reference implementation —
-read it alongside this section.
+Two references to read alongside this section: **FileSystem** (`Sources/FileSystemPlugin/`)
+for a path-backed, writable provider, and **Git** (`Sources/GitPlugin/`) for a
+non-file provider — it shows how to encode a non-path scheme as canonicalizable
+NodeIDs (`git://<kind>/<id>?repo=…`), model *synthetic* containment (Branches/Commits
+folders), and emit cross-references, including one into *another* provider (a commit's
+file → the `file://` working-tree node).
 
 ### 1. A `NodeProvider`
 

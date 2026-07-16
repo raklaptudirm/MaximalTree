@@ -68,6 +68,22 @@ targets:
         LD_RUNPATH_SEARCH_PATHS:
           - "@loader_path/../../../../Frameworks"
 
+  GitPlugin:
+    type: bundle
+    platform: macOS
+    sources: [Sources/GitPlugin]
+    dependencies:
+      - target: MaximalTreeKit
+        embed: false
+    settings:
+      base:
+        PRODUCT_NAME: Git
+        PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.plugin.git
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSPrincipalClass: GitPlugin
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@loader_path/../../../../Frameworks"
+
   MaximalTree:
     type: application
     platform: macOS
@@ -86,6 +102,12 @@ targets:
         copy:
           destination: plugins
           codeSign: true
+      - target: GitPlugin
+        embed: true
+        link: false
+        copy:
+          destination: plugins
+          codeSign: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.app
@@ -99,7 +121,7 @@ targets:
     # Compiles the plugin sources directly so provider logic stays unit-testable
     # without dlopen. The host skips loading the .bundle under XCTest to avoid a
     # duplicate principal class in-process.
-    sources: [Tests/MaximalTreeTests, Sources/FileSystemPlugin]
+    sources: [Tests/MaximalTreeTests, Sources/FileSystemPlugin, Sources/GitPlugin]
     dependencies:
       - target: MaximalTree          # hosts the tests; wires TEST_HOST/BUNDLE_LOADER
     settings:
