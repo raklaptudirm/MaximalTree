@@ -106,6 +106,10 @@ public struct InspectorContribution {
 /// handle, not what exists. (Handles/`deactivate` come later, for dynamic plugins.)
 @MainActor
 public protocol PluginRegistry: AnyObject {
+    /// Ask other plugins' providers for nodes. Store it on your provider if you need
+    /// to compose foreign nodes: `register(provider: MyProvider(broker: registry.broker))`.
+    var broker: NodeBroker { get }
+
     func register(provider: NodeProvider)
     func register(canvas: CanvasContribution)
     func register(inspector: InspectorContribution)

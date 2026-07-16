@@ -44,14 +44,15 @@ any other type.
 project.yml                     # XcodeGen project definition — THE source of truth
 Sources/
   MaximalTreeKit/               # the plugin SDK (dynamic framework)
-    Core.swift                  #   NodeID, TypeID, Node, Attributes, Page, Related
-    Provider.swift              #   NodeProvider protocol
+    Core.swift                  #   NodeID, TypeID, Node, NodeIcon/Tint, Attributes, Related
+    Provider.swift              #   NodeProvider + NodeBroker protocols
+    IconView.swift              #   NodeIconView + tint→Color (shared by host + plugins)
     Mutation.swift              #   GraphMutation, NodeChange, MutatingNodeProvider
     HostContext.swift           #   @Observable HostContext + GraphBackend seam
     Interface.swift             #   Action, Canvas/InspectorContribution, Plugin, Registry
   MaximalTree/                  # the host app
     App.swift                   #   @main, AppModel wiring
-    Host/                       #   Registry, GraphStore, NavigationModel, Workspace, PluginHost
+    Host/                       #   Registry, GraphStore, HostBroker, NavigationModel, Workspace, PluginHost
     UI/                         #   Shell (3 panes + tabs) + Commands (menu/palette)
   FileSystemPlugin/             # reference provider plugin (loadable bundle)
     FileSystem.swift            #   provider, mutations, principal class, actions
@@ -61,7 +62,7 @@ Sources/
   GitPlugin/                    # reference non-file provider (loadable bundle)
     Git.swift                   #   git:// URI model, git CLI, provider, mount action
     GitViews.swift              #   commit / list canvases + inspector
-Tests/MaximalTreeTests/         # swift-testing suite (32 tests)
+Tests/MaximalTreeTests/         # swift-testing suite (35 tests)
 ```
 
 The generated `MaximalTree.xcodeproj` is **not** committed — regenerate it (below).
@@ -144,6 +145,31 @@ main actor** (they hit filesystems, APIs, DBs). Views are `@MainActor`. Reading
 the backend; when it lands, the observable cache updates and the view re-renders. Never
 block the main actor in a provider.
 
+### Presentation is the provider's job
+
+`Node` carries a plugin-supplied `label` and `icon` (`NodeIcon`: an SF Symbol + a
+`NodeTint`). **The host never guesses an icon from a node's type** — if you find a
+`type == "file.…"` check in `Sources/MaximalTree/`, that's a bug. Render nodes with
+`NodeIconView(node.icon)` (in the SDK, so host and plugins resolve tints identically).
+
+### Composing across plugins
+
+A provider can ask the host for nodes owned by *other* providers via `NodeBroker`
+(`PluginRegistry.broker`, stored on your provider at registration):
+
+```swift
+registry.register(provider: MyProvider(broker: registry.broker))
+// …later, inside the provider:
+let files = await broker.children(of: "file:///some/dir", page: nil)
+```
+
+The broker routes a URI to whoever owns its scheme. This is how the git plugin makes a
+repo node cohesive — it lists Branches, Commits, **and** the working tree by asking
+whoever owns `file://`, so the files arrive with the FileSystem plugin's labels, icons,
+and metadata (and stay editable by the TextEditor plugin) instead of being re-listed
+and re-implemented. Foreign children just work afterwards: the host routes each node by
+its *own* scheme, so navigating into them uses their real owner.
+
 ### Writes
 
 Structural edits go through a small, host-defined vocabulary — `GraphMutation`
@@ -193,6 +219,8 @@ file → the `file://` working-tree node).
 
 Vends nodes for one or more URI schemes. Only `schemes`, `resolve`, `node(for:)`, and
 `children(of:page:)` are required; the rest have defaults.
+
+Give every node a `label` and an `icon` — that's how it renders everywhere.
 
 ```swift
 struct MyProvider: NodeProvider {

@@ -41,7 +41,7 @@ struct TextEditorCanvas: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Text(host.node(nodeID)?.displayName ?? "")
+                Text(host.node(nodeID)?.label ?? "")
                     .font(.headline)
                     .lineLimit(1)
                 if dirty {
@@ -68,7 +68,7 @@ struct TextEditorCanvas: View {
             }
         }
         .task(id: nodeID) { load() }
-        .navigationTitle(host.node(nodeID)?.displayName ?? "")
+        .navigationTitle(host.node(nodeID)?.label ?? "")
     }
 
     private var fileURL: URL? {

@@ -10,7 +10,7 @@ struct CommitCanvas: View {
         let node = host.node(nodeID)
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Text(gitString(node, "subject") ?? node?.displayName ?? "Commit")
+                Text(gitString(node, "subject") ?? node?.label ?? "Commit")
                     .font(.title2).bold()
                     .textSelection(.enabled)
 
@@ -44,10 +44,8 @@ struct CommitCanvas: View {
                             host.open(fid)
                         } label: {
                             HStack(spacing: 8) {
-                                Image(systemName: statusIcon(host.node(fid)))
-                                    .foregroundStyle(.tint)
-                                    .frame(width: 16)
-                                Text(host.node(fid)?.displayName ?? fid.uri).lineLimit(1)
+                                NodeIconView(host.node(fid)?.icon).frame(width: 16)
+                                Text(host.node(fid)?.label ?? fid.uri).lineLimit(1)
                                 Spacer()
                             }
                         }
@@ -58,17 +56,7 @@ struct CommitCanvas: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
         }
-        .navigationTitle(node?.displayName ?? "Commit")
-    }
-
-    private func statusIcon(_ node: Node?) -> String {
-        switch gitString(node, "status") {
-        case "A": return "plus.circle"
-        case "D": return "minus.circle"
-        case "M": return "pencil.circle"
-        case "R": return "arrow.right.circle"
-        default:  return "doc.text"
-        }
+        .navigationTitle(node?.label ?? "Commit")
     }
 }
 
@@ -87,13 +75,14 @@ struct GitListCanvas: View {
             } else {
                 List {
                     if !children.isEmpty {
-                        Section(host.node(nodeID)?.displayName ?? "") {
+                        Section(host.node(nodeID)?.label ?? "") {
                             ForEach(children, id: \.self) { cid in
                                 Button {
                                     host.open(cid)
                                 } label: {
-                                    HStack {
-                                        Text(host.node(cid)?.displayName ?? cid.uri).lineLimit(1)
+                                    HStack(spacing: 8) {
+                                        NodeIconView(host.node(cid)?.icon).frame(width: 16)
+                                        Text(host.node(cid)?.label ?? cid.uri).lineLimit(1)
                                         Spacer()
                                     }
                                 }
@@ -111,7 +100,7 @@ struct GitListCanvas: View {
                 }
             }
         }
-        .navigationTitle(host.node(nodeID)?.displayName ?? "")
+        .navigationTitle(host.node(nodeID)?.label ?? "")
     }
 }
 
@@ -124,7 +113,7 @@ struct GitInspector: View {
         let node = host.node(nodeID)
         Form {
             Section("Git") {
-                LabeledContent("Name", value: node?.displayName ?? "—")
+                LabeledContent("Name", value: node?.label ?? "—")
                 if let sha = gitString(node, "sha") { LabeledContent("SHA", value: sha) }
                 if let author = gitString(node, "author") { LabeledContent("Author", value: author) }
                 if let date = gitDate(node) { LabeledContent("Date", value: date) }

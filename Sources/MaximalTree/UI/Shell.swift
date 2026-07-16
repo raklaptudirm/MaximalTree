@@ -95,9 +95,10 @@ struct NodeRow: View {
     private func rowLabel(_ node: Node?) -> some View {
         let isFocused = host.focusedNode == nodeID
         HStack(spacing: 6) {
-            Image(systemName: node?.type == TypeID("file.directory") ? "folder.fill" : "doc")
-                .foregroundStyle(.tint)
-            Text(node?.displayName ?? nodeID.uri)
+            // Icon and label come from the owning plugin — the host knows nothing
+            // about what kind of thing this node is.
+            NodeIconView(node?.icon)
+            Text(node?.label ?? nodeID.uri)
                 .lineLimit(1)
         }
         .fontWeight(isFocused ? .semibold : .regular)
@@ -154,7 +155,7 @@ struct TabStrip: View {
     }
 
     private func title(of tab: NavigationModel.Tab) -> String {
-        tab.current.flatMap { host.node($0)?.displayName } ?? "New Tab"
+        tab.current.flatMap { host.node($0)?.label } ?? "New Tab"
     }
 }
 

@@ -88,18 +88,27 @@ public struct Attributes: Hashable, Sendable {
         get { storage[key] }
         set { storage[key] = newValue }
     }
+}
 
-    /// Conventional display name, falls back to nil if unset.
-    public var name: String? {
-        if case .string(let s)? = storage["name"] { return s }
-        return nil
-    }
+// MARK: - Presentation
 
-    public static func named(_ name: String, _ extra: [String: Value] = [:]) -> Attributes {
-        var s = extra
-        s["name"] = .string(name)
-        return Attributes(s)
+/// A node's icon, supplied by the plugin that owns it. The host never guesses an
+/// icon from a node's type — presentation is the provider's business.
+public struct NodeIcon: Hashable, Sendable {
+    /// An SF Symbol name.
+    public let systemName: String
+    public let tint: NodeTint?
+
+    public init(_ systemName: String, tint: NodeTint? = nil) {
+        self.systemName = systemName
+        self.tint = tint
     }
+}
+
+/// Icon colors. Named cases cover the common palette; `.rgb` is the escape hatch.
+public enum NodeTint: Hashable, Sendable {
+    case accent, secondary, blue, green, orange, red, purple, yellow, gray
+    case rgb(red: Double, green: Double, blue: Double)
 }
 
 // MARK: - Node
@@ -108,21 +117,32 @@ public struct Attributes: Hashable, Sendable {
 public struct Node: Identifiable, Hashable, Sendable {
     public let id: NodeID
     public let type: TypeID
+    /// Display label, supplied by the owning plugin. Defaults to the last URI segment.
+    public var label: String
+    /// Display icon, supplied by the owning plugin.
+    public var icon: NodeIcon?
     public var attributes: Attributes
     /// Cheap hint so the sidebar can show a disclosure triangle without loading
     /// children. Providers may set this from metadata (e.g. directory bit).
     public var hasChildren: Bool
 
-    public init(id: NodeID, type: TypeID, attributes: Attributes = .init(), hasChildren: Bool = false) {
+    public init(
+        id: NodeID,
+        type: TypeID,
+        label: String? = nil,
+        icon: NodeIcon? = nil,
+        attributes: Attributes = .init(),
+        hasChildren: Bool = false
+    ) {
         self.id = id
         self.type = type
+        self.label = label ?? Node.lastSegment(of: id)
+        self.icon = icon
         self.attributes = attributes
         self.hasChildren = hasChildren
     }
 
-    /// Display label, best-effort: the `name` attribute, else the last URI segment.
-    public var displayName: String {
-        if let n = attributes.name { return n }
+    private static func lastSegment(of id: NodeID) -> String {
         let s = id.uri
         if let slash = s.lastIndex(of: "/"), slash != s.index(before: s.endIndex) {
             return String(s[s.index(after: slash)...])

@@ -37,5 +37,9 @@ final class PluginHost {
             loaded.append(url.lastPathComponent)
             NSLog("[MaximalTree] loaded plugin \(url.lastPathComponent)")
         }
+
+        // Every provider is now registered — publish them to the broker plugins were
+        // handed during registration, so cross-plugin lookups can resolve.
+        registry.hostBroker.install(registry.providers)
     }
 }

@@ -57,14 +57,37 @@ struct FileSystemProvider: NodeProvider {
 
     static func node(url: URL, id: NodeID, isDir: Bool) -> Node {
         let name = url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
-        var attrs = Attributes.named(name)
+        var attrs = Attributes()
+        var contentType: UTType?
         if let vals = try? url.resourceValues(
             forKeys: [.fileSizeKey, .contentModificationDateKey, .contentTypeKey]) {
             if let size = vals.fileSize { attrs["size"] = .int(size) }
             if let mod = vals.contentModificationDate { attrs["modified"] = .date(mod) }
-            if let uti = vals.contentType?.identifier { attrs["uti"] = .string(uti) }
+            if let type = vals.contentType {
+                attrs["uti"] = .string(type.identifier)
+                contentType = type
+            }
         }
-        return Node(id: id, type: isDir ? directoryType : fileType, attributes: attrs, hasChildren: isDir)
+        return Node(id: id,
+                    type: isDir ? directoryType : fileType,
+                    label: name,
+                    icon: isDir ? NodeIcon("folder.fill", tint: .blue) : icon(for: contentType),
+                    attributes: attrs,
+                    hasChildren: isDir)
+    }
+
+    /// Content-type-aware icons, so the sidebar reads at a glance.
+    static func icon(for uti: UTType?) -> NodeIcon {
+        guard let uti else { return NodeIcon("doc", tint: .secondary) }
+        if uti.conforms(to: .image)   { return NodeIcon("photo", tint: .purple) }
+        if uti.conforms(to: .movie) || uti.conforms(to: .audio) {
+            return NodeIcon("play.rectangle", tint: .red)
+        }
+        if uti.conforms(to: .pdf)        { return NodeIcon("doc.richtext", tint: .red) }
+        if uti.conforms(to: .sourceCode) { return NodeIcon("chevron.left.forwardslash.chevron.right", tint: .green) }
+        if uti.conforms(to: .text)       { return NodeIcon("doc.text", tint: .secondary) }
+        if uti.conforms(to: .archive)    { return NodeIcon("shippingbox", tint: .orange) }
+        return NodeIcon("doc", tint: .secondary)
     }
 
     static func readChildren(url: URL) -> Page<Node> {
@@ -82,7 +105,7 @@ struct FileSystemProvider: NodeProvider {
         .sorted { a, b in
             let ad = a.type == directoryType, bd = b.type == directoryType
             if ad != bd { return ad }   // directories first
-            return a.displayName.localizedCaseInsensitiveCompare(b.displayName) == .orderedAscending
+            return a.label.localizedCaseInsensitiveCompare(b.label) == .orderedAscending
         }
         return Page(items: nodes)
     }

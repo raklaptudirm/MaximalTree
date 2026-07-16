@@ -66,12 +66,42 @@ import Foundation
         #expect(branches.first?.type == TypeID("git.branch"))
     }
 
+    /// The cohesion feature: a git repo node lists Branches/Commits *and* the working
+    /// tree, with the file nodes coming from the FileSystem provider via the broker.
+    @Test func repoNodeIncludesWorkingTreeFromFileSystemProvider() async throws {
+        let repo = try makeTempRepo()
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+
+        let broker = HostBroker()
+        broker.install([FileSystemProvider()])          // only file:// is registered
+        let provider = GitProvider(broker: broker)
+        let repoID = try #require(GitRef(repo: repo, kind: .repo).nodeID)
+
+        let children = await provider.children(of: repoID, page: nil)
+        let labels = children.items.map(\.label)
+        #expect(labels.contains("Branches"))
+        #expect(labels.contains("Commits"))
+        #expect(labels.contains("a.txt"))               // spliced in from the other plugin
+
+        // And it's genuinely the FileSystem plugin's node, not a git-made imitation.
+        let file = try #require(children.items.first { $0.label == "a.txt" })
+        #expect(file.id.scheme == "file")
+        #expect(file.type == TypeID("file.file"))
+        #expect(file.icon != nil)
+    }
+
+    @Test func changedFileStatusIcons() {
+        #expect(GitProvider.statusIcon("A").systemName == "plus.circle")
+        #expect(GitProvider.statusIcon("D").systemName == "minus.circle")
+        #expect(GitProvider.statusIcon("M").systemName == "pencil.circle")
+    }
+
     @Test func changedFilesForCommit() throws {
         let repo = try makeTempRepo()
         defer { try? FileManager.default.removeItem(atPath: repo) }
         let sha = try #require(GitProvider.logCommits(repo).first?.attributes["sha"])
         guard case .string(let shaValue) = sha else { Issue.record("no sha"); return }
         let files = GitProvider.changedFiles(repo, sha: shaValue)
-        #expect(files.contains { $0.displayName == "a.txt" })
+        #expect(files.contains { $0.label == "a.txt" })
     }
 }

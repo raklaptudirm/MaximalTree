@@ -10,6 +10,10 @@ final class Registry: PluginRegistry {
     private(set) var inspectors: [InspectorContribution] = []
     private(set) var actions: [Action] = []
 
+    /// Handed to plugins during registration; populated once every plugin has loaded.
+    let hostBroker = HostBroker()
+    var broker: NodeBroker { hostBroker }
+
     func register(provider: NodeProvider) { providers.append(provider) }
     func register(canvas: CanvasContribution) { canvases.append(canvas) }
     func register(inspector: InspectorContribution) { inspectors.append(inspector) }

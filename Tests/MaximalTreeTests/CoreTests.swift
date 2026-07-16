@@ -52,15 +52,30 @@ import Foundation
         #expect(provider.resolve(id.uri) != nil)
 
         let page = await provider.children(of: id, page: nil)
-        #expect(page.items.map(\.displayName) == ["sub", "a.txt", "b.txt"])
+        #expect(page.items.map(\.label) == ["sub", "a.txt", "b.txt"])
 
-        let sub = try #require(page.items.first { $0.displayName == "sub" })
+        let sub = try #require(page.items.first { $0.label == "sub" })
         #expect(sub.type == TypeID("file.directory"))
         #expect(sub.hasChildren)
 
-        let txt = try #require(page.items.first { $0.displayName == "a.txt" })
+        let txt = try #require(page.items.first { $0.label == "a.txt" })
         #expect(txt.type == TypeID("file.file"))
         #expect(!txt.hasChildren)
+    }
+
+    @Test func nodesCarryProviderSuppliedIcons() async throws {
+        let base = try makeTempTree()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let id = try #require(NodeID(fileURL: base))
+        let page = await FileSystemProvider().children(of: id, page: nil)
+
+        let dir = try #require(page.items.first { $0.label == "sub" })
+        #expect(dir.icon?.systemName == "folder.fill")
+        #expect(dir.icon?.tint == .blue)
+
+        // Icon is content-type aware, not extension-guessed by the host.
+        let text = try #require(page.items.first { $0.label == "a.txt" })
+        #expect(text.icon?.systemName == "doc.text")
     }
 
     @Test func resolveNonexistentReturnsNil() {

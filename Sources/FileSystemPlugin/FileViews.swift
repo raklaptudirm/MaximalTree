@@ -19,10 +19,9 @@ struct DirectoryCanvas: View {
                         host.open(cid)
                     } label: {
                         VStack(spacing: 6) {
-                            Image(systemName: node?.type == TypeID("file.directory") ? "folder.fill" : "doc")
+                            NodeIconView(node?.icon)
                                 .font(.system(size: 34))
-                                .foregroundStyle(.tint)
-                            Text(node?.displayName ?? cid.uri)
+                            Text(node?.label ?? cid.uri)
                                 .font(.caption)
                                 .lineLimit(2)
                                 .multilineTextAlignment(.center)
@@ -34,7 +33,7 @@ struct DirectoryCanvas: View {
             }
             .padding()
         }
-        .navigationTitle(host.node(nodeID)?.displayName ?? "")
+        .navigationTitle(host.node(nodeID)?.label ?? "")
     }
 }
 
@@ -53,7 +52,7 @@ struct FileCanvas: View {
                 ContentUnavailableView("No Preview", systemImage: "doc")
             }
         }
-        .navigationTitle(host.node(nodeID)?.displayName ?? "")
+        .navigationTitle(host.node(nodeID)?.label ?? "")
     }
 }
 
@@ -114,16 +113,16 @@ struct FileInspector: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear { draftName = host.node(nodeID)?.displayName ?? "" }
-        .onChange(of: nodeID) { draftName = host.node(nodeID)?.displayName ?? "" }
-        .onChange(of: host.node(nodeID)?.displayName) { _, newValue in
+        .onAppear { draftName = host.node(nodeID)?.label ?? "" }
+        .onChange(of: nodeID) { draftName = host.node(nodeID)?.label ?? "" }
+        .onChange(of: host.node(nodeID)?.label) { _, newValue in
             if !nameFocused { draftName = newValue ?? "" }   // don't clobber while editing
         }
     }
 
     private func commitRename() {
         let trimmed = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != host.node(nodeID)?.displayName else { return }
+        guard !trimmed.isEmpty, trimmed != host.node(nodeID)?.label else { return }
         host.apply(.rename(nodeID, to: trimmed))
     }
 

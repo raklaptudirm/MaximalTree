@@ -85,6 +85,11 @@ enum Git {
 struct GitProvider: NodeProvider {
     let schemes: Set<String> = ["git"]
 
+    /// Used to pull the working tree in from whichever provider owns `file://`.
+    let broker: NodeBroker
+
+    init(broker: NodeBroker) { self.broker = broker }
+
     func resolve(_ uri: String) -> NodeID? {
         guard let ref = GitRef(uri: uri), Git.looksLikeRepo(ref.repo) else { return nil }
         return ref.nodeID
@@ -97,7 +102,18 @@ struct GitProvider: NodeProvider {
 
     func children(of id: NodeID, page cursor: Cursor?) async -> Page<Node> {
         guard let ref = GitRef(uri: id.uri) else { return Page(items: []) }
-        return await Task.detached(priority: .userInitiated) { Self.children(ref) }.value
+        var items = await Task.detached(priority: .userInitiated) { Self.children(ref) }.value.items
+
+        // A repo isn't just git metadata — it's a working tree. Ask whoever owns
+        // file:// for the directory's children rather than re-listing it here, so the
+        // files arrive with the FileSystem plugin's labels, icons, and metadata (and
+        // stay editable by the TextEditor plugin). This is what makes a repo node
+        // cohesive: Branches, Commits, and the actual files, in one place.
+        if ref.kind == .repo {
+            let workingTree = URL(fileURLWithPath: ref.repo).absoluteString
+            items += await broker.children(of: workingTree, page: nil).items
+        }
+        return Page(items: items)
     }
 
     func related(to id: NodeID) async -> [Related] {
@@ -110,21 +126,39 @@ struct GitProvider: NodeProvider {
     static func makeNode(_ ref: GitRef) -> Node? {
         guard let id = ref.nodeID else { return nil }
         let name: String
+        let icon: NodeIcon
         var hasChildren = false
         switch ref.kind {
         case .repo:
             name = URL(fileURLWithPath: ref.repo).lastPathComponent
+            icon = NodeIcon("arrow.triangle.branch", tint: .orange)
             hasChildren = true
-        case .branches: name = "Branches"; hasChildren = true
-        case .commits:  name = "Commits";  hasChildren = true
-        case .branch:   name = ref.id ?? "branch"
+        case .branches:
+            name = "Branches"; icon = NodeIcon("arrow.triangle.branch", tint: .green); hasChildren = true
+        case .commits:
+            name = "Commits"; icon = NodeIcon("clock", tint: .blue); hasChildren = true
+        case .branch:
+            name = ref.id ?? "branch"; icon = NodeIcon("arrow.triangle.branch", tint: .green)
         case .commit:
             name = String((ref.id ?? "").prefix(7))
+            icon = NodeIcon("circle.fill", tint: .blue)
             hasChildren = true    // changed files
         case .commitFile:
             name = ref.commitAndPath?.path ?? (ref.id ?? "")
+            icon = NodeIcon("doc.text", tint: .secondary)
         }
-        return Node(id: id, type: ref.typeID, attributes: .named(name), hasChildren: hasChildren)
+        return Node(id: id, type: ref.typeID, label: name, icon: icon, hasChildren: hasChildren)
+    }
+
+    /// Icon for a changed file, by its git status letter.
+    static func statusIcon(_ status: String) -> NodeIcon {
+        switch status {
+        case "A": return NodeIcon("plus.circle", tint: .green)
+        case "D": return NodeIcon("minus.circle", tint: .red)
+        case "M": return NodeIcon("pencil.circle", tint: .orange)
+        case "R": return NodeIcon("arrow.right.circle", tint: .blue)
+        default:  return NodeIcon("doc.text", tint: .secondary)
+        }
     }
 
     static func children(_ ref: GitRef) -> Page<Node> {
@@ -155,13 +189,16 @@ struct GitProvider: NodeProvider {
             guard f.count >= 4 else { return nil }
             let sha = f[0]
             guard let id = GitRef(repo: repo, kind: .commit, id: sha).nodeID else { return nil }
-            var attrs = Attributes.named("\(sha.prefix(7))  \(f[3])")
+            var attrs = Attributes()
             attrs["sha"] = .string(sha)
             attrs["author"] = .string(f[1])
             attrs["subject"] = .string(f[3])
             if let date = iso.date(from: f[2]) { attrs["date"] = .date(date) }
             if f.count >= 5 { attrs["parents"] = .string(f[4]) }   // space-separated shas
-            return Node(id: id, type: TypeID("git.commit"), attributes: attrs, hasChildren: true)
+            return Node(id: id, type: TypeID("git.commit"),
+                        label: "\(sha.prefix(7))  \(f[3])",
+                        icon: NodeIcon("circle.fill", tint: .blue),
+                        attributes: attrs, hasChildren: true)
         }
     }
 
@@ -174,9 +211,12 @@ struct GitProvider: NodeProvider {
             let f = line.components(separatedBy: "\t")
             guard let name = f.first, !name.isEmpty,
                   let id = GitRef(repo: repo, kind: .branch, id: name).nodeID else { return nil }
-            var attrs = Attributes.named(name)
+            var attrs = Attributes()
             if f.count > 1 { attrs["tip"] = .string(f[1]) }
-            return Node(id: id, type: TypeID("git.branch"), attributes: attrs, hasChildren: false)
+            return Node(id: id, type: TypeID("git.branch"),
+                        label: name,
+                        icon: NodeIcon("arrow.triangle.branch", tint: .green),
+                        attributes: attrs, hasChildren: false)
         }
     }
 
@@ -221,9 +261,12 @@ struct GitProvider: NodeProvider {
             guard parts.count >= 2, let path = parts.last else { return nil }
             let status = String(parts[0].prefix(1))
             guard let id = GitRef(repo: repo, kind: .commitFile, id: "\(sha)/\(path)").nodeID else { return nil }
-            var attrs = Attributes.named(path)
+            var attrs = Attributes()
             attrs["status"] = .string(status)
-            return Node(id: id, type: TypeID("git.commitfile"), attributes: attrs, hasChildren: false)
+            return Node(id: id, type: TypeID("git.commitfile"),
+                        label: path,
+                        icon: statusIcon(status),
+                        attributes: attrs, hasChildren: false)
         }
     }
 }
@@ -235,7 +278,7 @@ final class GitPlugin: NSObject, Plugin {
     override init() { super.init() }
 
     func register(with registry: PluginRegistry) {
-        registry.register(provider: GitProvider())
+        registry.register(provider: GitProvider(broker: registry.broker))
 
         // Cross-plugin integration: offer to open a filesystem directory that is a
         // git repo as a git:// root. Cheap predicate (checks for a .git directory).
