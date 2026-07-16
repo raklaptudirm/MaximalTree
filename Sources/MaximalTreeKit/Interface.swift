@@ -6,11 +6,21 @@ import SwiftUI
 @MainActor
 public struct ActionContext {
     public let host: HostContext
-    public init(host: HostContext) { self.host = host }
 
-    public var selection: [NodeID] { host.selection }
+    /// The nodes this invocation acts on. Defaults to the host's current selection
+    /// (menu bar, palette), but a context menu targets the rows it was opened on —
+    /// which may not be the selection at all.
+    public let targets: [NodeID]
+
+    public init(host: HostContext, targets: [NodeID]? = nil) {
+        self.host = host
+        self.targets = targets ?? host.selection
+    }
+
+    /// The nodes being acted on. Alias of `targets`, which reads naturally in handlers.
+    public var selection: [NodeID] { targets }
     public var focused: NodeID? { host.focusedNode }
-    public var selectedNodes: [Node] { selection.compactMap { host.node($0) } }
+    public var selectedNodes: [Node] { targets.compactMap { host.node($0) } }
 }
 
 /// Decides whether an action applies to the current selection. One registry of

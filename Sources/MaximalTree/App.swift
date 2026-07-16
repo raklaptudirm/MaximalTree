@@ -42,16 +42,17 @@ final class AppModel {
     func closeTab(_ id: NavigationModel.Tab.ID) { store?.closeTab(id) }
     func selectTab(_ i: Int) { store?.selectTab(i) }
 
-    /// Actions (from any plugin) that apply to the current selection. Feeds both
-    /// the menu bar and the command palette from the one registry.
-    func applicableActions() -> [Action] {
+    /// Actions (from any plugin) that apply to `targets`, defaulting to the current
+    /// selection. One registry feeds the menu bar, the palette, the sidebar context
+    /// menu, and the inspector.
+    func applicableActions(for targets: [NodeID]? = nil) -> [Action] {
         guard let store else { return [] }
-        let ctx = ActionContext(host: host)
+        let ctx = ActionContext(host: host, targets: targets)
         return store.actions.filter { $0.appliesTo.matches(ctx) }
     }
 
-    func run(_ action: Action) {
-        action.handler(ActionContext(host: host))
+    func run(_ action: Action, targets: [NodeID]? = nil) {
+        action.handler(ActionContext(host: host, targets: targets))
         paletteVisible = false
     }
 

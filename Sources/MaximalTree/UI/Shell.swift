@@ -7,11 +7,15 @@ import MaximalTreeKit
 /// node's `TypeRenderer`. None of them know what a `file.directory` is.
 struct ContentView: View {
     @Environment(AppModel.self) private var model
+    @State private var inspectorVisible = true
 
     var body: some View {
+        // Two columns + a real trailing inspector. (A three-column split view makes
+        // the *detail* column the flexible one, which handed the inspector all the
+        // slack; `.inspector` keeps the canvas flexible and the inspector sized.)
         NavigationSplitView {
             ExplorerSidebar()
-                .navigationSplitViewColumnWidth(min: 200, ideal: 260)
+                .navigationSplitViewColumnWidth(min: 180, ideal: 240)
                 .toolbar {
                     ToolbarItem {
                         Button {
@@ -22,16 +26,24 @@ struct ContentView: View {
                         .help("Mount a folder as a root")
                     }
                 }
-        } content: {
+        } detail: {
             VStack(spacing: 0) {
                 TabStrip()
                 Divider()
                 CanvasPane()
             }
-            .navigationSplitViewColumnWidth(min: 340, ideal: 560)
-        } detail: {
-            InspectorPane()
-                .navigationSplitViewColumnWidth(min: 240, ideal: 300)
+            .inspector(isPresented: $inspectorVisible) {
+                InspectorPane()
+                    .inspectorColumnWidth(min: 200, ideal: 260, max: 420)
+            }
+            .toolbar {
+                ToolbarItem {
+                    Button { inspectorVisible.toggle() } label: {
+                        Label("Inspector", systemImage: "sidebar.trailing")
+                    }
+                    .help("Toggle inspector")
+                }
+            }
         }
         .navigationTitle("MaximalTree")
         .overlay {
@@ -52,14 +64,57 @@ struct ContentView: View {
 
 struct ExplorerSidebar: View {
     @Environment(HostContext.self) private var host
+    @Environment(AppModel.self) private var model
+    @State private var selection: Set<NodeID> = []
 
     var body: some View {
-        List {
+        // Native list selection rather than a hand-rolled highlight: it brings the
+        // real macOS look, full-row hit testing, keyboard arrow navigation, and
+        // multi-select (which the Action predicates already support).
+        List(selection: $selection) {
             ForEach(host.roots, id: \.self) { root in
                 NodeRow(nodeID: root)
             }
         }
         .listStyle(.sidebar)
+        .environment(\.defaultMinListRowHeight, 18)
+        // List-level rather than per-row: SwiftUI hands us exactly the rows the menu
+        // applies to, and gives the native semantics for free (right-clicking outside
+        // the selection targets just that row; inside it targets the whole selection).
+        .contextMenu(forSelectionType: NodeID.self) { items in
+            let targets = Array(items)
+            if targets.count == 1 {
+                Button("Open in New Tab") { model.openInNewTab(targets[0]) }
+                Divider()
+            }
+            let actions = model.applicableActions(for: targets)
+            if actions.isEmpty {
+                Button("No Actions") {}.disabled(true)
+            } else {
+                ForEach(actions) { action in
+                    Button { model.run(action, targets: targets) } label: {
+                        if let image = action.systemImage {
+                            Label(action.title, systemImage: image)
+                        } else {
+                            Text(action.title)
+                        }
+                    }
+                }
+            }
+        }
+        .onChange(of: selection) { _, newValue in
+            host.select(Array(newValue))
+            // A lone selection also drives the canvas, Finder-style. Multi-select
+            // only feeds actions — it deliberately leaves the canvas alone.
+            if newValue.count == 1, let id = newValue.first, id != host.focusedNode {
+                host.open(id)
+            }
+        }
+        .onChange(of: host.focusedNode) { _, newValue in
+            // Keep the list in step when focus moves from somewhere else: a tab
+            // switch, back/forward, or following a Related link.
+            if let newValue, selection != [newValue] { selection = [newValue] }
+        }
         .overlay {
             if host.roots.isEmpty {
                 ContentUnavailableView("No Roots", systemImage: "tray",
@@ -78,39 +133,34 @@ struct NodeRow: View {
 
     var body: some View {
         let node = host.node(nodeID)
-        if node?.hasChildren == true {
-            DisclosureGroup(isExpanded: $expanded) {
-                ForEach(host.children(of: nodeID), id: \.self) { child in
-                    NodeRow(nodeID: child)
+        Group {
+            if node?.hasChildren == true {
+                DisclosureGroup(isExpanded: $expanded) {
+                    ForEach(host.children(of: nodeID), id: \.self) { child in
+                        NodeRow(nodeID: child)
+                    }
+                } label: {
+                    rowLabel(node)
                 }
-            } label: {
+            } else {
                 rowLabel(node)
             }
-        } else {
-            rowLabel(node)
         }
+        .tag(nodeID)                      // what List(selection:) selects
     }
 
     @ViewBuilder
     private func rowLabel(_ node: Node?) -> some View {
-        let isFocused = host.focusedNode == nodeID
-        HStack(spacing: 6) {
+        // No manual highlight or tap handling: List(selection:) draws the selection
+        // and hit-tests the whole row for us.
+        HStack(spacing: 5) {
             // Icon and label come from the owning plugin — the host knows nothing
             // about what kind of thing this node is.
             NodeIconView(node?.icon)
             Text(node?.label ?? nodeID.uri)
                 .lineLimit(1)
         }
-        .fontWeight(isFocused ? .semibold : .regular)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            // ⌘-click opens in a new tab, like a browser.
-            if NSEvent.modifierFlags.contains(.command) {
-                model.openInNewTab(nodeID)
-            } else {
-                host.open(nodeID)
-            }
-        }
+        .padding(.vertical, 1)
     }
 }
 
@@ -132,6 +182,8 @@ struct TabStrip: View {
 
             Divider().frame(height: 16)
 
+            // A horizontal ScrollView will happily take every point of vertical space
+            // it's offered — pin it, or the strip eats the canvas.
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
                     ForEach(Array(nav.tabs.enumerated()), id: \.element.id) { i, tab in
@@ -143,6 +195,7 @@ struct TabStrip: View {
                     }
                 }
             }
+            .frame(height: 22)
 
             Spacer(minLength: 0)
 
@@ -152,6 +205,7 @@ struct TabStrip: View {
         .buttonStyle(.borderless)
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
+        .fixedSize(horizontal: false, vertical: true)   // never grow vertically
     }
 
     private func title(of tab: NavigationModel.Tab) -> String {
@@ -194,16 +248,22 @@ struct CanvasPane: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        if let id = host.focusedNode {
-            if let node = host.node(id), let canvas = model.store?.canvas(for: node) {
-                canvas.make(id, host)
+        Group {
+            if let id = host.focusedNode {
+                if let node = host.node(id), let canvas = model.store?.canvas(for: node) {
+                    canvas.make(id, host)
+                } else {
+                    ContentUnavailableView("Loading…", systemImage: "hourglass")
+                }
             } else {
-                ContentUnavailableView("Loading…", systemImage: "hourglass")
+                ContentUnavailableView("Nothing Selected", systemImage: "square.dashed",
+                                       description: Text("Pick something in the sidebar."))
             }
-        } else {
-            ContentUnavailableView("Nothing Selected", systemImage: "square.dashed",
-                                   description: Text("Pick something in the sidebar."))
         }
+        // The canvas must be the flexible one: without this the VStack has no child
+        // that expands, so it sizes to content and centres everything — which looks
+        // like the tab strip claiming half the pane.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -216,13 +276,32 @@ struct InspectorPane: View {
     var body: some View {
         if let id = host.focusedNode, let node = host.node(id) {
             let sections = model.store?.inspectors(for: node) ?? []
-            if sections.isEmpty {
+            let actions = model.applicableActions()
+            if sections.isEmpty && actions.isEmpty {
                 ContentUnavailableView("No Inspector", systemImage: "sidebar.right")
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(sections.enumerated()), id: \.offset) { _, section in
                             section.make(id, host)
+                        }
+                        // Host-provided: what you can *do* with this node belongs next
+                        // to what it *is*.
+                        if !actions.isEmpty {
+                            Form {
+                                Section("Actions") {
+                                    ForEach(actions) { action in
+                                        Button { model.run(action) } label: {
+                                            if let image = action.systemImage {
+                                                Label(action.title, systemImage: image)
+                                            } else {
+                                                Text(action.title)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            .formStyle(.grouped)
                         }
                     }
                 }

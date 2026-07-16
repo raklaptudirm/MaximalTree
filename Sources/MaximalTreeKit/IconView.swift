@@ -23,11 +23,17 @@ public extension NodeTint {
 /// hasn't supplied one. Use this everywhere a node is listed.
 public struct NodeIconView: View {
     private let icon: NodeIcon?
+    private let overrideTint: Color?
 
-    public init(_ icon: NodeIcon?) { self.icon = icon }
+    /// - Parameter tint: Overrides the icon's own tint. Pass this for states where
+    ///   the provider's color wouldn't read — e.g. white on a selected row's fill.
+    public init(_ icon: NodeIcon?, tint overrideTint: Color? = nil) {
+        self.icon = icon
+        self.overrideTint = overrideTint
+    }
 
     public var body: some View {
         Image(systemName: icon?.systemName ?? "circle")
-            .foregroundStyle(icon?.tint?.color ?? Color.secondary)
+            .foregroundStyle(overrideTint ?? icon?.tint?.color ?? Color.secondary)
     }
 }
