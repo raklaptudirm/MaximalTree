@@ -60,8 +60,10 @@ Sources/
   TextEditorPlugin/             # reference cross-plugin renderer (loadable bundle)
     TextEditor.swift            #   CodeEditSourceEditor canvas over filesystem files
   TypstPlugin/                  # reference compiler-backed canvas (loadable bundle)
-    TypstCore.swift             #   typst CLI wrapper + diagnostics parser (tested)
-    TypstPlugin.swift           #   editor + live PDF preview canvas for .typ files
+    TypstCore.swift             #   typst CLI wrapper, diagnostics, notes pkg, tokenizer
+    TypstHighlighter.swift      #   HighlightProviding over the tokenizer
+    TypstPlugin.swift           #   Write/Typeset/Read modes, autosave, note actions
+                                #   (target builds in Swift 5 mode — see project.yml)
 Vendor/SwiftLintPlugin/         # stub overriding a dependency's build-tool plugin
   GitPlugin/                    # reference non-file provider (loadable bundle)
     Git.swift                   #   git:// URI model, git CLI, provider, mount action

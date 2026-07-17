@@ -5,19 +5,28 @@ import CodeEditSourceEditor
 import CodeEditLanguages
 import MaximalTreeKit
 
-/// A Typst document editor: source on the left, live-compiled PDF preview on the
-/// right. The preview compiles the *buffer* (debounced) by piping it to `typst`
-/// via stdin with `--root` at the document's directory — unsaved edits render
-/// live, and relative imports/images still resolve.
+/// Typst as a daily driver: one canvas, three modes.
 ///
-/// This is the first compiler-backed canvas: it embeds its own SourceEditor (the
-/// TextEditor plugin's views are internal to that bundle) and composes it with
-/// PDFKit and a CLI toolchain, all inside one plugin bundle.
+/// - **Write** — notes/prose: editor only, centered column, word count, autosave.
+///   The compiler runs silently (so Read/Typeset are instant); errors are a dot,
+///   not a strip.
+/// - **Typeset** — the IDE: editor + live preview + diagnostics, explicit ⌘S.
+/// - **Read** — rendered document only, autosave-safe.
+///
+/// The mode is remembered per file. Conventions (tasks, tags) are typst-native via
+/// the bundled `@local/mtnotes` package, installed into typst's data directory at
+/// plugin load — documents render correctly with plain `typst compile` anywhere.
 @objc(TypstPlugin)
 final class TypstPlugin: NSObject, Plugin {
     override init() { super.init() }
 
     func register(with registry: PluginRegistry) {
+        // Make `@local/mtnotes` importable before any compile can need it.
+        Task.detached(priority: .utility) {
+            do { try TypstNotes.installPackage() }
+            catch { NSLog("[TypstPlugin] package install failed: \(error.localizedDescription)") }
+        }
+
         registry.register(canvas: CanvasContribution(
             priority: 150,     // above TextEditor (100): .typ is text, but ours is better
             matches: { node in
@@ -25,6 +34,70 @@ final class TypstPlugin: NSObject, Plugin {
             },
             make: { id, host in AnyView(TypstCanvas(nodeID: id).environment(host)) }
         ))
+
+        registry.register(action: Action(
+            id: "typst.newNote",
+            title: "New Typst Note",
+            systemImage: "square.and.pencil",
+            appliesTo: .type(TypeID("file.directory")),
+            handler: { ctx in Self.createNote(in: ctx, daily: false) }
+        ))
+        registry.register(action: Action(
+            id: "typst.dailyNote",
+            title: "Today's Daily Note",
+            systemImage: "calendar",
+            appliesTo: .type(TypeID("file.directory")),
+            handler: { ctx in Self.createNote(in: ctx, daily: true) }
+        ))
+    }
+
+    /// Create (or, for the daily note, reuse) a templated note in the selected
+    /// directory, tell the host, and open it.
+    @MainActor
+    private static func createNote(in ctx: ActionContext, daily: Bool) {
+        guard let dir = ctx.selection.first, dir.scheme == "file",
+              let dirURL = URL(string: dir.uri) else { return }
+        let noteURL = daily ? TypstNotes.dailyNoteURL(in: dirURL)
+                            : TypstNotes.newNoteURL(in: dirURL)
+        if !FileManager.default.fileExists(atPath: noteURL.path) {
+            let template = daily ? TypstNotes.dailyNoteTemplate()
+                                 : TypstNotes.noteTemplate(title: "Untitled")
+            do { try template.write(to: noteURL, atomically: true, encoding: .utf8) }
+            catch {
+                NSLog("[TypstPlugin] note creation failed: \(error.localizedDescription)")
+                return
+            }
+            ctx.host.notify([.childrenChanged(dir)])
+        }
+        ctx.host.openURI(noteURL.absoluteString)
+    }
+}
+
+// MARK: - Mode
+
+enum TypstMode: String, CaseIterable, Identifiable {
+    case write, typeset, read
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .write: return "Write"
+        case .typeset: return "Typeset"
+        case .read: return "Read"
+        }
+    }
+
+    /// Write and Read behave like a notes app (autosave); Typeset keeps explicit
+    /// save points.
+    var autosaves: Bool { self != .typeset }
+
+    static func stored(for id: NodeID) -> TypstMode {
+        UserDefaults.standard.string(forKey: "typst.mode.\(id.uri)")
+            .flatMap(TypstMode.init(rawValue:)) ?? .write
+    }
+
+    func store(for id: NodeID) {
+        UserDefaults.standard.set(rawValue, forKey: "typst.mode.\(id.uri)")
     }
 }
 
@@ -40,6 +113,8 @@ struct TypstCanvas: View {
     @State private var loadedNode: NodeID?
     @State private var loadError: String?
     @State private var editorState = SourceEditorState()
+    @State private var highlighter = TypstHighlighter()
+    @State private var mode: TypstMode = .write
 
     @State private var preview: PDFDocument?
     @State private var previewData: Data?
@@ -48,8 +123,10 @@ struct TypstCanvas: View {
     @State private var showPreview = true
     @State private var editorFraction: CGFloat = 0.5
     @State private var compileTask: Task<Void, Never>?
+    @State private var autosaveTask: Task<Void, Never>?
 
     private var dirty: Bool { text != savedText }
+    private var hasErrors: Bool { diagnostics.contains { $0.severity == .error } }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -62,64 +139,130 @@ struct TypstCanvas: View {
                 ContentUnavailableView("Can't Open", systemImage: "exclamationmark.triangle",
                                        description: Text(loadError))
             } else {
-                editorAndPreview
+                switch mode {
+                case .write: writeLayout
+                case .typeset: typesetLayout
+                case .read: previewColumn
+                }
             }
 
-            if !diagnostics.isEmpty {
+            if mode == .typeset && !diagnostics.isEmpty {
                 Divider()
-                DiagnosticsBar(diagnostics: diagnostics) { diagnostic in
-                    jump(to: diagnostic)
-                }
+                DiagnosticsBar(diagnostics: diagnostics) { jump(to: $0) }
             }
         }
         .task(id: nodeID) {
             loadedNode = nil
+            mode = TypstMode.stored(for: nodeID)
             load()
             loadedNode = nodeID
-            if loadError == nil { scheduleCompile(delay: .zero) }   // first render
+            if loadError == nil { scheduleCompile(delay: .zero) }
+        }
+        .onChange(of: mode) { previous, current in
+            current.store(for: nodeID)
+            // Entering an autosave mode (or leaving Typeset with edits pending)
+            // flushes, so disk always matches what Write/Read show.
+            if current.autosaves && dirty { saveToDisk() }
+        }
+        .onDisappear {
+            if mode.autosaves && dirty && loadedNode == nodeID { saveToDisk() }
         }
     }
 
-    // MARK: Layout
+    // MARK: Header
 
     private var header: some View {
         HStack(spacing: 10) {
             Text(host.node(nodeID)?.label ?? "")
                 .font(.headline)
                 .lineLimit(1)
-            if dirty { Text("Edited").font(.caption).foregroundStyle(.secondary) }
+            if mode == .typeset && dirty {
+                Text("Edited").font(.caption).foregroundStyle(.secondary)
+            }
 
             Spacer()
 
-            if compiling {
-                ProgressView().controlSize(.small)
-            }
-            if let preview {
-                Text("\(preview.pageCount) page\(preview.pageCount == 1 ? "" : "s")")
+            switch mode {
+            case .write:
+                if hasErrors {
+                    Button {
+                        mode = .typeset
+                    } label: {
+                        Circle().fill(.red).frame(width: 8, height: 8)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Compile errors — open Typeset mode")
+                }
+                Text(wordCountSummary)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            case .typeset:
+                if compiling { ProgressView().controlSize(.small) }
+                if let preview {
+                    Text("\(preview.pageCount) page\(preview.pageCount == 1 ? "" : "s")")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                exportButton
+                Toggle(isOn: $showPreview) {
+                    Image(systemName: "sidebar.squares.trailing")
+                }
+                .toggleStyle(.button)
+                .help("Show preview")
+                Button("Save", action: saveToDisk)
+                    .keyboardShortcut("s", modifiers: .command)
+                    .disabled(!dirty)
+            case .read:
+                if let preview {
+                    Text("\(preview.pageCount) page\(preview.pageCount == 1 ? "" : "s")")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                exportButton
             }
-            Button {
-                exportPDF()
-            } label: {
-                Label("Export PDF", systemImage: "square.and.arrow.up")
+
+            Picker("Mode", selection: $mode) {
+                ForEach(TypstMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
             }
-            .disabled(previewData == nil)
-            .help("Export the compiled PDF")
-            Toggle(isOn: $showPreview) {
-                Image(systemName: "sidebar.squares.trailing")
-            }
-            .toggleStyle(.button)
-            .help("Show preview")
-            Button("Save", action: save)
-                .keyboardShortcut("s", modifiers: .command)
-                .disabled(!dirty)
+            .pickerStyle(.segmented)
+            .controlSize(.small)
+            .fixedSize()
+            .labelsHidden()
         }
         .padding(8)
     }
 
-    @ViewBuilder
-    private var editorAndPreview: some View {
+    private var exportButton: some View {
+        Button {
+            exportPDF()
+        } label: {
+            Label("Export PDF", systemImage: "square.and.arrow.up")
+        }
+        .disabled(previewData == nil)
+        .help("Export the compiled PDF")
+    }
+
+    private var wordCountSummary: String {
+        let words = text.split { $0.isWhitespace || $0.isNewline }.count
+        let minutes = max(1, Int((Double(words) / 200).rounded()))
+        return "\(words) words · ~\(minutes) min"
+    }
+
+    // MARK: Layouts
+
+    /// Prose layout: a centered column on the page color, nothing else.
+    private var writeLayout: some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 24)
+            editor(fontSize: 14)
+                .frame(maxWidth: 760)
+            Spacer(minLength: 24)
+        }
+        .background(Color(nsColor: pageBackground))
+    }
+
+    private var typesetLayout: some View {
         GeometryReader { geo in
             let handle: CGFloat = 7
             let available = max(geo.size.width - (showPreview ? handle : 0), 1)
@@ -128,7 +271,7 @@ struct TypstCanvas: View {
                 : geo.size.width
 
             HStack(spacing: 0) {
-                editor.frame(width: editorWidth)
+                editor(fontSize: 12).frame(width: editorWidth)
                 if showPreview {
                     divider(available: available)
                     previewColumn.frame(maxWidth: .infinity)
@@ -138,29 +281,28 @@ struct TypstCanvas: View {
         }
     }
 
-    private var editor: some View {
-        // Same identity-gating as the TextEditor plugin: SourceEditor reads its
-        // binding once at construction, so it must never exist while `text` holds
-        // another file. (No tree-sitter grammar for Typst in CodeEditLanguages yet,
-        // so highlighting is plain — line numbers and editing niceties still apply.)
+    private func editor(fontSize: CGFloat) -> some View {
         SourceEditor(
             $text,
             language: .default,
             configuration: SourceEditorConfiguration(
                 appearance: .init(
                     theme: colorScheme == .dark ? .typstDark : .typstLight,
-                    font: .monospacedSystemFont(ofSize: 12, weight: .regular),
-                    wrapLines: true               // prose-like source: wrap, don't scroll
+                    font: .monospacedSystemFont(ofSize: fontSize, weight: .regular),
+                    lineHeightMultiple: mode == .write ? 1.35 : 1.2,
+                    wrapLines: true
                 ),
                 behavior: .init(indentOption: .spaces(count: 2))
             ),
-            state: $editorState
+            state: $editorState,
+            highlightProviders: [highlighter]
         )
         .id(nodeID)
         .clipped()
         .onChange(of: text) {
             guard loadedNode == nodeID else { return }
             scheduleCompile(delay: .milliseconds(400))
+            if mode.autosaves { scheduleAutosave() }
         }
     }
 
@@ -195,12 +337,18 @@ struct TypstCanvas: View {
             }
         } else if let preview {
             PDFPreview(document: preview)
-        } else if diagnostics.contains(where: { $0.severity == .error }) {
+        } else if hasErrors {
             ContentUnavailableView("Compile Failed", systemImage: "exclamationmark.triangle",
-                                   description: Text("Fix the errors below to see the preview."))
+                                   description: Text(mode == .typeset
+                                        ? "Fix the errors below to see the preview."
+                                        : "Open Typeset mode to see the errors."))
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    private var pageBackground: NSColor {
+        colorScheme == .dark ? NSColor(hex: "292A30") : NSColor(hex: "FFFFFF")
     }
 
     // MARK: File IO
@@ -227,8 +375,17 @@ struct TypstCanvas: View {
         }
     }
 
-    private func save() {
-        guard let url = fileURL else { return }
+    private func scheduleAutosave() {
+        autosaveTask?.cancel()
+        autosaveTask = Task {
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled, dirty else { return }
+            saveToDisk()
+        }
+    }
+
+    private func saveToDisk() {
+        guard let url = fileURL, dirty else { return }
         do {
             try text.write(to: url, atomically: true, encoding: .utf8)
             savedText = text
@@ -369,9 +526,9 @@ private extension EditorTheme {
             selection: NSColor(hex: "B2D7FF"),
             keywords: Attribute(color: NSColor(hex: "9B2393"), bold: true),
             commands: Attribute(color: NSColor(hex: "326D74")),
-            types: Attribute(color: NSColor(hex: "0B4F79")),
+            types: Attribute(color: NSColor(hex: "0B4F79"), bold: true),
             attributes: Attribute(color: NSColor(hex: "815F03")),
-            variables: Attribute(color: NSColor(hex: "0F68A0")),
+            variables: Attribute(color: NSColor(hex: "0F68A0"), italic: true),
             values: Attribute(color: NSColor(hex: "6C36A9")),
             numbers: Attribute(color: NSColor(hex: "1C00CF")),
             strings: Attribute(color: NSColor(hex: "C41A16")),
@@ -390,9 +547,9 @@ private extension EditorTheme {
             selection: NSColor(hex: "646F83"),
             keywords: Attribute(color: NSColor(hex: "FF7AB2"), bold: true),
             commands: Attribute(color: NSColor(hex: "78C2B3")),
-            types: Attribute(color: NSColor(hex: "6BDFFF")),
+            types: Attribute(color: NSColor(hex: "6BDFFF"), bold: true),
             attributes: Attribute(color: NSColor(hex: "CC9768")),
-            variables: Attribute(color: NSColor(hex: "4EB0CC")),
+            variables: Attribute(color: NSColor(hex: "4EB0CC"), italic: true),
             values: Attribute(color: NSColor(hex: "B281EB")),
             numbers: Attribute(color: NSColor(hex: "D9C97C")),
             strings: Attribute(color: NSColor(hex: "FF8170")),

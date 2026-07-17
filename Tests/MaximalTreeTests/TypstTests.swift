@@ -33,6 +33,101 @@ import Foundation
     }
 }
 
+@Suite struct TypstNotesTests {
+    private func tempDir() throws -> URL {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("typst-notes-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    @Test func packageInstallIsIdempotent() throws {
+        let data = try tempDir()
+        defer { try? FileManager.default.removeItem(at: data) }
+
+        let dir = try TypstNotes.installPackage(dataDirectory: data)
+        let manifest = dir.appendingPathComponent("typst.toml")
+        let library = dir.appendingPathComponent("lib.typ")
+        #expect(FileManager.default.fileExists(atPath: manifest.path))
+        #expect(try String(contentsOf: library, encoding: .utf8) == TypstNotes.library)
+
+        let firstDate = try FileManager.default
+            .attributesOfItem(atPath: library.path)[.modificationDate] as? Date
+        try TypstNotes.installPackage(dataDirectory: data)   // second run: no rewrite
+        let secondDate = try FileManager.default
+            .attributesOfItem(atPath: library.path)[.modificationDate] as? Date
+        #expect(firstDate == secondDate)
+    }
+
+    @Test func newNoteURLsAreUniqued() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let date = Date(timeIntervalSince1970: 1_790_000_000)
+
+        let first = TypstNotes.newNoteURL(in: dir, date: date)
+        try "x".write(to: first, atomically: true, encoding: .utf8)
+        let second = TypstNotes.newNoteURL(in: dir, date: date)
+
+        #expect(first != second)
+        #expect(second.lastPathComponent.hasSuffix(" 2.typ"))
+    }
+
+    @Test func dailyNoteURLIsStableForADay() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let noon = Date(timeIntervalSince1970: 1_790_000_000)
+        let laterSameDay = noon.addingTimeInterval(3600)
+        #expect(TypstNotes.dailyNoteURL(in: dir, date: noon)
+                == TypstNotes.dailyNoteURL(in: dir, date: laterSameDay))
+    }
+
+    @Test func templatesImportThePackage() {
+        #expect(TypstNotes.noteTemplate(title: "T").contains("@local/mtnotes"))
+        #expect(TypstNotes.dailyNoteTemplate().contains("@local/mtnotes"))
+    }
+}
+
+@Suite struct TypstSyntaxTests {
+    private func kinds(_ text: String) -> [TypstSyntax.TokenKind] {
+        TypstSyntax.tokens(in: text).map(\.kind)
+    }
+
+    @Test func tokenizesHeadingsAtLineStartOnly() {
+        #expect(kinds("= Title\n") == [.heading])
+        #expect(kinds("a = b\n").isEmpty)                 // not a heading mid-line
+    }
+
+    @Test func commentsClaimTheirContents() {
+        // The #call inside the comment must not be tokenized separately.
+        #expect(kinds("// has #call inside\n") == [.comment])
+        #expect(kinds("/* = not a heading */") == [.comment])
+    }
+
+    @Test func markupKinds() {
+        #expect(kinds("*bold*") == [.strong])
+        #expect(kinds("_emph_") == [.emphasis])
+        #expect(kinds("`raw`") == [.raw])
+        #expect(kinds("$x^2$") == [.math])
+        #expect(kinds("#import x") == [.call])
+        #expect(kinds("<label>") == [.label])
+        #expect(kinds("@reference") == [.reference])
+    }
+
+    @Test func rawClaimsItsContents() {
+        let tokens = TypstSyntax.tokens(in: "```\n#code() = *x*\n```")
+        #expect(tokens.count == 1)
+        #expect(tokens[0].kind == .raw)
+    }
+
+    @Test func tokenRangesAreValid() {
+        let text = "= H\nSome *bold* and #call(x) here $m$\n"
+        let ns = text as NSString
+        for token in TypstSyntax.tokens(in: text) {
+            #expect(token.range.location + token.range.length <= ns.length)
+        }
+    }
+}
+
 /// Integration tests against the real typst CLI; skipped on machines without it.
 @Suite(.enabled(if: TypstCompiler.isAvailable))
 struct TypstCompilerTests {
@@ -65,5 +160,22 @@ struct TypstCompilerTests {
             documentURL: try tempDocURL())
         #expect(output.pdf != nil)
         #expect(output.diagnostics.contains { $0.severity == .warning })
+    }
+
+    /// The whole notes convention hinges on this: the bundled package installs into
+    /// typst's real data directory and a `#task` document compiles against it.
+    @Test func bundledPackageCompiles() async throws {
+        try TypstNotes.installPackage()
+        let source = """
+        \(TypstNotes.packageImport)
+
+        = Notes
+        #task[Buy milk]
+        #task(done: true, due: "2026-07-20", tags: ("errands",))[Post letter]
+        """
+        let output = await TypstCompiler.compile(source: source,
+                                                 documentURL: try tempDocURL())
+        #expect(output.diagnostics.filter { $0.severity == .error }.isEmpty)
+        #expect(output.pdf != nil)
     }
 }

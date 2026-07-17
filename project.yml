@@ -102,6 +102,10 @@ targets:
       base:
         PRODUCT_NAME: Typst
         PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.plugin.typst
+        # Swift 5 mode for this target only: it conforms to HighlightProviding from
+        # CodeEditSourceEditor (a Swift 5 module), and Swift 6 witness checking
+        # rejects every spelling of that protocol's @MainActor completion closures.
+        SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_NSPrincipalClass: TypstPlugin
         LD_RUNPATH_SEARCH_PATHS:
