@@ -7,6 +7,18 @@ struct AppCommands: Commands {
     var model: AppModel
 
     var body: some Commands {
+        // Pane commands live in the system View menu, next to its layout controls.
+        CommandGroup(after: .sidebar) {
+            Divider()
+            Button("Split Right") { model.splitPaneRight() }
+                .keyboardShortcut("d", modifiers: .command)
+            Button("Split Down") { model.splitPaneDown() }
+                .keyboardShortcut("d", modifiers: [.command, .shift])
+            Button("Close Pane") { model.closeActivePane() }
+                .keyboardShortcut("w", modifiers: [.command, .control])
+                .disabled(!model.navigation.canClosePane)
+            Divider()
+        }
         CommandMenu("Workspace") {
             WorkspaceMenuItems(model: model, showShortcuts: true)
         }

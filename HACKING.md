@@ -229,6 +229,18 @@ plugin action). Providers are entirely workspace-unaware.
 
 Seeding is **first-launch-only**: an empty workspace the user made stays empty.
 
+### Canvas splits
+
+Each tab holds a **binary split tree of panes** (`SplitNode` in
+`Host/NavigationModel.swift`); arbitrary layouts come from nesting. Every pane has its
+own back/forward history, and one pane per tab is *active* — it's what the sidebar
+opens into, what the inspector and window subtitle follow, and what actions target.
+Split Right (⌘D) / Split Down (⇧⌘D) duplicate the active pane's node into a new active
+pane with fresh history; Close Pane (⌃⌘W) collapses the split (the last pane can't
+close — that's Close Tab). Renames/deletes remap or drop nodes across every pane of
+every tab. None of this touches the plugin API: the host simply instantiates canvases
+per pane, so the same node can be open in two panes at once.
+
 ### The plugin model (option A)
 
 Plugins are **in-process loadable bundles** that link the shared

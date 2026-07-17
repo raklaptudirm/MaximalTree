@@ -83,6 +83,9 @@ final class GraphStore: GraphBackend {
     func newTab(with id: NodeID?) { nav.newTab(with: id); didNavigate() }
     func closeTab(_ tabID: NavigationModel.Tab.ID) { nav.closeTab(tabID); didNavigate() }
     func selectTab(_ i: Int) { nav.selectTab(i); didNavigate() }
+    func splitActivePane(horizontal: Bool) { nav.splitActivePane(horizontal: horizontal); didNavigate() }
+    func closeActivePane() { nav.closeActivePane(); didNavigate() }
+    func activatePane(_ id: UUID) { nav.activatePane(id); didNavigate() }
 
     private func didNavigate() {
         let current = nav.current

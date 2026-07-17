@@ -82,6 +82,12 @@ final class AppModel {
     func closeTab(_ id: NavigationModel.Tab.ID) { store?.closeTab(id) }
     func selectTab(_ i: Int) { store?.selectTab(i) }
 
+    // Canvas splits. "Right" = side by side, "down" = stacked.
+    func splitPaneRight() { store?.splitActivePane(horizontal: true) }
+    func splitPaneDown() { store?.splitActivePane(horizontal: false) }
+    func closeActivePane() { store?.closeActivePane() }
+    func activatePane(_ id: UUID) { store?.activatePane(id) }
+
     /// Actions (from any plugin) that apply to `targets`, defaulting to the current
     /// selection. One registry feeds the menu bar, the palette, the sidebar context
     /// menu, and the inspector.

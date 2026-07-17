@@ -276,6 +276,17 @@ struct TabStrip: View {
 
             Spacer(minLength: 0)
 
+            Button { model.splitPaneRight() } label: { Image(systemName: "rectangle.split.2x1") }
+                .help("Split Right")
+            Button { model.splitPaneDown() } label: { Image(systemName: "rectangle.split.1x2") }
+                .help("Split Down")
+            if model.navigation.canClosePane {
+                Button { model.closeActivePane() } label: { Image(systemName: "xmark.rectangle") }
+                    .help("Close Pane")
+            }
+
+            Divider().frame(height: 16)
+
             Button { model.newTab() } label: { Image(systemName: "plus") }
                 .help("New Tab")
         }
@@ -320,32 +331,161 @@ private struct TabChip: View {
 
 // MARK: - Center: canvas
 
+/// The canvas area: the active tab's split tree, rendered recursively. Each leaf is
+/// an independent pane with its own history; the active pane is what the sidebar,
+/// inspector, and window subtitle follow.
 struct CanvasPane: View {
-    @Environment(HostContext.self) private var host
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        Group {
-            if let id = host.focusedNode {
-                if let node = host.node(id), let canvas = model.store?.canvas(for: node) {
-                    canvas.make(id, host)
+        SplitTreeView(node: model.navigation.activeTab.root)
+            // The canvas must be the flexible one: without this the VStack has no
+            // child that expands, so it sizes to content and centres everything —
+            // which looks like the tab strip claiming half the pane.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // A canvas is arbitrary plugin SwiftUI, and AppKit-backed ones don't
+            // respect the SwiftUI frame on their own (a plugin's scroll view happily
+            // painted its line-number gutter up over the tab strip). Containment is
+            // the host's job: no plugin gets to draw on host chrome.
+            .clipped()
+    }
+}
+
+/// Recursive renderer for the split tree.
+struct SplitTreeView: View {
+    let node: SplitNode
+
+    var body: some View {
+        switch node {
+        case .pane(let pane):
+            PaneView(pane: pane)
+        case .split(let id, let horizontal, let fraction, let first, let second):
+            SplitContainer(id: id, horizontal: horizontal, fraction: fraction,
+                           first: first, second: second)
+        }
+    }
+}
+
+/// A hand-rolled splitter instead of HSplitView/VSplitView: those legacy containers
+/// ignore the column's bounds/safe areas on current macOS and slid panes underneath
+/// the floating sidebar and inspector. Sizing each side as a fraction of the
+/// *measured* container makes overflow structurally impossible.
+private struct SplitContainer: View {
+    let id: UUID
+    let horizontal: Bool
+    let fraction: Double
+    let first: SplitNode
+    let second: SplitNode
+    @Environment(AppModel.self) private var model
+
+    private let handleThickness: CGFloat = 7
+    private let minPane: CGFloat = 100
+
+    var body: some View {
+        GeometryReader { geo in
+            let total = horizontal ? geo.size.width : geo.size.height
+            let available = max(total - handleThickness, 1)
+            let firstLength = min(max(available * CGFloat(fraction), minPane),
+                                  max(available - minPane, minPane))
+
+            Group {
+                if horizontal {
+                    HStack(spacing: 0) {
+                        SplitTreeView(node: first).frame(width: firstLength)
+                        handle(available: available)
+                        SplitTreeView(node: second).frame(maxWidth: .infinity)
+                    }
                 } else {
-                    ContentUnavailableView("Loading…", systemImage: "hourglass")
+                    VStack(spacing: 0) {
+                        SplitTreeView(node: first).frame(height: firstLength)
+                        handle(available: available)
+                        SplitTreeView(node: second).frame(maxHeight: .infinity)
+                    }
                 }
+            }
+            .coordinateSpace(name: id)      // drag locations resolve against this split
+        }
+    }
+
+    /// The divider: a 1pt line inside a wider invisible grab area.
+    private func handle(available: CGFloat) -> some View {
+        ZStack {
+            Color.clear
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(width: horizontal ? 1 : nil, height: horizontal ? nil : 1)
+        }
+        .frame(width: horizontal ? handleThickness : nil,
+               height: horizontal ? nil : handleThickness)
+        .contentShape(Rectangle())
+        .onHover { inside in
+            if inside {
+                (horizontal ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).push()
             } else {
-                ContentUnavailableView("Nothing Selected", systemImage: "square.dashed",
-                                       description: Text("Pick something in the sidebar."))
+                NSCursor.pop()
             }
         }
-        // The canvas must be the flexible one: without this the VStack has no child
-        // that expands, so it sizes to content and centres everything — which looks
-        // like the tab strip claiming half the pane.
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // A canvas is arbitrary plugin SwiftUI, and AppKit-backed ones don't respect
-        // the SwiftUI frame on their own (a plugin's scroll view happily painted its
-        // line-number gutter up over the tab strip). Containment is the host's job:
-        // no plugin gets to draw on host chrome.
-        .clipped()
+        .gesture(
+            DragGesture(minimumDistance: 1, coordinateSpace: .named(id))
+                .onChanged { value in
+                    let position = horizontal ? value.location.x : value.location.y
+                    let fraction = Double((position - handleThickness / 2) / available)
+                    model.navigation.setSplitFraction(id, to: fraction)
+                }
+        )
+        .onTapGesture(count: 2) { model.navigation.setSplitFraction(id, to: 0.5) }
+    }
+}
+
+/// One leaf of the split tree: the canvas for this pane's current node, plus the
+/// active-pane affordances.
+struct PaneView: View {
+    let pane: Pane
+    @Environment(HostContext.self) private var host
+    @Environment(AppModel.self) private var model
+
+    private var isActive: Bool { model.navigation.activePane?.id == pane.id }
+    private var isMultiPane: Bool { model.navigation.canClosePane }
+
+    var body: some View {
+        // No minWidth/minHeight here: a hard minimum would let panes overflow the
+        // column again in tight layouts. Minimum sizes are enforced by the divider
+        // clamp in SplitContainer instead.
+        content
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()                       // same containment guarantee, per pane
+            .overlay {
+                if isMultiPane && isActive {
+                    Rectangle()
+                        .strokeBorder(Color.accentColor.opacity(0.7), lineWidth: 2)
+                        .allowsHitTesting(false)
+                }
+            }
+            .overlay {
+                // Click-to-activate for inactive panes. An overlay (which consumes
+                // that first click) rather than a pass-through gesture, because
+                // AppKit-backed canvases (editor, Quick Look) swallow SwiftUI
+                // gestures — a simultaneous gesture would never fire over them.
+                if isMultiPane && !isActive {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { model.activatePane(pane.id) }
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let id = pane.current {
+            if let node = host.node(id), let canvas = model.store?.canvas(for: node) {
+                canvas.make(id, host)
+            } else {
+                ContentUnavailableView("Loading…", systemImage: "hourglass")
+            }
+        } else {
+            ContentUnavailableView("Nothing Selected", systemImage: "square.dashed",
+                                   description: Text("Pick something in the sidebar."))
+        }
     }
 }
 
