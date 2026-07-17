@@ -35,6 +35,60 @@ final class TypstPlugin: NSObject, Plugin {
             make: { id, host in AnyView(TypstCanvas(nodeID: id).environment(host)) }
         ))
 
+        // Structure: sections/tasks under .typ files, and the mountable agenda.
+        registry.register(provider: TypstProvider())
+        registry.register(children: ChildContribution(
+            matches: { node in
+                node.id.scheme == "file" && node.id.uri.lowercased().hasSuffix(".typ")
+            },
+            children: { id in
+                guard let url = URL(string: id.uri) else { return [] }
+                let items = TypstProvider.outline(ofFileAt: url)
+                return TypstStructure.directChildren(ofSectionAt: nil, in: items).map {
+                    TypstProvider.node(for: $0, file: url, items: items)
+                }
+            }
+        ))
+
+        // Opening a section or task opens its document at the right line.
+        registry.register(canvas: CanvasContribution(
+            priority: 150,
+            matches: { $0.type == TypeID("typst.section") || $0.type == TypeID("typst.task") },
+            make: { id, host in
+                let node = host.node(id)
+                var file: URL? = TypstRef(uri: id.uri).map(\.fileURL)
+                if case .string(let path)? = node?.attributes["file"] {
+                    file = URL(string: path) ?? file
+                }
+                var line: Int?
+                if case .int(let l)? = node?.attributes["line"] { line = l }
+                return AnyView(TypstCanvas(nodeID: id, fileURLOverride: file,
+                                           initialLine: line).environment(host))
+            }
+        ))
+        registry.register(canvas: CanvasContribution(
+            priority: 150,
+            matches: { $0.type == TypeID("typst.agenda") },
+            make: { id, host in AnyView(AgendaCanvas(nodeID: id).environment(host)) }
+        ))
+        registry.register(inspector: InspectorContribution(
+            matches: { $0.type == TypeID("typst.task") },
+            make: { id, host in AnyView(TaskInspector(nodeID: id).environment(host)) }
+        ))
+
+        registry.register(action: Action(
+            id: "typst.notesFolder",
+            title: "Use as Typst Notes Folder",
+            systemImage: "calendar.badge.plus",
+            appliesTo: .type(TypeID("file.directory")),
+            handler: { ctx in
+                guard let dir = ctx.selection.first, dir.scheme == "file",
+                      let url = URL(string: dir.uri) else { return }
+                // Mounts the agenda as a workspace root — the folder *is* the config.
+                ctx.host.mount(TypstRef.agenda(dir: url.path).uri)
+            }
+        ))
+
         registry.register(action: Action(
             id: "typst.newNote",
             title: "New Typst Note",
@@ -91,13 +145,17 @@ enum TypstMode: String, CaseIterable, Identifiable {
     /// save points.
     var autosaves: Bool { self != .typeset }
 
-    static func stored(for id: NodeID) -> TypstMode {
-        UserDefaults.standard.string(forKey: "typst.mode.\(id.uri)")
+    // Keyed by the *file*, not the opened node, so a document keeps its mode
+    // whether opened directly or through one of its section/task nodes.
+    static func stored(forFile url: URL?) -> TypstMode {
+        guard let url else { return .write }
+        return UserDefaults.standard.string(forKey: "typst.mode.\(url.absoluteString)")
             .flatMap(TypstMode.init(rawValue:)) ?? .write
     }
 
-    func store(for id: NodeID) {
-        UserDefaults.standard.set(rawValue, forKey: "typst.mode.\(id.uri)")
+    func store(forFile url: URL?) {
+        guard let url else { return }
+        UserDefaults.standard.set(rawValue, forKey: "typst.mode.\(url.absoluteString)")
     }
 }
 
@@ -105,6 +163,10 @@ enum TypstMode: String, CaseIterable, Identifiable {
 
 struct TypstCanvas: View {
     let nodeID: NodeID
+    /// Set when the opened node is a section/task: the document it lives in.
+    var fileURLOverride: URL? = nil
+    /// Jump the cursor here after loading (section/task navigation).
+    var initialLine: Int? = nil
     @Environment(HostContext.self) private var host
     @Environment(\.colorScheme) private var colorScheme
 
@@ -153,13 +215,18 @@ struct TypstCanvas: View {
         }
         .task(id: nodeID) {
             loadedNode = nil
-            mode = TypstMode.stored(for: nodeID)
+            mode = TypstMode.stored(forFile: fileURL)
             load()
             loadedNode = nodeID
-            if loadError == nil { scheduleCompile(delay: .zero) }
+            if loadError == nil {
+                scheduleCompile(delay: .zero)
+                if let initialLine {
+                    editorState.cursorPositions = [CursorPosition(line: initialLine, column: 1)]
+                }
+            }
         }
         .onChange(of: mode) { previous, current in
-            current.store(for: nodeID)
+            current.store(forFile: fileURL)
             // Entering an autosave mode (or leaving Typeset with edits pending)
             // flushes, so disk always matches what Write/Read show.
             if current.autosaves && dirty { saveToDisk() }
@@ -354,8 +421,15 @@ struct TypstCanvas: View {
     // MARK: File IO
 
     private var fileURL: URL? {
+        if let fileURLOverride { return fileURLOverride }
         guard nodeID.scheme == "file" else { return nil }
         return URL(string: nodeID.uri)
+    }
+
+    /// The document's *file node* — what change notifications must target, even
+    /// when this canvas was opened via a section/task node.
+    private var fileNodeID: NodeID? {
+        fileURL.flatMap { NodeID($0.absoluteString) }
     }
 
     private func load() {
@@ -389,7 +463,11 @@ struct TypstCanvas: View {
         do {
             try text.write(to: url, atomically: true, encoding: .utf8)
             savedText = text
-            host.notify([.modified(nodeID)])
+            // childrenChanged too: the document's contributed outline (sections,
+            // tasks) may have changed shape with the edit.
+            if let fileNodeID {
+                host.notify([.modified(fileNodeID), .childrenChanged(fileNodeID)])
+            }
         } catch {
             loadError = error.localizedDescription
         }

@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+@testable import MaximalTreeKit
 @testable import MaximalTree
 
 @Suite struct TypstDiagnosticsTests {
@@ -125,6 +126,109 @@ import Foundation
         for token in TypstSyntax.tokens(in: text) {
             #expect(token.range.location + token.range.length <= ns.length)
         }
+    }
+}
+
+@Suite struct TypstRefTests {
+    @Test func urisRoundTripAndCanonicalize() throws {
+        let refs = [
+            TypstRef.section(file: "/Users/x/my notes/doc.typ", line: 12),
+            TypstRef.task(file: "/Users/x/doc.typ", index: 3),
+            TypstRef.agenda(dir: "/Users/x/notes"),
+        ]
+        for ref in refs {
+            #expect(TypstRef(uri: ref.uri) == ref)
+            let canonical = try #require(NodeID(ref.uri)?.uri)
+            #expect(NodeID(canonical)?.uri == canonical)      // idempotent
+            #expect(TypstRef(uri: canonical) == ref)          // survives canonicalization
+        }
+    }
+}
+
+@Suite struct TypstStructureTests {
+    private let doc = """
+    = Project
+    #task[Top-level thing]
+
+    == Design
+    Some prose.
+    #task(done: true)[Sketch the API]
+    #task(due: "2026-07-20", tags: ("deep", "urgent"))[Write the core]
+
+    == Build
+    #task(done: false)[Set up CI]
+
+    = Appendix
+    """
+
+    @Test func outlineFindsSectionsAndTasks() {
+        let items = TypstStructure.outline(of: doc)
+        let sections = items.compactMap { if case .section(let s) = $0 { return s } else { return nil } }
+        let tasks = items.compactMap { if case .task(let t) = $0 { return t } else { return nil } }
+
+        #expect(sections.map(\.title) == ["Project", "Design", "Build", "Appendix"])
+        #expect(sections.map(\.level) == [1, 2, 2, 1])
+        #expect(tasks.count == 4)
+        #expect(tasks[0].body == "Top-level thing")
+        #expect(tasks[1].done)
+        #expect(tasks[2].due == "2026-07-20")
+        #expect(tasks[2].tags == ["deep", "urgent"])
+        #expect(!tasks[3].done)
+    }
+
+    @Test func nestingAssignsChildrenCorrectly() throws {
+        let items = TypstStructure.outline(of: doc)
+
+        // Top level: the two level-1 sections; the top task belongs to "Project".
+        let top = TypstStructure.directChildren(ofSectionAt: nil, in: items)
+        #expect(top.count == 2)
+
+        let projectLine = 1
+        let projectChildren = TypstStructure.directChildren(ofSectionAt: projectLine, in: items)
+        // task + Design + Build (the deeper tasks belong to those subsections)
+        #expect(projectChildren.count == 3)
+        guard case .task(let firstChild) = projectChildren[0] else {
+            Issue.record("expected the top-level task first"); return
+        }
+        #expect(firstChild.body == "Top-level thing")
+
+        guard case .section(let design) = projectChildren[1] else {
+            Issue.record("expected Design"); return
+        }
+        let designChildren = TypstStructure.directChildren(ofSectionAt: design.line, in: items)
+        #expect(designChildren.count == 2)     // its two tasks
+    }
+
+    @Test func togglingFlipsExplicitDone() throws {
+        let toggled = try #require(TypstStructure.togglingTask(at: 1, in: doc))
+        #expect(toggled.contains("#task(done: false)[Sketch the API]"))
+        let back = try #require(TypstStructure.togglingTask(at: 1, in: toggled))
+        #expect(back.contains("#task(done: true)[Sketch the API]"))
+    }
+
+    @Test func togglingInsertsDoneIntoExistingArgs() throws {
+        let toggled = try #require(TypstStructure.togglingTask(at: 2, in: doc))
+        #expect(toggled.contains(#"#task(done: true, due: "2026-07-20""#))
+    }
+
+    @Test func togglingBareTaskGainsArgs() throws {
+        let toggled = try #require(TypstStructure.togglingTask(at: 0, in: doc))
+        #expect(toggled.contains("#task(done: true)[Top-level thing]"))
+    }
+
+    @Test func agendaScansAndSorts() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("typst-agenda-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        try "#task(due: \"2026-09-01\")[Later]\n#task(done: true)[Finished]"
+            .write(to: dir.appendingPathComponent("b.typ"), atomically: true, encoding: .utf8)
+        try "#task(due: \"2026-08-01\")[Sooner]\n#task[Undated]"
+            .write(to: dir.appendingPathComponent("a.typ"), atomically: true, encoding: .utf8)
+
+        let tasks = TypstStructure.agendaTasks(under: dir)
+        #expect(tasks.map { $0.task.body } == ["Sooner", "Later", "Undated", "Finished"])
     }
 }
 

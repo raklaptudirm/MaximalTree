@@ -94,3 +94,55 @@ private struct PagingProvider: NodeProvider {
         }
     }
 }
+
+@MainActor
+@Suite struct ChildContributionTests {
+    private func makeStore() -> (GraphStore, HostContext) {
+        let context = HostContext()
+        let registry = Registry()
+        registry.register(provider: PagingProvider())
+        // Another plugin contributes an extra child under every stub.item node.
+        registry.register(children: ChildContribution(
+            matches: { $0.type == TypeID("stub.item") },
+            children: { id in
+                guard let extra = NodeID("\(id.uri)/contributed") else { return [] }
+                return [Node(id: extra, type: "other.extra", label: "contributed")]
+            }
+        ))
+        let store = GraphStore(context: context, registry: registry, nav: NavigationModel())
+        return (store, context)
+    }
+
+    private func waitUntil(_ condition: () -> Bool) async throws {
+        for _ in 0..<200 where !condition() {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(condition())
+    }
+
+    @Test func matchingLeavesGainDisclosure() async throws {
+        let (store, context) = makeStore()
+        let root = try #require(NodeID("stub://root"))
+        store.requestChildren(of: root)
+        try await waitUntil { context.cachedChildren(of: root) != nil }
+
+        // Provider vends stub.item as leaves; the contribution makes them expandable.
+        let child = try #require(context.cachedChildren(of: root)?.first)
+        #expect(context.node(child)?.hasChildren == true)
+    }
+
+    @Test func contributedChildrenAppendAfterOwners() async throws {
+        let (store, context) = makeStore()
+        let item = try #require(NodeID("stub://item/0"))
+        context._ingest(Node(id: item, type: "stub.item"))
+
+        store.requestChildren(of: item)
+        try await waitUntil { context.cachedChildren(of: item) != nil }
+
+        let children = try #require(context.cachedChildren(of: item))
+        // PagingProvider vends 2 children for any node; the contribution appends 1.
+        #expect(children.count == 3)
+        #expect(children.last?.uri.hasSuffix("/contributed") == true)
+        #expect(context.node(children.last!)?.type == TypeID("other.extra"))
+    }
+}

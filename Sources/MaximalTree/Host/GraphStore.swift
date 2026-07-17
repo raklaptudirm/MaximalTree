@@ -8,6 +8,7 @@ final class Registry: PluginRegistry {
     private(set) var providers: [NodeProvider] = []
     private(set) var canvases: [CanvasContribution] = []
     private(set) var inspectors: [InspectorContribution] = []
+    private(set) var childContributions: [ChildContribution] = []
     private(set) var actions: [Action] = []
 
     /// Handed to plugins during registration; populated once every plugin has loaded.
@@ -17,6 +18,7 @@ final class Registry: PluginRegistry {
     func register(provider: NodeProvider) { providers.append(provider) }
     func register(canvas: CanvasContribution) { canvases.append(canvas) }
     func register(inspector: InspectorContribution) { inspectors.append(inspector) }
+    func register(children: ChildContribution) { childContributions.append(children) }
     func register(action: Action) { actions.append(action) }
 }
 
@@ -197,10 +199,22 @@ final class GraphStore: GraphBackend {
 
     // MARK: Async loads
 
+    /// A leaf that some plugin contributes children to is, effectively, not a leaf:
+    /// flip `hasChildren` so the sidebar offers a disclosure. Applied at every
+    /// ingest point.
+    private func decorate(_ node: Node) -> Node {
+        guard !node.hasChildren,
+              registry.childContributions.contains(where: { $0.matches(node) })
+        else { return node }
+        var node = node
+        node.hasChildren = true
+        return node
+    }
+
     private func ingestNode(_ id: NodeID) {
         guard let p = provider(for: id) else { return }
         Task { @MainActor in
-            if let n = await p.node(for: id) { context._ingest(n) }
+            if let n = await p.node(for: id) { context._ingest(decorate(n)) }
         }
     }
 
@@ -211,8 +225,19 @@ final class GraphStore: GraphBackend {
         childrenInFlight.insert(id)
         Task { @MainActor in
             let page = await p.children(of: id, page: nil)
-            for n in page.items { context._ingest(n) }
-            context._setChildren(page.items.map(\.id), of: id)
+            var items = page.items.map(decorate)
+
+            // Merge in children contributed by other plugins, after the owner's.
+            var subject = context.node(id)
+            if subject == nil { subject = (await p.node(for: id)).map(decorate) }
+            if let node = subject {
+                for contribution in registry.childContributions where contribution.matches(node) {
+                    items += await contribution.children(id).map(decorate)
+                }
+            }
+
+            for n in items { context._ingest(n) }
+            context._setChildren(items.map(\.id), of: id)
             context._setChildCursor(page.next, of: id)
             childrenInFlight.remove(id)
         }
@@ -227,9 +252,12 @@ final class GraphStore: GraphBackend {
         childrenInFlight.insert(id)
         Task { @MainActor in
             let page = await p.children(of: id, page: cursor)
-            for n in page.items { context._ingest(n) }
+            let items = page.items.map(decorate)
+            for n in items { context._ingest(n) }
+            // Later provider pages append at the end — after any contributed
+            // children. Ordering blip accepted; paginated + contributed rarely mix.
             let existing = context.cachedChildren(of: id) ?? []
-            context._setChildren(existing + page.items.map(\.id), of: id)
+            context._setChildren(existing + items.map(\.id), of: id)
             context._setChildCursor(page.next, of: id)
             childrenInFlight.remove(id)
         }

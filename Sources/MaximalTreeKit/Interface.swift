@@ -110,6 +110,28 @@ public struct InspectorContribution {
     }
 }
 
+// MARK: - Child contributions
+
+/// Lets a plugin add children to nodes owned by *another* provider — the same
+/// cross-plugin idea as renderer contributions, applied to the tree itself. The
+/// host appends contributed children after the owning provider's, and treats
+/// matching leaf nodes as expandable so the sidebar shows a disclosure.
+///
+/// E.g. the Typst plugin contributes a document's sections and tasks as children
+/// of `.typ` file nodes that the FileSystem provider owns.
+public struct ChildContribution: Sendable {
+    public let matches: @Sendable (Node) -> Bool
+    public let children: @Sendable (NodeID) async -> [Node]
+
+    public init(
+        matches: @escaping @Sendable (Node) -> Bool,
+        children: @escaping @Sendable (NodeID) async -> [Node]
+    ) {
+        self.matches = matches
+        self.children = children
+    }
+}
+
 // MARK: - Plugin + Registry
 
 /// What a plugin registers into at load. One-shot: a plugin declares what it can
@@ -123,6 +145,7 @@ public protocol PluginRegistry: AnyObject {
     func register(provider: NodeProvider)
     func register(canvas: CanvasContribution)
     func register(inspector: InspectorContribution)
+    func register(children: ChildContribution)
     func register(action: Action)
 }
 

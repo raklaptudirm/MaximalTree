@@ -60,8 +60,10 @@ Sources/
   TextEditorPlugin/             # reference cross-plugin renderer (loadable bundle)
     TextEditor.swift            #   CodeEditSourceEditor canvas over filesystem files
   TypstPlugin/                  # reference compiler-backed canvas (loadable bundle)
-    TypstCore.swift             #   typst CLI wrapper, diagnostics, notes pkg, tokenizer
+    TypstCore.swift             #   CLI wrapper, diagnostics, notes pkg, tokenizer,
+                                #   TypstRef URIs + structure parsing (all tested)
     TypstHighlighter.swift      #   HighlightProviding over the tokenizer
+    TypstProvider.swift         #   section/task/agenda nodes, agenda canvas, toggles
     TypstPlugin.swift           #   Write/Typeset/Read modes, autosave, note actions
                                 #   (target builds in Swift 5 mode — see project.yml)
 Vendor/SwiftLintPlugin/         # stub overriding a dependency's build-tool plugin
@@ -175,6 +177,16 @@ block the main actor in a provider.
 `NodeTint`). **The host never guesses an icon from a node's type** — if you find a
 `type == "file.…"` check in `Sources/MaximalTree/`, that's a bug. Render nodes with
 `NodeIconView(node.icon)` (in the SDK, so host and plugins resolve tints identically).
+
+### Contributing children to another plugin's nodes
+
+`ChildContribution` (matcher + async children, same pattern as renderers) lets a
+plugin hang nodes *under* nodes another provider owns. The host appends contributed
+children after the owner's and flips `hasChildren` on matching leaves so the sidebar
+offers a disclosure. Reference: the Typst plugin contributes a document's sections
+and tasks as children of `.typ` file nodes — the sidebar becomes an org-style
+outline, and the contributed nodes are ordinary nodes (their own provider, canvases,
+inspector) from there on.
 
 ### Composing across plugins
 

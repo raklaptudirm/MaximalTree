@@ -230,6 +230,334 @@ enum TypstNotes {
     }
 }
 
+// MARK: - Structure references
+
+/// A structural element of a Typst document, encoded as a canonicalizable
+/// `typst://` NodeID (same URLComponents discipline as the git plugin's URIs):
+///   typst://section?file=<path>&line=<n>
+///   typst://task?file=<path>&index=<n>
+///   typst://agenda?dir=<path>
+struct TypstRef: Equatable {
+    enum Kind: String {
+        case section, task, agenda
+    }
+
+    let kind: Kind
+    let path: String        // document path (section/task) or directory (agenda)
+    let line: Int?          // section anchor
+    let index: Int?         // n-th #task in the document
+
+    static func section(file: String, line: Int) -> TypstRef {
+        TypstRef(kind: .section, path: file, line: line, index: nil)
+    }
+    static func task(file: String, index: Int) -> TypstRef {
+        TypstRef(kind: .task, path: file, line: nil, index: index)
+    }
+    static func agenda(dir: String) -> TypstRef {
+        TypstRef(kind: .agenda, path: dir, line: nil, index: nil)
+    }
+
+    init(kind: Kind, path: String, line: Int?, index: Int?) {
+        self.kind = kind
+        self.path = path
+        self.line = line
+        self.index = index
+    }
+
+    init?(uri: String) {
+        guard let components = URLComponents(string: uri), components.scheme == "typst",
+              let host = components.host, let kind = Kind(rawValue: host) else { return nil }
+        let query = { (name: String) -> String? in
+            components.queryItems?.first { $0.name == name }?.value
+        }
+        switch kind {
+        case .section:
+            guard let file = query("file"), let line = query("line").flatMap(Int.init) else { return nil }
+            self = .section(file: file, line: line)
+        case .task:
+            guard let file = query("file"), let index = query("index").flatMap(Int.init) else { return nil }
+            self = .task(file: file, index: index)
+        case .agenda:
+            guard let dir = query("dir") else { return nil }
+            self = .agenda(dir: dir)
+        }
+    }
+
+    var uri: String {
+        var components = URLComponents()
+        components.scheme = "typst"
+        components.host = kind.rawValue
+        switch kind {
+        case .section:
+            components.queryItems = [URLQueryItem(name: "file", value: path),
+                                     URLQueryItem(name: "line", value: line.map(String.init))]
+        case .task:
+            components.queryItems = [URLQueryItem(name: "file", value: path),
+                                     URLQueryItem(name: "index", value: index.map(String.init))]
+        case .agenda:
+            components.queryItems = [URLQueryItem(name: "dir", value: path)]
+        }
+        return components.string ?? "typst://\(kind.rawValue)"
+    }
+
+    var fileURL: URL { URL(fileURLWithPath: path) }
+}
+
+// MARK: - Document structure
+
+/// Source-level structure extraction: headings and `#task(...)` calls with their
+/// locations. Parses text (not the compiler) so outlines stay alive on unsaved and
+/// even broken buffers — a deliberate deviation from query-based extraction; the
+/// conventions themselves are typst-native, so a `typst query` upgrade is drop-in.
+enum TypstStructure {
+    struct Section: Equatable, Sendable {
+        let level: Int
+        let title: String
+        let line: Int          // 1-based
+    }
+
+    struct TaskItem: Equatable, Sendable {
+        let index: Int         // n-th #task in the document, the toggle key
+        let body: String
+        let done: Bool
+        let due: String?       // as written, conventionally "YYYY-MM-DD"
+        let tags: [String]
+        let line: Int          // 1-based
+    }
+
+    enum Item: Equatable, Sendable {
+        case section(Section)
+        case task(TaskItem)
+
+        var line: Int {
+            switch self {
+            case .section(let section): return section.line
+            case .task(let task): return task.line
+            }
+        }
+    }
+
+    /// All sections and tasks, in document order.
+    static func outline(of source: String) -> [Item] {
+        var items: [Item] = []
+        let ns = source as NSString
+
+        if let headingRegex = try? NSRegularExpression(pattern: #"^ *(=+) +(.*)$"#,
+                                                       options: [.anchorsMatchLines]) {
+            headingRegex.enumerateMatches(in: source,
+                                          range: NSRange(location: 0, length: ns.length)) { match, _, _ in
+                guard let match else { return }
+                let level = match.range(at: 1).length
+                let title = ns.substring(with: match.range(at: 2))
+                    .trimmingCharacters(in: .whitespaces)
+                items.append(.section(Section(level: level, title: title,
+                                              line: line(of: match.range.location, in: ns))))
+            }
+        }
+
+        for (index, occurrence) in taskOccurrences(in: source).enumerated() {
+            let details = parseTask(after: occurrence, in: ns)
+            items.append(.task(TaskItem(index: index,
+                                        body: details.body,
+                                        done: details.done,
+                                        due: details.due,
+                                        tags: details.tags,
+                                        line: line(of: occurrence.location, in: ns))))
+        }
+
+        return items.sorted { $0.line < $1.line }
+    }
+
+    /// The direct children of the section anchored at `sectionLine` (nil = the
+    /// document's top level): child sections one visible level down, plus tasks not
+    /// inside any child section.
+    static func directChildren(ofSectionAt sectionLine: Int?, in items: [Item]) -> [Item] {
+        var parentLevel = 0
+        var slice = items[...]
+
+        if let sectionLine {
+            guard let start = items.firstIndex(where: {
+                if case .section(let section) = $0 { return section.line == sectionLine }
+                return false
+            }), case .section(let parent) = items[start] else { return [] }
+            parentLevel = parent.level
+            var end = items.endIndex
+            for i in items.index(after: start)..<items.endIndex {
+                if case .section(let section) = items[i], section.level <= parentLevel {
+                    end = i
+                    break
+                }
+            }
+            slice = items[items.index(after: start)..<end]
+        }
+
+        let childLevel = slice.compactMap { item -> Int? in
+            if case .section(let section) = item { return section.level }
+            return nil
+        }.min()
+
+        var result: [Item] = []
+        var insideChild = false
+        for item in slice {
+            switch item {
+            case .section(let section):
+                if section.level == childLevel {
+                    result.append(item)
+                    insideChild = true
+                }
+            case .task:
+                if !insideChild { result.append(item) }
+            }
+        }
+        return result
+    }
+
+    /// Rewrite the source so the n-th `#task` flips its `done:` state. Returns nil
+    /// when the task can't be located.
+    static func togglingTask(at index: Int, in source: String) -> String? {
+        let occurrences = taskOccurrences(in: source)
+        guard occurrences.indices.contains(index) else { return nil }
+        let ns = source as NSString
+        let occurrence = occurrences[index]
+        let afterTask = occurrence.location + occurrence.length
+
+        guard afterTask < ns.length else { return nil }
+        if ns.character(at: afterTask) == UInt8(ascii: "(") {
+            guard let args = balancedRange(in: ns, from: afterTask,
+                                           open: "(", close: ")") else { return nil }
+            let argsText = ns.substring(with: args)
+            let inner = NSRange(location: args.location + 1, length: args.length - 2)
+            if let doneRegex = try? NSRegularExpression(pattern: #"done\s*:\s*(true|false)"#),
+               let match = doneRegex.firstMatch(in: source, range: args) {
+                let flipped = ns.substring(with: match.range(at: 1)) == "true"
+                    ? "done: false" : "done: true"
+                return ns.replacingCharacters(in: match.range, with: flipped)
+            }
+            // Args without done: — prepend it.
+            let insertion = inner.length == 0 || argsText.dropFirst().dropLast()
+                .trimmingCharacters(in: .whitespaces).isEmpty ? "done: true" : "done: true, "
+            return ns.replacingCharacters(in: NSRange(location: args.location + 1, length: 0),
+                                          with: insertion)
+        }
+        // Bare `#task[...]` — give it arguments.
+        return ns.replacingCharacters(in: NSRange(location: afterTask, length: 0),
+                                      with: "(done: true)")
+    }
+
+    /// Outline of a document on disk (empty when unreadable).
+    static func outline(ofFileAt url: URL) -> [Item] {
+        guard let source = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        return outline(of: source)
+    }
+
+    /// Every task in every `.typ` under `dir` (recursive, hidden files skipped,
+    /// capped defensively), sorted: undone before done, then by due date (none
+    /// last), then location. ISO dates sort lexically.
+    static func agendaTasks(under dir: URL) -> [(file: URL, task: TaskItem)] {
+        var files: [URL] = []
+        if let enumerator = FileManager.default.enumerator(
+            at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+            for case let url as URL in enumerator {
+                if url.pathExtension.lowercased() == "typ" { files.append(url) }
+                if files.count >= 300 { break }
+            }
+        }
+        var result: [(file: URL, task: TaskItem)] = []
+        for file in files.sorted(by: { $0.path < $1.path }) {
+            for item in outline(ofFileAt: file) {
+                if case .task(let task) = item { result.append((file, task)) }
+            }
+        }
+        return result.sorted { a, b in
+            if a.task.done != b.task.done { return !a.task.done }
+            switch (a.task.due, b.task.due) {
+            case (let l?, let r?) where l != r: return l < r
+            case (.some, .none): return true
+            case (.none, .some): return false
+            default: return (a.file.path, a.task.line) < (b.file.path, b.task.line)
+            }
+        }
+    }
+
+    // MARK: Internals
+
+    private static func taskOccurrences(in source: String) -> [NSRange] {
+        guard let regex = try? NSRegularExpression(pattern: #"#task(?![A-Za-z0-9_-])"#)
+        else { return [] }
+        let ns = source as NSString
+        return regex.matches(in: source, range: NSRange(location: 0, length: ns.length))
+            .map(\.range)
+    }
+
+    private static func parseTask(
+        after occurrence: NSRange, in ns: NSString
+    ) -> (body: String, done: Bool, due: String?, tags: [String]) {
+        var cursor = occurrence.location + occurrence.length
+        var done = false
+        var due: String?
+        var tags: [String] = []
+
+        if cursor < ns.length, ns.character(at: cursor) == UInt8(ascii: "("),
+           let args = balancedRange(in: ns, from: cursor, open: "(", close: ")") {
+            let text = ns.substring(with: args)
+            done = text.range(of: #"done\s*:\s*true"#, options: .regularExpression) != nil
+            if let match = text.range(of: #"due\s*:\s*"([^"]*)""#, options: .regularExpression) {
+                let matched = String(text[match])
+                due = matched.split(separator: "\"").dropFirst().first.map(String.init)
+            }
+            if let match = text.range(of: #"tags\s*:\s*\(([^)]*)\)"#, options: .regularExpression) {
+                let inner = String(text[match]).drop { $0 != "(" }.dropFirst().dropLast()
+                tags = inner.split(separator: ",").map {
+                    $0.trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
+                }.filter { !$0.isEmpty }
+            }
+            cursor = args.location + args.length
+        }
+
+        var body = ""
+        if cursor < ns.length, ns.character(at: cursor) == UInt8(ascii: "["),
+           let bodyRange = balancedRange(in: ns, from: cursor, open: "[", close: "]") {
+            body = ns.substring(with: NSRange(location: bodyRange.location + 1,
+                                              length: bodyRange.length - 2))
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespaces)
+            if body.count > 80 { body = String(body.prefix(79)) + "…" }
+        }
+        return (body.isEmpty ? "task" : body, done, due, tags)
+    }
+
+    /// Range of a balanced delimiter pair starting at `start` (which must hold
+    /// `open`), inclusive of both delimiters.
+    private static func balancedRange(
+        in ns: NSString, from start: Int, open: Character, close: Character
+    ) -> NSRange? {
+        let openChar = open.asciiValue.map(UInt16.init) ?? 0
+        let closeChar = close.asciiValue.map(UInt16.init) ?? 0
+        var depth = 0
+        var i = start
+        while i < ns.length {
+            let char = ns.character(at: i)
+            if char == openChar { depth += 1 }
+            if char == closeChar {
+                depth -= 1
+                if depth == 0 { return NSRange(location: start, length: i - start + 1) }
+            }
+            i += 1
+        }
+        return nil
+    }
+
+    private static func line(of location: Int, in ns: NSString) -> Int {
+        var line = 1
+        var i = 0
+        while i < location && i < ns.length {
+            if ns.character(at: i) == UInt8(ascii: "\n") { line += 1 }
+            i += 1
+        }
+        return line
+    }
+}
+
 // MARK: - Syntax
 
 /// A fast, regex-based tokenizer for Typst markup. Foundation-only so it's unit

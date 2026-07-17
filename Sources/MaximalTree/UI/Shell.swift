@@ -197,6 +197,11 @@ struct NodeRow: View {
         let node = host.node(nodeID)
         Group {
             if node?.hasChildren == true {
+                // Known beta-OS glitch: animated row insertion in this customized
+                // List occasionally composites a row at a stale offset, overlapping
+                // a neighbour. Disabling the disclosure animation fixes it, but the
+                // animation is worth more than the rare artifact — revisit when the
+                // OS stabilizes (or if the sidebar ever moves off List).
                 DisclosureGroup(isExpanded: $expanded) {
                     ForEach(host.children(of: nodeID), id: \.self) { child in
                         NodeRow(nodeID: child)
