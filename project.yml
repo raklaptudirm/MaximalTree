@@ -87,6 +87,26 @@ targets:
         LD_RUNPATH_SEARCH_PATHS:
           - "@loader_path/../../../../Frameworks"
 
+  TypstPlugin:
+    type: bundle
+    platform: macOS
+    sources: [Sources/TypstPlugin]
+    dependencies:
+      - target: MaximalTreeKit
+        embed: false
+      - package: CodeEditSourceEditor
+        product: CodeEditSourceEditor
+      - package: CodeEditLanguages
+        product: CodeEditLanguages
+    settings:
+      base:
+        PRODUCT_NAME: Typst
+        PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.plugin.typst
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSPrincipalClass: TypstPlugin
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@loader_path/../../../../Frameworks"
+
   GitPlugin:
     type: bundle
     platform: macOS
@@ -127,6 +147,12 @@ targets:
         copy:
           destination: plugins
           codeSign: true
+      - target: TypstPlugin
+        embed: true
+        link: false
+        copy:
+          destination: plugins
+          codeSign: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.app
@@ -140,7 +166,13 @@ targets:
     # Compiles the plugin sources directly so provider logic stays unit-testable
     # without dlopen. The host skips loading the .bundle under XCTest to avoid a
     # duplicate principal class in-process.
-    sources: [Tests/MaximalTreeTests, Sources/FileSystemPlugin, Sources/GitPlugin]
+    # TypstCore only (not the views): the compiler/diagnostics logic is unit-testable
+    # without dragging CodeEditSourceEditor into the test target.
+    sources:
+      - Tests/MaximalTreeTests
+      - Sources/FileSystemPlugin
+      - Sources/GitPlugin
+      - path: Sources/TypstPlugin/TypstCore.swift
     dependencies:
       - target: MaximalTree          # hosts the tests; wires TEST_HOST/BUNDLE_LOADER
     settings:

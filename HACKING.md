@@ -59,6 +59,9 @@ Sources/
     FileViews.swift             #   canvas (Quick Look) + inspector (editable)
   TextEditorPlugin/             # reference cross-plugin renderer (loadable bundle)
     TextEditor.swift            #   CodeEditSourceEditor canvas over filesystem files
+  TypstPlugin/                  # reference compiler-backed canvas (loadable bundle)
+    TypstCore.swift             #   typst CLI wrapper + diagnostics parser (tested)
+    TypstPlugin.swift           #   editor + live PDF preview canvas for .typ files
 Vendor/SwiftLintPlugin/         # stub overriding a dependency's build-tool plugin
   GitPlugin/                    # reference non-file provider (loadable bundle)
     Git.swift                   #   git:// URI model, git CLI, provider, mount action
@@ -322,7 +325,9 @@ registry.registerInspector(forType: "myscheme.thing") { id, host in
 views write ordinary strongly-typed SwiftUI. Pass `HostContext` into the environment so
 your views can observe it. Providers should attach a UTI via `attributes["uti"]` so
 content-type matchers work (`TextEditorPlugin` is the reference for cross-plugin
-rendering).
+rendering; `TypstPlugin` is the reference for a compiler-backed canvas — it shells out
+to an external CLI, compiles the unsaved buffer via stdin on a debounce, and composes
+an editor, a PDFKit preview, and a diagnostics strip in one canvas).
 
 ### 3. `Action`s (optional)
 
