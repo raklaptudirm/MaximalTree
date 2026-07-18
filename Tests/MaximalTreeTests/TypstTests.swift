@@ -88,47 +88,6 @@ import Foundation
     }
 }
 
-@Suite struct TypstSyntaxTests {
-    private func kinds(_ text: String) -> [TypstSyntax.TokenKind] {
-        TypstSyntax.tokens(in: text).map(\.kind)
-    }
-
-    @Test func tokenizesHeadingsAtLineStartOnly() {
-        #expect(kinds("= Title\n") == [.heading])
-        #expect(kinds("a = b\n").isEmpty)                 // not a heading mid-line
-    }
-
-    @Test func commentsClaimTheirContents() {
-        // The #call inside the comment must not be tokenized separately.
-        #expect(kinds("// has #call inside\n") == [.comment])
-        #expect(kinds("/* = not a heading */") == [.comment])
-    }
-
-    @Test func markupKinds() {
-        #expect(kinds("*bold*") == [.strong])
-        #expect(kinds("_emph_") == [.emphasis])
-        #expect(kinds("`raw`") == [.raw])
-        #expect(kinds("$x^2$") == [.math])
-        #expect(kinds("#import x") == [.call])
-        #expect(kinds("<label>") == [.label])
-        #expect(kinds("@reference") == [.reference])
-    }
-
-    @Test func rawClaimsItsContents() {
-        let tokens = TypstSyntax.tokens(in: "```\n#code() = *x*\n```")
-        #expect(tokens.count == 1)
-        #expect(tokens[0].kind == .raw)
-    }
-
-    @Test func tokenRangesAreValid() {
-        let text = "= H\nSome *bold* and #call(x) here $m$\n"
-        let ns = text as NSString
-        for token in TypstSyntax.tokens(in: text) {
-            #expect(token.range.location + token.range.length <= ns.length)
-        }
-    }
-}
-
 @Suite struct TypstRefTests {
     @Test func urisRoundTripAndCanonicalize() throws {
         let refs = [
@@ -302,6 +261,57 @@ import Foundation
 
         let backlinks = TypstStructure.backlinks(to: target, under: dir)
         #expect(backlinks.map(\.lastPathComponent) == ["linker.typ"])
+    }
+}
+
+/// Parser-backed tokens (the real typst parser via FFI). Hermetic.
+@Suite struct TypstEngineTokenTests {
+    private func kinds(_ source: String) -> [String] {
+        (TypstEngine.tokens(in: source) ?? []).map(\.k)
+    }
+
+    @Test func proseQuotesAreNotStrings_butImportPathsAre() {
+        // The regex tokenizer could never distinguish these; the parser can.
+        #expect(!kinds("He said \"hello\" to me.").contains("string"))
+        #expect(kinds("#import \"@local/mtnotes:0.1.0\": *").contains("string"))
+    }
+
+    @Test func headingsCarryLevels() throws {
+        let tokens = try #require(TypstEngine.tokens(in: "== Sub\n"))
+        let heading = try #require(tokens.first { $0.k == "heading" })
+        #expect(heading.n == 2)
+    }
+
+    @Test func alignEmitsBodyAndBracketPunctuation() throws {
+        let source = "#align(center)[Hi there]"
+        let tokens = try #require(TypstEngine.tokens(in: source))
+        let aligned = try #require(tokens.first { $0.k == "aligned" })
+        #expect(aligned.a == "center")
+        #expect((source as NSString).substring(with: aligned.range) == "Hi there")
+        #expect(tokens.filter { $0.k == "punct" }.count == 2)   // [ and ]
+    }
+
+    @Test func rangesAreUTF16() throws {
+        // "😀" is 2 UTF-16 units; byte offsets would misplace the heading.
+        let source = "😀\n= Title"
+        let tokens = try #require(TypstEngine.tokens(in: source))
+        let heading = try #require(tokens.first { $0.k == "heading" })
+        #expect(heading.range.location == 3)   // 2 (emoji) + 1 (newline)
+        #expect((source as NSString).substring(with: heading.range) == "= Title")
+    }
+
+    @Test func markupAndCodeKindsAppear() {
+        let source = """
+        = H
+        *bold* _emph_ `raw` $x$ <lab> @lab
+        #task(done: true)[Body prose]
+        // comment
+        """
+        let found = Set(kinds(source))
+        for expected in ["heading", "strong", "emphasis", "raw", "math",
+                         "tag", "property", "function", "punct", "comment"] {
+            #expect(found.contains(expected), "missing \(expected)")
+        }
     }
 }
 

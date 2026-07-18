@@ -19,6 +19,65 @@ enum TypstEngine {
         compile(source: source, root: root, packagesNamespaceDir: packagesRoot())
     }
 
+    // MARK: Tokenizer
+
+    /// A token from the real typst parser, with an NSRange-ready UTF-16 range.
+    /// Kinds are the FFI's strings ("heading", "strong", "function", "string",
+    /// "punct", "aligned", …); the plugin maps them to the editor vocabulary.
+    struct Token: Decodable, Equatable {
+        let s: Int
+        let l: Int
+        let k: String
+        let n: Int?
+        let a: String?
+
+        var range: NSRange { NSRange(location: s, length: l) }
+    }
+
+    /// Tokenize with the real parser. Nil on internal failure (caller falls back
+    /// to the regex tokenizer). Mode-aware by construction — string literals only
+    /// exist where typst says code mode, so prose quotes are never tokens.
+    static func tokens(in source: String) -> [Token]? {
+        var buffer = TypstBuffer()
+        let status = source.withCString { typst_tokens($0, &buffer) }
+        defer { typst_buffer_free(buffer) }
+        guard status == 0, buffer.len > 0, let data = buffer.data else { return nil }
+        return try? JSONDecoder().decode([Token].self,
+                                         from: Data(bytes: data, count: buffer.len))
+    }
+
+    // MARK: Structure
+
+    /// A structural element from the real parser: a section, a task (carrying the
+    /// exact UTF-16 edit that toggles its done state), or a link target.
+    struct StructureItem: Decodable, Equatable {
+        let kind: String
+        let line: Int?
+        let level: Int?
+        let title: String?
+        let index: Int?
+        let body: String?
+        let done: Bool?
+        let due: String?
+        let tags: [String]?
+        let ts: Int?
+        let tl: Int?
+        let tr: String?
+        let target: String?
+    }
+
+    /// Parse `source`'s structure. Nil on internal failure.
+    static func structure(in source: String) -> [StructureItem]? {
+        var buffer = TypstBuffer()
+        let status = source.withCString { typst_structure($0, &buffer) }
+        defer { typst_buffer_free(buffer) }
+        guard status == 0, buffer.len > 0, let data = buffer.data else {
+            return status == 0 ? [] : nil    // empty document is a valid result
+        }
+        return try? JSONDecoder().decode([StructureItem].self,
+                                         from: Data(bytes: data, count: buffer.len))
+    }
+
     /// `<data>/typst/packages` — the FFI resolves `@<ns>/<name>/<version>` beneath it.
     static func packagesRoot() -> URL {
         FileManager.default

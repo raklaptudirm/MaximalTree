@@ -25,6 +25,15 @@ int32_t typst_compile_pdf(const char *source,
                           TypstBuffer *out_pdf,
                           TypstBuffer *out_diagnostics);
 
+/// Tokenize `source` (NUL-terminated UTF-8) for editor highlighting using the
+/// real typst parser. Writes a JSON array of tokens with UTF-16 ranges:
+/// {s, l, k, n? (heading level), a? (alignment)}. Returns 0 on success.
+int32_t typst_tokens(const char *source, TypstBuffer *out_tokens);
+
+/// Extract document structure (sections, tasks with UTF-16 toggle edits, links)
+/// using the real typst parser. Writes a JSON array; returns 0 on success.
+int32_t typst_structure(const char *source, TypstBuffer *out);
+
 void typst_buffer_free(TypstBuffer buf);
 
 #endif

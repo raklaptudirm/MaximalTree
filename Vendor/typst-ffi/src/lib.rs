@@ -180,6 +180,528 @@ fn emit(diagnostics: &[Diagnostic], out: *mut TypstBuffer) {
     }
 }
 
+// MARK: Tokenizer (real parser, for editor highlighting)
+
+#[derive(serde::Serialize)]
+struct EditorToken {
+    s: usize,           // utf16 start
+    l: usize,           // utf16 length
+    k: &'static str,    // kind
+    #[serde(skip_serializing_if = "Option::is_none")]
+    n: Option<usize>,   // heading level
+    #[serde(skip_serializing_if = "Option::is_none")]
+    a: Option<&'static str>, // alignment
+}
+
+/// Walks the real typst syntax tree, emitting editor tokens with UTF-16 ranges
+/// (what NSRange speaks). Mode-aware by construction: string literals only exist
+/// where the parser says code mode — prose quotation marks are never tokens.
+struct EditorTokenizer<'a> {
+    src: &'a str,
+    utf16: Vec<usize>,  // byte offset → utf16 offset (len+1 entries)
+    out: Vec<EditorToken>,
+}
+
+impl<'a> EditorTokenizer<'a> {
+    fn new(src: &'a str) -> Self {
+        let mut utf16 = vec![0usize; src.len() + 1];
+        let mut units = 0usize;
+        for (i, ch) in src.char_indices() {
+            for b in i..i + ch.len_utf8() {
+                utf16[b] = units;
+            }
+            units += ch.len_utf16();
+        }
+        utf16[src.len()] = units;
+        EditorTokenizer { src, utf16, out: Vec::new() }
+    }
+
+    fn emit(&mut self, start: usize, len: usize, kind: &'static str,
+            level: Option<usize>, alignment: Option<&'static str>) {
+        let s = self.utf16[start.min(self.src.len())];
+        let e = self.utf16[(start + len).min(self.src.len())];
+        if e > s {
+            self.out.push(EditorToken { s, l: e - s, k: kind, n: level, a: alignment });
+        }
+    }
+
+    fn slice(&self, offset: usize, len: usize) -> &str {
+        self.src.get(offset..offset + len).unwrap_or("")
+    }
+
+    /// Markup-mode walk.
+    fn walk(&mut self, node: &typst::syntax::SyntaxNode, offset: usize) {
+        use typst::syntax::SyntaxKind as K;
+        match node.kind() {
+            K::Heading => {
+                let mut level = 1;
+                let mut child_offset = offset;
+                for child in node.children() {
+                    if child.kind() == K::HeadingMarker {
+                        level = child.len();
+                        break;
+                    }
+                    child_offset += child.len();
+                }
+                let _ = child_offset;
+                self.emit(offset, node.len(), "heading", Some(level), None);
+            }
+            K::Strong => self.emit(offset, node.len(), "strong", None, None),
+            K::Emph => self.emit(offset, node.len(), "emphasis", None, None),
+            K::Raw => self.emit(offset, node.len(), "raw", None, None),
+            K::Equation => self.emit(offset, node.len(), "math", None, None),
+            K::Label => self.emit(offset, node.len(), "tag", None, None),
+            K::Ref => self.emit(offset, node.len(), "property", None, None),
+            K::LineComment | K::BlockComment => self.emit(offset, node.len(), "comment", None, None),
+            K::FuncCall | K::LetBinding | K::SetRule | K::ShowRule | K::ModuleImport | K::ModuleInclude => {
+                self.detect_alignment(node, offset);
+                self.walk_code(node, offset);
+            }
+            _ if node.children().len() == 0 => {}
+            _ => {
+                let mut child_offset = offset;
+                for child in node.children() {
+                    self.walk(child, child_offset);
+                    child_offset += child.len();
+                }
+            }
+        }
+    }
+
+    /// Code-mode walk: contiguous code renders as `function` runs; real string
+    /// literals as `string`; content-block brackets as `punctuation` with their
+    /// bodies recursed back into markup mode.
+    fn walk_code(&mut self, node: &typst::syntax::SyntaxNode, offset: usize) {
+        use typst::syntax::SyntaxKind as K;
+        if node.children().len() == 0 {
+            self.emit(offset, node.len(), "function", None, None);
+            return;
+        }
+
+        let mut run_start = offset;
+        let mut cursor = offset;
+        let mut strings: Vec<(usize, usize)> = Vec::new();
+
+        let mut close_run = |this: &mut Self, start: usize, end: usize| {
+            if end > start {
+                this.emit(start, end - start, "function", None, None);
+            }
+        };
+
+        for child in node.children() {
+            match child.kind() {
+                K::ContentBlock => {
+                    close_run(self, run_start, cursor);
+                    let mut inner_offset = cursor;
+                    for inner in child.children() {
+                        match inner.kind() {
+                            K::LeftBracket | K::RightBracket => {
+                                self.emit(inner_offset, inner.len(), "punct", None, None);
+                            }
+                            _ => self.walk(inner, inner_offset),
+                        }
+                        inner_offset += inner.len();
+                    }
+                    run_start = cursor + child.len();
+                }
+                K::Str => strings.push((cursor, child.len())),
+                K::LineComment | K::BlockComment => {
+                    close_run(self, run_start, cursor);
+                    self.emit(cursor, child.len(), "comment", None, None);
+                    run_start = cursor + child.len();
+                }
+                K::Raw => {
+                    close_run(self, run_start, cursor);
+                    self.emit(cursor, child.len(), "raw", None, None);
+                    run_start = cursor + child.len();
+                }
+                _ if child.children().len() > 0 => {
+                    close_run(self, run_start, cursor);
+                    self.walk_code(child, cursor);
+                    run_start = cursor + child.len();
+                }
+                _ => {}
+            }
+            cursor += child.len();
+        }
+        close_run(self, run_start, cursor);
+
+        // Emitted after the runs so their color wins the overlap.
+        for (start, len) in strings {
+            self.emit(start, len, "string", None, None);
+        }
+    }
+
+    /// `#align(<where>)[body]`: emit the content-block body as an `aligned` token.
+    fn detect_alignment(&mut self, node: &typst::syntax::SyntaxNode, offset: usize) {
+        use typst::syntax::SyntaxKind as K;
+        if node.kind() != K::FuncCall {
+            return;
+        }
+        let mut child_offset = offset;
+        let mut is_align = false;
+        for child in node.children() {
+            if child.kind() == K::Ident {
+                is_align = self.slice(child_offset, child.len()) == "align";
+                break;
+            }
+            child_offset += child.len();
+        }
+        if !is_align {
+            return;
+        }
+
+        let mut alignment: Option<&'static str> = None;
+        let mut args_offset = offset;
+        for child in node.children() {
+            if child.kind() == K::Args {
+                let mut inner_offset = args_offset;
+                for inner in child.children() {
+                    if inner.kind() == K::Ident && alignment.is_none() {
+                        alignment = match self.slice(inner_offset, inner.len()) {
+                            "center" => Some("center"),
+                            "right" | "end" => Some("trailing"),
+                            "left" | "start" => Some("leading"),
+                            _ => None,
+                        };
+                    }
+                    if inner.kind() == K::ContentBlock {
+                        if let Some(alignment) = alignment {
+                            let mut body_offset = inner_offset;
+                            for block_child in inner.children() {
+                                if block_child.kind() == K::Markup {
+                                    self.emit(body_offset, block_child.len(),
+                                              "aligned", None, Some(alignment));
+                                }
+                                body_offset += block_child.len();
+                            }
+                        }
+                    }
+                    inner_offset += inner.len();
+                }
+            }
+            args_offset += child.len();
+        }
+    }
+}
+
+/// Tokenize `source` for editor highlighting using the real typst parser.
+/// Writes a JSON array of tokens with UTF-16 ranges; returns 0 on success.
+///
+/// # Safety
+/// `source` must be a valid NUL-terminated UTF-8 string; `out_tokens` valid.
+#[no_mangle]
+pub unsafe extern "C" fn typst_tokens(
+    source: *const c_char,
+    out_tokens: *mut TypstBuffer,
+) -> i32 {
+    *out_tokens = TypstBuffer::empty();
+    let Ok(source) = CStr::from_ptr(source).to_str() else { return 2 };
+
+    let root = typst::syntax::parse(source);
+    let mut tokenizer = EditorTokenizer::new(source);
+    tokenizer.walk(&root, 0);
+
+    match serde_json::to_vec(&tokenizer.out) {
+        Ok(json) => {
+            *out_tokens = TypstBuffer::from_vec(json);
+            0
+        }
+        Err(_) => 2,
+    }
+}
+
+// MARK: Structure (real parser, for outline/tasks/links)
+
+#[derive(serde::Serialize)]
+struct StructureItem {
+    kind: &'static str,                 // "section" | "task" | "link"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line: Option<usize>,                // 1-based
+    #[serde(skip_serializing_if = "Option::is_none")]
+    level: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    done: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    due: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tags: Option<Vec<String>>,
+    // The exact UTF-16 edit that toggles this task's done state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ts: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tl: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target: Option<String>,             // link path
+}
+
+impl StructureItem {
+    fn empty(kind: &'static str) -> Self {
+        StructureItem {
+            kind, line: None, level: None, title: None, index: None, body: None,
+            done: None, due: None, tags: None, ts: None, tl: None, tr: None,
+            target: None,
+        }
+    }
+}
+
+struct StructureWalker<'a> {
+    src: &'a str,
+    utf16: Vec<usize>,
+    line_starts: Vec<usize>,
+    out: Vec<StructureItem>,
+    task_index: usize,
+}
+
+impl<'a> StructureWalker<'a> {
+    fn new(src: &'a str) -> Self {
+        let mut utf16 = vec![0usize; src.len() + 1];
+        let mut units = 0usize;
+        for (i, ch) in src.char_indices() {
+            for b in i..i + ch.len_utf8() {
+                utf16[b] = units;
+            }
+            units += ch.len_utf16();
+        }
+        utf16[src.len()] = units;
+
+        let mut line_starts = vec![0usize];
+        for (i, b) in src.bytes().enumerate() {
+            if b == b'\n' {
+                line_starts.push(i + 1);
+            }
+        }
+        StructureWalker { src, utf16, line_starts, out: Vec::new(), task_index: 0 }
+    }
+
+    fn line_of(&self, byte: usize) -> usize {
+        self.line_starts.partition_point(|&start| start <= byte)
+    }
+
+    fn slice(&self, offset: usize, len: usize) -> &str {
+        self.src.get(offset..offset + len).unwrap_or("")
+    }
+
+    /// Inner value of a `Str` node slice (drops the quotes).
+    fn string_inner(&self, offset: usize, len: usize) -> String {
+        let text = self.slice(offset, len);
+        text.strip_prefix('"').and_then(|t| t.strip_suffix('"'))
+            .unwrap_or(text).to_string()
+    }
+
+    fn walk(&mut self, node: &typst::syntax::SyntaxNode, offset: usize) {
+        use typst::syntax::SyntaxKind as K;
+        match node.kind() {
+            K::Heading => {
+                let mut level = 1;
+                let mut title = String::new();
+                let mut child_offset = offset;
+                for child in node.children() {
+                    match child.kind() {
+                        K::HeadingMarker => level = child.len(),
+                        K::Markup => {
+                            title = self.slice(child_offset, child.len())
+                                .trim().to_string();
+                        }
+                        _ => {}
+                    }
+                    child_offset += child.len();
+                }
+                let mut item = StructureItem::empty("section");
+                item.line = Some(self.line_of(offset));
+                item.level = Some(level);
+                item.title = Some(title);
+                self.out.push(item);
+            }
+            K::ModuleImport | K::ModuleInclude => {
+                let mut child_offset = offset;
+                for child in node.children() {
+                    if child.kind() == K::Str {
+                        let target = self.string_inner(child_offset, child.len());
+                        if !target.starts_with('@') {
+                            let mut item = StructureItem::empty("link");
+                            item.target = Some(target);
+                            self.out.push(item);
+                        }
+                    }
+                    child_offset += child.len();
+                }
+            }
+            K::FuncCall => {
+                self.visit_call(node, offset);
+                // Recurse: tasks can live inside content blocks of other calls.
+                let mut child_offset = offset;
+                for child in node.children() {
+                    self.walk(child, child_offset);
+                    child_offset += child.len();
+                }
+            }
+            _ => {
+                let mut child_offset = offset;
+                for child in node.children() {
+                    self.walk(child, child_offset);
+                    child_offset += child.len();
+                }
+            }
+        }
+    }
+
+    fn visit_call(&mut self, node: &typst::syntax::SyntaxNode, offset: usize) {
+        use typst::syntax::SyntaxKind as K;
+        let mut child_offset = offset;
+        let mut is_task = false;
+        let mut args: Option<(&typst::syntax::SyntaxNode, usize)> = None;
+        for child in node.children() {
+            match child.kind() {
+                K::Ident if child_offset == offset => {
+                    is_task = self.slice(child_offset, child.len()) == "task";
+                }
+                K::Args => args = Some((child, child_offset)),
+                _ => {}
+            }
+            child_offset += child.len();
+        }
+        if !is_task {
+            return;
+        }
+        let Some((args_node, args_offset)) = args else { return };
+
+        let mut done: Option<(bool, usize, usize)> = None;   // value, byte start, len
+        let mut due: Option<String> = None;
+        let mut tags: Vec<String> = Vec::new();
+        let mut body = String::new();
+        let mut after_left_paren: Option<usize> = None;
+        let mut has_inner_args = false;
+
+        let mut inner_offset = args_offset;
+        for child in args_node.children() {
+            match child.kind() {
+                K::LeftParen => after_left_paren = Some(inner_offset + child.len()),
+                K::RightParen | K::Space | K::Comma => {}
+                K::ContentBlock => {
+                    let mut block_offset = inner_offset;
+                    for block_child in child.children() {
+                        if block_child.kind() == K::Markup {
+                            body = self.slice(block_offset, block_child.len())
+                                .split_whitespace().collect::<Vec<_>>().join(" ");
+                        }
+                        block_offset += block_child.len();
+                    }
+                }
+                K::Named => {
+                    has_inner_args = true;
+                    self.visit_named(child, inner_offset, &mut done, &mut due, &mut tags);
+                }
+                _ => has_inner_args = true,
+            }
+            inner_offset += child.len();
+        }
+
+        if body.chars().count() > 80 {
+            body = body.chars().take(79).collect::<String>() + "…";
+        }
+
+        let mut item = StructureItem::empty("task");
+        item.line = Some(self.line_of(offset));
+        item.index = Some(self.task_index);
+        self.task_index += 1;
+        item.body = Some(if body.is_empty() { "task".into() } else { body });
+        item.done = Some(done.map(|(v, _, _)| v).unwrap_or(false));
+        item.due = due;
+        if !tags.is_empty() {
+            item.tags = Some(tags);
+        }
+
+        // The exact toggle edit, computed from the AST rather than guessed.
+        if let Some((value, start, len)) = done {
+            item.ts = Some(self.utf16[start]);
+            item.tl = Some(self.utf16[start + len] - self.utf16[start]);
+            item.tr = Some(if value { "false".into() } else { "true".into() });
+        } else if let Some(insert_at) = after_left_paren {
+            item.ts = Some(self.utf16[insert_at]);
+            item.tl = Some(0);
+            item.tr = Some(if has_inner_args { "done: true, ".into() }
+                           else { "done: true".into() });
+        } else {
+            item.ts = Some(self.utf16[args_offset]);
+            item.tl = Some(0);
+            item.tr = Some("(done: true)".into());
+        }
+        self.out.push(item);
+    }
+
+    fn visit_named(&mut self, node: &typst::syntax::SyntaxNode, offset: usize,
+                   done: &mut Option<(bool, usize, usize)>,
+                   due: &mut Option<String>, tags: &mut Vec<String>) {
+        use typst::syntax::SyntaxKind as K;
+        let mut name = "";
+        let mut seen_name = false;
+        let mut child_offset = offset;
+        for child in node.children() {
+            match child.kind() {
+                K::Ident if !seen_name => {
+                    name = self.slice(child_offset, child.len());
+                    seen_name = true;
+                    child_offset += child.len();
+                    continue;
+                }
+                K::Bool if name == "done" => {
+                    let value = self.slice(child_offset, child.len()) == "true";
+                    *done = Some((value, child_offset, child.len()));
+                }
+                K::Str if name == "due" => {
+                    *due = Some(self.string_inner(child_offset, child.len()));
+                }
+                K::Array | K::Parenthesized if name == "tags" => {
+                    let mut item_offset = child_offset;
+                    for item in child.children() {
+                        if item.kind() == K::Str {
+                            tags.push(self.string_inner(item_offset, item.len()));
+                        }
+                        item_offset += item.len();
+                    }
+                }
+                _ => {}
+            }
+            child_offset += child.len();
+        }
+    }
+}
+
+/// Extract document structure (sections, tasks with toggle edits, links) using the
+/// real typst parser. Writes a JSON array; returns 0 on success.
+///
+/// # Safety
+/// `source` must be a valid NUL-terminated UTF-8 string; `out` valid.
+#[no_mangle]
+pub unsafe extern "C" fn typst_structure(
+    source: *const c_char,
+    out: *mut TypstBuffer,
+) -> i32 {
+    *out = TypstBuffer::empty();
+    let Ok(source) = CStr::from_ptr(source).to_str() else { return 2 };
+
+    let root = typst::syntax::parse(source);
+    let mut walker = StructureWalker::new(source);
+    walker.walk(&root, 0);
+
+    match serde_json::to_vec(&walker.out) {
+        Ok(json) => {
+            *out = TypstBuffer::from_vec(json);
+            0
+        }
+        Err(_) => 2,
+    }
+}
+
 // MARK: Entry point
 
 /// Compile `source` rooted at `root`. Returns 0 on success (`out_pdf` filled),

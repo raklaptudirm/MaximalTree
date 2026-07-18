@@ -154,9 +154,9 @@ enum TypstMode: String, CaseIterable, Identifiable {
     // Keyed by the *file*, not the opened node, so a document keeps its mode
     // whether opened directly or through one of its section/task nodes.
     static func stored(forFile url: URL?) -> TypstMode {
-        guard let url else { return .write }
+        guard let url else { return .typeset }
         return UserDefaults.standard.string(forKey: "typst.mode.\(url.absoluteString)")
-            .flatMap(TypstMode.init(rawValue:)) ?? .write
+            .flatMap(TypstMode.init(rawValue:)) ?? .typeset
     }
 
     func store(forFile url: URL?) {
@@ -562,25 +562,38 @@ struct TypstCanvas: View {
 
 // MARK: - Tokenizer
 
-/// Adapts the tested, Foundation-only `TypstSyntax` tokenizer to the editor's
+/// Maps the real typst parser's tokens (via the FFI) to the editor's
 /// engine-neutral vocabulary.
 final class TypstTokenizer: EditorTokenizer {
     func tokens(in text: String) -> [(range: NSRange, kind: EditorTokenKind)] {
-        TypstSyntax.tokens(in: text).map { token in
-            let kind: EditorTokenKind
-            switch token.kind {
-            case .comment:   kind = .comment
-            case .raw:       kind = .string
-            case .math:      kind = .number
-            case .heading:   kind = .keyword
-            case .strong:    kind = .type
-            case .emphasis:  kind = .variable
-            case .call:      kind = .function
-            case .label:     kind = .tag
-            case .reference: kind = .property
+        // The real parser first (mode-aware, exact spans); regex as fallback.
+        if let parsed = TypstEngine.tokens(in: text) {
+            return parsed.compactMap { token in
+                let kind: EditorTokenKind
+                switch token.k {
+                case "comment":  kind = .comment
+                case "string":   kind = .string
+                case "math":     kind = .number
+                case "raw":      kind = .raw
+                case "heading":  kind = .heading(level: token.n ?? 1)
+                case "strong":   kind = .strong
+                case "emphasis": kind = .emphasis
+                case "function": kind = .function
+                case "tag":      kind = .tag
+                case "property": kind = .property
+                case "punct":    kind = .punctuation
+                case "aligned":
+                    switch token.a {
+                    case "center":   kind = .aligned(.center)
+                    case "trailing": kind = .aligned(.trailing)
+                    default:         kind = .aligned(.leading)
+                    }
+                default: return nil
+                }
+                return (token.range, kind)
             }
-            return (token.range, kind)
         }
+        return []   // parser unavailable: no highlighting
     }
 }
 

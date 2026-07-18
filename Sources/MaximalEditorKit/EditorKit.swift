@@ -31,15 +31,21 @@ public struct EditorStyle: Equatable {
     public var wrapLines: Bool
     public var indentSpaces: Int
     public var showsLineNumbers: Bool
+    /// When set, markup tokens render as live formatting — headings sized and
+    /// bolded, `*strong*`/`_emphasis_` styled, `#align` bodies aligned, delimiters
+    /// dimmed — instead of syntax colors. The WYSIWYG-ish prose experience.
+    public var rendersMarkup: Bool
 
     public init(design: Design, size: CGFloat, lineHeightMultiple: Double,
-                wrapLines: Bool, indentSpaces: Int, showsLineNumbers: Bool = true) {
+                wrapLines: Bool, indentSpaces: Int, showsLineNumbers: Bool = true,
+                rendersMarkup: Bool = false) {
         self.design = design
         self.size = size
         self.lineHeightMultiple = lineHeightMultiple
         self.wrapLines = wrapLines
         self.indentSpaces = indentSpaces
         self.showsLineNumbers = showsLineNumbers
+        self.rendersMarkup = rendersMarkup
     }
 
     public static func code(size: CGFloat = 12, wrapLines: Bool = false,
@@ -48,10 +54,11 @@ public struct EditorStyle: Equatable {
                     wrapLines: wrapLines, indentSpaces: indentSpaces)
     }
 
-    /// Manuscript, not IDE: no line-number gutter.
+    /// Manuscript, not IDE: no line-number gutter, markup rendered as formatting.
     public static func prose(size: CGFloat = 15) -> EditorStyle {
         EditorStyle(design: .serif, size: size, lineHeightMultiple: 1.5,
-                    wrapLines: true, indentSpaces: 2, showsLineNumbers: false)
+                    wrapLines: true, indentSpaces: 2, showsLineNumbers: false,
+                    rendersMarkup: true)
     }
 
     var font: NSFont {
@@ -77,9 +84,22 @@ public struct EditorStyle: Equatable {
 
 // MARK: - Tokenizer
 
-/// The engine-neutral token vocabulary plugins highlight with.
-public enum EditorTokenKind {
+/// The engine-neutral token vocabulary plugins highlight with. The first group is
+/// semantic (colored); the second is presentational markup, which styles *as*
+/// formatting (fonts, alignment) when the style has `rendersMarkup` — the
+/// live-preview feel — and falls back to colors in code styles.
+public enum EditorTokenKind: Equatable {
     case comment, string, number, keyword, type, variable, function, tag, property
+    case heading(level: Int)
+    case strong, emphasis, raw
+    case aligned(EditorAlignment)
+    /// Structural delimiters (content brackets, markers): dimmed mono in markup
+    /// rendering, uncolored in code styles.
+    case punctuation
+}
+
+public enum EditorAlignment: Equatable {
+    case leading, center, trailing
 }
 
 /// A plugin-supplied lexer. Return every token in `text`; the framework paints
@@ -91,20 +111,40 @@ public protocol EditorTokenizer: AnyObject {
 
 /// Token colors, resolved per appearance. Values carried over from the previous
 /// Xcode-like themes so highlighting looks unchanged across the engine swap.
+/// Presentation kinds map onto semantic colors for code styles; in markup-rendering
+/// styles most of them are drawn as *formatting* instead (see the coordinator).
 private enum TokenPalette {
-    static func color(for kind: EditorTokenKind, dark: Bool) -> NSColor {
+    static func color(for kind: EditorTokenKind, dark: Bool) -> NSColor? {
         switch kind {
         case .comment:  return NSColor(hex: dark ? "7F8C98" : "267507")
-        case .string:   return NSColor(hex: dark ? "FF8170" : "C41A16")
+        case .string, .raw:
+            return NSColor(hex: dark ? "FF8170" : "C41A16")
         case .number:   return NSColor(hex: dark ? "D9C97C" : "1C00CF")
         case .keyword:  return NSColor(hex: dark ? "FF7AB2" : "9B2393")
-        case .type:     return NSColor(hex: dark ? "6BDFFF" : "0B4F79")
-        case .variable: return NSColor(hex: dark ? "4EB0CC" : "0F68A0")
+        case .heading:  return NSColor(hex: dark ? "FF7AB2" : "9B2393")
+        case .type, .strong:
+            return NSColor(hex: dark ? "6BDFFF" : "0B4F79")
+        case .variable, .emphasis:
+            return NSColor(hex: dark ? "4EB0CC" : "0F68A0")
         case .function: return NSColor(hex: dark ? "78C2B3" : "326D74")
         case .tag:      return NSColor(hex: dark ? "CC9768" : "815F03")
         case .property: return NSColor(hex: dark ? "B281EB" : "6C36A9")
+        case .aligned, .punctuation:
+            return nil
         }
     }
+}
+
+/// Font variants for markup rendering, derived from the style's base font.
+private func fontVariant(of base: NSFont, bold: Bool = false, italic: Bool = false,
+                         scale: CGFloat = 1, monospaced: Bool = false) -> NSFont {
+    let size = base.pointSize * scale
+    if monospaced { return .monospacedSystemFont(ofSize: size, weight: .regular) }
+    var traits: NSFontDescriptor.SymbolicTraits = []
+    if bold { traits.insert(.bold) }
+    if italic { traits.insert(.italic) }
+    let descriptor = base.fontDescriptor.withSymbolicTraits(traits)
+    return NSFont(descriptor: descriptor, size: size) ?? base
 }
 
 // MARK: - Controller
@@ -191,6 +231,7 @@ public struct MaximalEditor: NSViewRepresentable {
         textView.textDelegate = context.coordinator
         context.coordinator.textView = textView
         context.coordinator.isDark = colorScheme == .dark
+        context.coordinator.lastStyle = style
         controller?.textView = textView
 
         textView.highlightSelectedLine = true
@@ -227,6 +268,9 @@ public struct MaximalEditor: NSViewRepresentable {
         if context.coordinator.lastStyle != style {
             context.coordinator.lastStyle = style
             apply(style: style, to: textView)
+            // Styling depends on the style (fonts, markup rendering) — repaint.
+            context.coordinator.invalidateHighlight()
+            context.coordinator.highlightNow()
         }
         context.coordinator.highlightIfAppearanceChanged()
     }
@@ -306,8 +350,13 @@ public struct MaximalEditor: NSViewRepresentable {
             if lastHighlightedDark != isDark { highlightNow() }
         }
 
-        /// Repaint token colors as rendering attributes: display-only, so the text
-        /// storage and undo stack stay untouched. No-ops when nothing changed.
+        func invalidateHighlight() { lastHighlightedText = nil }
+
+        /// Repaint the document. Colors go on as rendering attributes (display-only,
+        /// undo-safe). In markup-rendering styles, fonts and paragraph alignment go
+        /// on the storage — those *are* layout, there's no display-only channel for
+        /// them — with a full base reset first so mode switches leave no residue.
+        /// No-ops when nothing changed.
         func highlightNow() {
             guard let textView, let tokenizer else { return }
             let content = textView.text ?? ""
@@ -315,14 +364,99 @@ public struct MaximalEditor: NSViewRepresentable {
             lastHighlightedText = content
             lastHighlightedDark = isDark
 
-            let full = NSRange(location: 0, length: (content as NSString).length)
+            let style = lastStyle ?? .code()
+            let ns = content as NSString
+            let full = NSRange(location: 0, length: ns.length)
             guard full.length > 0 else { return }
+
+            // Base reset: uniform font/paragraph/color, clearing prior markup styling.
+            textView.setAttributes([
+                .font: style.font,
+                .paragraphStyle: style.paragraphStyle,
+                .foregroundColor: NSColor.labelColor,
+            ], range: full)
             textView.removeRenderingAttribute(.foregroundColor, range: full)
+
             for token in tokenizer.tokens(in: content) {
-                textView.addRenderingAttributes(
-                    [.foregroundColor: TokenPalette.color(for: token.kind, dark: isDark)],
-                    range: token.range
-                )
+                if style.rendersMarkup {
+                    renderMarkup(token, style: style, in: ns, on: textView)
+                } else if let color = TokenPalette.color(for: token.kind, dark: isDark) {
+                    textView.addRenderingAttributes([.foregroundColor: color],
+                                                    range: token.range)
+                }
+            }
+        }
+
+        private func dim(_ range: NSRange, on textView: STTextView) {
+            textView.addRenderingAttributes(
+                [.foregroundColor: NSColor.tertiaryLabelColor], range: range)
+        }
+
+        /// The WYSIWYG-ish path: real formatting for markup, colors for the rest,
+        /// delimiters dimmed rather than hidden (the source stays honest).
+        private func renderMarkup(_ token: (range: NSRange, kind: EditorTokenKind),
+                                  style: EditorStyle, in ns: NSString, on textView: STTextView) {
+            let dim = { (range: NSRange) in self.dim(range, on: textView) }
+            let dimEnds = { (range: NSRange, width: Int) in
+                dim(NSRange(location: range.location, length: width))
+                dim(NSRange(location: range.location + range.length - width, length: width))
+            }
+
+            switch token.kind {
+            case .heading(let level):
+                let scale: CGFloat = [1.6, 1.35, 1.2][min(level, 3) - 1]
+                textView.addAttributes(
+                    [.font: fontVariant(of: style.font, bold: true, scale: scale)],
+                    range: token.range)
+                let line = ns.substring(with: token.range)
+                if let markerEnd = line.firstIndex(of: " ") {
+                    dim(NSRange(location: token.range.location,
+                                length: line.distance(from: line.startIndex,
+                                                      to: markerEnd) + 1))
+                }
+            case .strong:
+                textView.addAttributes([.font: fontVariant(of: style.font, bold: true)],
+                                       range: token.range)
+                dimEnds(token.range, 1)
+            case .emphasis:
+                textView.addAttributes([.font: fontVariant(of: style.font, italic: true)],
+                                       range: token.range)
+                dimEnds(token.range, 1)
+            case .raw:
+                textView.addAttributes(
+                    [.font: fontVariant(of: style.font, scale: 0.9, monospaced: true)],
+                    range: token.range)
+                let fence = ns.substring(with: token.range).hasPrefix("```") ? 3 : 1
+                if token.range.length > 2 * fence { dimEnds(token.range, fence) }
+            case .aligned(let alignment):
+                let paragraph = (style.paragraphStyle.mutableCopy() as! NSMutableParagraphStyle)
+                paragraph.alignment = switch alignment {
+                case .leading: .natural
+                case .center: .center
+                case .trailing: .right
+                }
+                // Paragraph properties resolve from the paragraph's *start* — the
+                // token range begins mid-line (inside the brackets), so the style
+                // must cover the whole paragraph or it silently doesn't apply.
+                textView.addAttributes([.paragraphStyle: paragraph],
+                                       range: ns.paragraphRange(for: token.range))
+            case .punctuation:
+                // Structural delimiters (content brackets): dimmed mono.
+                textView.addAttributes(
+                    [.font: fontVariant(of: style.font, scale: 0.9, monospaced: true)],
+                    range: token.range)
+                dim(token.range)
+            default:
+                // Code constructs read as code even in prose: monospaced and
+                // colored. Content stays serif; the machinery doesn't. Spans come
+                // from the real parser, so no delimiter heuristics are needed.
+                textView.addAttributes(
+                    [.font: fontVariant(of: style.font, scale: 0.9, monospaced: true)],
+                    range: token.range)
+                if let color = TokenPalette.color(for: token.kind, dark: isDark) {
+                    textView.addRenderingAttributes([.foregroundColor: color],
+                                                    range: token.range)
+                }
             }
         }
     }

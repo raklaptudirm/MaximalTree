@@ -471,35 +471,26 @@ enum TypstStructure {
         }
     }
 
-    /// All sections and tasks, in document order.
+    /// All sections and tasks, in document order — extracted by the real typst
+    /// parser (via the FFI). The parser is error-tolerant, so broken and unsaved
+    /// buffers still produce an outline.
     static func outline(of source: String) -> [Item] {
-        var items: [Item] = []
-        let ns = source as NSString
-
-        if let headingRegex = try? NSRegularExpression(pattern: #"^ *(=+) +(.*)$"#,
-                                                       options: [.anchorsMatchLines]) {
-            headingRegex.enumerateMatches(in: source,
-                                          range: NSRange(location: 0, length: ns.length)) { match, _, _ in
-                guard let match else { return }
-                let level = match.range(at: 1).length
-                let title = ns.substring(with: match.range(at: 2))
-                    .trimmingCharacters(in: .whitespaces)
-                items.append(.section(Section(level: level, title: title,
-                                              line: line(of: match.range.location, in: ns))))
+        guard let parsed = TypstEngine.structure(in: source) else { return [] }
+        return parsed.compactMap { item -> Item? in
+            switch item.kind {
+            case "section":
+                guard let line = item.line, let level = item.level else { return nil }
+                return .section(Section(level: level, title: item.title ?? "", line: line))
+            case "task":
+                guard let line = item.line, let index = item.index else { return nil }
+                return .task(TaskItem(index: index, body: item.body ?? "task",
+                                      done: item.done ?? false, due: item.due,
+                                      tags: item.tags ?? [], line: line))
+            default:
+                return nil
             }
         }
-
-        for (index, occurrence) in taskOccurrences(in: source).enumerated() {
-            let details = parseTask(after: occurrence, in: ns)
-            items.append(.task(TaskItem(index: index,
-                                        body: details.body,
-                                        done: details.done,
-                                        due: details.due,
-                                        tags: details.tags,
-                                        line: line(of: occurrence.location, in: ns))))
-        }
-
-        return items.sorted { $0.line < $1.line }
+        .sorted { $0.line < $1.line }
     }
 
     /// The direct children of the section anchored at `sectionLine` (nil = the
@@ -546,36 +537,18 @@ enum TypstStructure {
         return result
     }
 
-    /// Rewrite the source so the n-th `#task` flips its `done:` state. Returns nil
-    /// when the task can't be located.
+    /// Rewrite the source so the n-th `#task` flips its `done:` state, applying
+    /// the exact edit the parser computed (flip the literal, insert into existing
+    /// args, or add args to a bare call). Nil when the task can't be located.
     static func togglingTask(at index: Int, in source: String) -> String? {
-        let occurrences = taskOccurrences(in: source)
-        guard occurrences.indices.contains(index) else { return nil }
+        guard let parsed = TypstEngine.structure(in: source),
+              let task = parsed.first(where: { $0.kind == "task" && $0.index == index }),
+              let start = task.ts, let length = task.tl, let replacement = task.tr
+        else { return nil }
         let ns = source as NSString
-        let occurrence = occurrences[index]
-        let afterTask = occurrence.location + occurrence.length
-
-        guard afterTask < ns.length else { return nil }
-        if ns.character(at: afterTask) == UInt8(ascii: "(") {
-            guard let args = balancedRange(in: ns, from: afterTask,
-                                           open: "(", close: ")") else { return nil }
-            let argsText = ns.substring(with: args)
-            let inner = NSRange(location: args.location + 1, length: args.length - 2)
-            if let doneRegex = try? NSRegularExpression(pattern: #"done\s*:\s*(true|false)"#),
-               let match = doneRegex.firstMatch(in: source, range: args) {
-                let flipped = ns.substring(with: match.range(at: 1)) == "true"
-                    ? "done: false" : "done: true"
-                return ns.replacingCharacters(in: match.range, with: flipped)
-            }
-            // Args without done: — prepend it.
-            let insertion = inner.length == 0 || argsText.dropFirst().dropLast()
-                .trimmingCharacters(in: .whitespaces).isEmpty ? "done: true" : "done: true, "
-            return ns.replacingCharacters(in: NSRange(location: args.location + 1, length: 0),
-                                          with: insertion)
-        }
-        // Bare `#task[...]` — give it arguments.
-        return ns.replacingCharacters(in: NSRange(location: afterTask, length: 0),
-                                      with: "(done: true)")
+        guard start + length <= ns.length else { return nil }
+        return ns.replacingCharacters(in: NSRange(location: start, length: length),
+                                      with: replacement)
     }
 
     /// Outline of a document on disk (empty when unreadable).
@@ -584,14 +557,12 @@ enum TypstStructure {
         return outline(of: source)
     }
 
-    /// Local files this document references via `#include "…"` / `#import "…"`.
-    /// Package imports (`@local/…`, `@preview/…`) are not file links and are skipped.
+    /// Local files this document references via `#include`/`#import` — from the
+    /// real parser; package imports (`@…`) are not file links.
     static func links(of source: String) -> [String] {
-        guard let regex = try? NSRegularExpression(
-            pattern: #"#(?:include|import)\s*"([^"@][^"]*)""#) else { return [] }
-        let ns = source as NSString
-        return regex.matches(in: source, range: NSRange(location: 0, length: ns.length))
-            .map { ns.substring(with: $0.range(at: 1)) }
+        (TypstEngine.structure(in: source) ?? [])
+            .filter { $0.kind == "link" }
+            .compactMap(\.target)
     }
 
     /// All `.typ` files under `dir` (recursive, hidden skipped, capped).
@@ -651,133 +622,4 @@ enum TypstStructure {
         }
     }
 
-    // MARK: Internals
-
-    private static func taskOccurrences(in source: String) -> [NSRange] {
-        guard let regex = try? NSRegularExpression(pattern: #"#task(?![A-Za-z0-9_-])"#)
-        else { return [] }
-        let ns = source as NSString
-        return regex.matches(in: source, range: NSRange(location: 0, length: ns.length))
-            .map(\.range)
-    }
-
-    private static func parseTask(
-        after occurrence: NSRange, in ns: NSString
-    ) -> (body: String, done: Bool, due: String?, tags: [String]) {
-        var cursor = occurrence.location + occurrence.length
-        var done = false
-        var due: String?
-        var tags: [String] = []
-
-        if cursor < ns.length, ns.character(at: cursor) == UInt8(ascii: "("),
-           let args = balancedRange(in: ns, from: cursor, open: "(", close: ")") {
-            let text = ns.substring(with: args)
-            done = text.range(of: #"done\s*:\s*true"#, options: .regularExpression) != nil
-            if let match = text.range(of: #"due\s*:\s*"([^"]*)""#, options: .regularExpression) {
-                let matched = String(text[match])
-                due = matched.split(separator: "\"").dropFirst().first.map(String.init)
-            }
-            if let match = text.range(of: #"tags\s*:\s*\(([^)]*)\)"#, options: .regularExpression) {
-                let inner = String(text[match]).drop { $0 != "(" }.dropFirst().dropLast()
-                tags = inner.split(separator: ",").map {
-                    $0.trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
-                }.filter { !$0.isEmpty }
-            }
-            cursor = args.location + args.length
-        }
-
-        var body = ""
-        if cursor < ns.length, ns.character(at: cursor) == UInt8(ascii: "["),
-           let bodyRange = balancedRange(in: ns, from: cursor, open: "[", close: "]") {
-            body = ns.substring(with: NSRange(location: bodyRange.location + 1,
-                                              length: bodyRange.length - 2))
-                .replacingOccurrences(of: "\n", with: " ")
-                .trimmingCharacters(in: .whitespaces)
-            if body.count > 80 { body = String(body.prefix(79)) + "…" }
-        }
-        return (body.isEmpty ? "task" : body, done, due, tags)
-    }
-
-    /// Range of a balanced delimiter pair starting at `start` (which must hold
-    /// `open`), inclusive of both delimiters.
-    private static func balancedRange(
-        in ns: NSString, from start: Int, open: Character, close: Character
-    ) -> NSRange? {
-        let openChar = open.asciiValue.map(UInt16.init) ?? 0
-        let closeChar = close.asciiValue.map(UInt16.init) ?? 0
-        var depth = 0
-        var i = start
-        while i < ns.length {
-            let char = ns.character(at: i)
-            if char == openChar { depth += 1 }
-            if char == closeChar {
-                depth -= 1
-                if depth == 0 { return NSRange(location: start, length: i - start + 1) }
-            }
-            i += 1
-        }
-        return nil
-    }
-
-    private static func line(of location: Int, in ns: NSString) -> Int {
-        var line = 1
-        var i = 0
-        while i < location && i < ns.length {
-            if ns.character(at: i) == UInt8(ascii: "\n") { line += 1 }
-            i += 1
-        }
-        return line
-    }
-}
-
-// MARK: - Syntax
-
-/// A fast, regex-based tokenizer for Typst markup. Foundation-only so it's unit
-/// testable; the highlighter maps kinds to editor capture names. Deliberately
-/// approximate — the goal is readable markup, not a grammar. (Replaced by semantic
-/// tokens if/when tinymist lands, per the plugin plan.)
-enum TypstSyntax {
-    enum TokenKind: Equatable, Sendable {
-        case comment, raw, math, heading, strong, emphasis, call, label, reference
-    }
-
-    struct Token: Equatable, Sendable {
-        let range: NSRange
-        let kind: TokenKind
-    }
-
-    /// Tokenize the whole text. Exclusive regions (comments, raw, math) are claimed
-    /// first so their contents aren't re-tokenized as markup.
-    static func tokens(in text: String) -> [Token] {
-        let ns = text as NSString
-        let full = NSRange(location: 0, length: ns.length)
-        var claimed = IndexSet()
-        var result: [Token] = []
-
-        func scan(_ pattern: String, _ kind: TokenKind,
-                  options: NSRegularExpression.Options = [], exclusive: Bool = false) {
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return }
-            regex.enumerateMatches(in: text, range: full) { match, _, _ in
-                guard let range = match?.range, range.length > 0 else { return }
-                let indices = range.location..<(range.location + range.length)
-                guard !claimed.intersects(integersIn: indices) else { return }
-                if exclusive { claimed.insert(integersIn: indices) }
-                result.append(Token(range: range, kind: kind))
-            }
-        }
-
-        scan(#"```[\s\S]*?```"#, .raw, exclusive: true)
-        scan(#"/\*[\s\S]*?\*/"#, .comment, exclusive: true)
-        scan(#"//[^\n]*"#, .comment, exclusive: true)
-        scan(#"`[^`\n]+`"#, .raw, exclusive: true)
-        scan(#"\$[^$]{1,400}?\$"#, .math, options: [.dotMatchesLineSeparators], exclusive: true)
-        scan(#"^ *=+ [^\n]*"#, .heading, options: [.anchorsMatchLines])
-        scan(#"\*[^*\n]+\*"#, .strong)
-        scan(#"(?<![A-Za-z0-9])_[^_\n]+_(?![A-Za-z0-9])"#, .emphasis)
-        scan(#"#[A-Za-z][A-Za-z0-9-]*(?:\.[A-Za-z][A-Za-z0-9-]*)*"#, .call)
-        scan(#"<[A-Za-z][A-Za-z0-9_-]*>"#, .label)
-        scan(#"@[A-Za-z][A-Za-z0-9_:-]*"#, .reference)
-
-        return result.sorted { $0.range.location < $1.range.location }
-    }
 }
