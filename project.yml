@@ -67,6 +67,30 @@ targets:
         LD_RUNPATH_SEARCH_PATHS:
           - "@loader_path/../../../../Frameworks"
 
+  # The ONE target that touches the editor engine. The app embeds it once; editor
+  # plugins link it without embedding — previously each such plugin statically
+  # linked CodeEditSourceEditor and shipped its own ~100MB copy of the grammar
+  # resources. No library evolution: its dependencies aren't evolution-safe, so
+  # in-repo plugins simply rebuild with the host (already the case).
+  MaximalEditorKit:
+    type: framework
+    platform: macOS
+    sources: [Sources/MaximalEditorKit]
+    dependencies:
+      - package: CodeEditSourceEditor
+        product: CodeEditSourceEditor
+      - package: CodeEditLanguages
+        product: CodeEditLanguages
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.editorkit
+        GENERATE_INFOPLIST_FILE: YES
+        DEFINES_MODULE: YES
+        # Swift 5 mode: this target conforms to HighlightProviding and
+        # TextViewCoordinator from a Swift 5 module; Swift 6 witness checking
+        # rejects every spelling of those @MainActor completion closures.
+        SWIFT_VERSION: "5.0"
+
   TextEditorPlugin:
     type: bundle
     platform: macOS
@@ -74,10 +98,8 @@ targets:
     dependencies:
       - target: MaximalTreeKit
         embed: false
-      - package: CodeEditSourceEditor
-        product: CodeEditSourceEditor
-      - package: CodeEditLanguages
-        product: CodeEditLanguages
+      - target: MaximalEditorKit
+        embed: false
     settings:
       base:
         PRODUCT_NAME: TextEditor
@@ -94,18 +116,12 @@ targets:
     dependencies:
       - target: MaximalTreeKit
         embed: false
-      - package: CodeEditSourceEditor
-        product: CodeEditSourceEditor
-      - package: CodeEditLanguages
-        product: CodeEditLanguages
+      - target: MaximalEditorKit
+        embed: false
     settings:
       base:
         PRODUCT_NAME: Typst
         PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.plugin.typst
-        # Swift 5 mode for this target only: it conforms to HighlightProviding from
-        # CodeEditSourceEditor (a Swift 5 module), and Swift 6 witness checking
-        # rejects every spelling of that protocol's @MainActor completion closures.
-        SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_NSPrincipalClass: TypstPlugin
         LD_RUNPATH_SEARCH_PATHS:
@@ -133,6 +149,7 @@ targets:
     sources: [Sources/MaximalTree]
     dependencies:
       - target: MaximalTreeKit
+      - target: MaximalEditorKit      # embedded once; editor plugins resolve to it
       - target: FileSystemPlugin      # built and copied into Contents/PlugIns
         embed: true                   # enables the copy phase...
         link: false                   # ...but don't link a loadable bundle into the app

@@ -1,9 +1,7 @@
 import SwiftUI
 import AppKit
 import PDFKit
-import CodeEditSourceEditor
-import CodeEditTextView
-import CodeEditLanguages
+import MaximalEditorKit
 import MaximalTreeKit
 
 /// Typst as a daily driver: one canvas, three modes.
@@ -182,9 +180,8 @@ struct TypstCanvas: View {
     @State private var savedText = ""
     @State private var loadedNode: NodeID?
     @State private var loadError: String?
-    @State private var editorState = SourceEditorState()
-    @State private var highlighter = TypstHighlighter()
-    @State private var editing = TypstEditingCoordinator()
+    @State private var tokenizer = TypstTokenizer()
+    @State private var editor = EditorController()
     @State private var mode: TypstMode = .write
 
     @State private var preview: PDFDocument?
@@ -227,12 +224,8 @@ struct TypstCanvas: View {
             mode = TypstMode.stored(forFile: fileURL)
             load()
             loadedNode = nodeID
-            if loadError == nil {
-                scheduleCompile(delay: .zero)
-                if let initialLine {
-                    editorState.cursorPositions = [CursorPosition(line: initialLine, column: 1)]
-                }
-            }
+            if loadError == nil { scheduleCompile(delay: .zero) }
+            // initialLine is honoured by the editor itself (initialCursorLine).
         }
         .onChange(of: mode) { previous, current in
             current.store(forFile: fileURL)
@@ -315,14 +308,14 @@ struct TypstCanvas: View {
     /// ⌘B/⌘I/⌘E/⇧⌘T work while typing without opening the menu.
     private var formatMenu: some View {
         Menu {
-            Button("Bold") { editing.apply { TypstEdit.toggleWrap("*", in: $0, selection: $1) } }
+            Button("Bold") { applyFormat { TypstEdit.toggleWrap("*", in: $0, selection: $1) } }
                 .keyboardShortcut("b", modifiers: .command)
-            Button("Emphasis") { editing.apply { TypstEdit.toggleWrap("_", in: $0, selection: $1) } }
+            Button("Emphasis") { applyFormat { TypstEdit.toggleWrap("_", in: $0, selection: $1) } }
                 .keyboardShortcut("i", modifiers: .command)
-            Button("Raw") { editing.apply { TypstEdit.toggleWrap("`", in: $0, selection: $1) } }
+            Button("Raw") { applyFormat { TypstEdit.toggleWrap("`", in: $0, selection: $1) } }
                 .keyboardShortcut("e", modifiers: .command)
             Divider()
-            Button("Insert Task") { editing.apply { TypstEdit.insertTask(in: $0, selection: $1) } }
+            Button("Insert Task") { applyFormat { TypstEdit.insertTask(in: $0, selection: $1) } }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
         } label: {
             Label("Format", systemImage: "textformat")
@@ -383,35 +376,16 @@ struct TypstCanvas: View {
         }
     }
 
-    /// Write mode reads like a manuscript (system serif, roomier leading); Typeset
-    /// stays a code editor (monospace).
-    private var editorFont: NSFont {
-        guard mode == .write else { return .monospacedSystemFont(ofSize: 12, weight: .regular) }
-        let size: CGFloat = 15
-        let base = NSFont.systemFont(ofSize: size)
-        if let descriptor = base.fontDescriptor.withDesign(.serif),
-           let serif = NSFont(descriptor: descriptor, size: size) {
-            return serif
-        }
-        return base
-    }
-
     private func editor(fontSize: CGFloat) -> some View {
-        SourceEditor(
-            $text,
-            language: .default,
-            configuration: SourceEditorConfiguration(
-                appearance: .init(
-                    theme: colorScheme == .dark ? .typstDark : .typstLight,
-                    font: editorFont,
-                    lineHeightMultiple: mode == .write ? 1.5 : 1.2,
-                    wrapLines: true
-                ),
-                behavior: .init(indentOption: .spaces(count: 2))
-            ),
-            state: $editorState,
-            highlightProviders: [highlighter],
-            coordinators: [editing]
+        // Write reads like a manuscript (serif, roomy); Typeset is a code editor
+        // that wraps (prose-like source).
+        MaximalEditor(
+            text: $text,
+            style: mode == .write ? .prose()
+                                  : .code(size: fontSize, wrapLines: true, indentSpaces: 2),
+            initialCursorLine: initialLine,
+            tokenizer: tokenizer,
+            controller: editor
         )
         .id(nodeID)
         .clipped()
@@ -420,6 +394,14 @@ struct TypstCanvas: View {
             scheduleCompile(delay: .milliseconds(400))
             if mode.autosaves { scheduleAutosave() }
         }
+    }
+
+    /// Compute a formatting edit against the live text/selection and apply it.
+    private func applyFormat(_ makeEdit: (String, NSRange) -> TypstEdit.Edit) {
+        guard let (currentText, selection) = editor.textAndSelection() else { return }
+        let edit = makeEdit(currentText, selection)
+        editor.applyEdit(range: edit.range, replacement: edit.replacement,
+                         selection: edit.selection)
     }
 
     private func divider(available: CGFloat) -> some View {
@@ -548,10 +530,8 @@ struct TypstCanvas: View {
 
     private func jump(to diagnostic: TypstDiagnostic) {
         guard let line = diagnostic.line else { return }
-        // typst reports 1-based lines, 0-based columns; CursorPosition is 1-based.
-        editorState.cursorPositions = [
-            CursorPosition(line: line, column: (diagnostic.column ?? 0) + 1)
-        ]
+        // typst reports 1-based lines, 0-based columns; the editor is 1-based.
+        editor.moveCursor(toLine: line, column: (diagnostic.column ?? 0) + 1)
     }
 
     private func export(_ format: TypstCompiler.ExportFormat) {
@@ -580,25 +560,27 @@ struct TypstCanvas: View {
     }
 }
 
-// MARK: - Editing coordinator
+// MARK: - Tokenizer
 
-/// Bridges the Format commands to the live text view. Edits go through
-/// `replaceCharacters` (undo-registered) with the selection placed afterward, so
-/// ⌘B/⌘I behave like a word processor's.
-final class TypstEditingCoordinator: TextViewCoordinator {
-    private weak var controller: TextViewController?
-
-    func prepareCoordinator(controller: TextViewController) { self.controller = controller }
-    func destroy() { controller = nil }
-
-    @MainActor
-    func apply(_ makeEdit: (String, NSRange) -> TypstEdit.Edit) {
-        guard let textView = controller?.textView else { return }
-        let selection = textView.selectionManager.textSelections.first?.range
-            ?? NSRange(location: 0, length: 0)
-        let edit = makeEdit(textView.string, selection)
-        textView.replaceCharacters(in: edit.range, with: edit.replacement)
-        textView.selectionManager.setSelectedRange(edit.selection)
+/// Adapts the tested, Foundation-only `TypstSyntax` tokenizer to the editor's
+/// engine-neutral vocabulary.
+final class TypstTokenizer: EditorTokenizer {
+    func tokens(in text: String) -> [(range: NSRange, kind: EditorTokenKind)] {
+        TypstSyntax.tokens(in: text).map { token in
+            let kind: EditorTokenKind
+            switch token.kind {
+            case .comment:   kind = .comment
+            case .raw:       kind = .string
+            case .math:      kind = .number
+            case .heading:   kind = .keyword
+            case .strong:    kind = .type
+            case .emphasis:  kind = .variable
+            case .call:      kind = .function
+            case .label:     kind = .tag
+            case .reference: kind = .property
+            }
+            return (token.range, kind)
+        }
     }
 }
 
@@ -738,51 +720,7 @@ private struct PDFPreview: NSViewRepresentable {
     }
 }
 
-// MARK: - Theme (matches the TextEditor plugin's Xcode-like themes)
-
-private extension EditorTheme {
-    static var typstLight: EditorTheme {
-        EditorTheme(
-            text: Attribute(color: NSColor(hex: "000000")),
-            insertionPoint: NSColor(hex: "000000"),
-            invisibles: Attribute(color: NSColor(hex: "D6D6D6")),
-            background: NSColor(hex: "FFFFFF"),
-            lineHighlight: NSColor(hex: "ECF5FF"),
-            selection: NSColor(hex: "B2D7FF"),
-            keywords: Attribute(color: NSColor(hex: "9B2393"), bold: true),
-            commands: Attribute(color: NSColor(hex: "326D74")),
-            types: Attribute(color: NSColor(hex: "0B4F79"), bold: true),
-            attributes: Attribute(color: NSColor(hex: "815F03")),
-            variables: Attribute(color: NSColor(hex: "0F68A0"), italic: true),
-            values: Attribute(color: NSColor(hex: "6C36A9")),
-            numbers: Attribute(color: NSColor(hex: "1C00CF")),
-            strings: Attribute(color: NSColor(hex: "C41A16")),
-            characters: Attribute(color: NSColor(hex: "1C00CF")),
-            comments: Attribute(color: NSColor(hex: "267507"))
-        )
-    }
-
-    static var typstDark: EditorTheme {
-        EditorTheme(
-            text: Attribute(color: NSColor(hex: "FFFFFF")),
-            insertionPoint: NSColor(hex: "007AFF"),
-            invisibles: Attribute(color: NSColor(hex: "53606E")),
-            background: NSColor(hex: "292A30"),
-            lineHighlight: NSColor(hex: "2F3239"),
-            selection: NSColor(hex: "646F83"),
-            keywords: Attribute(color: NSColor(hex: "FF7AB2"), bold: true),
-            commands: Attribute(color: NSColor(hex: "78C2B3")),
-            types: Attribute(color: NSColor(hex: "6BDFFF"), bold: true),
-            attributes: Attribute(color: NSColor(hex: "CC9768")),
-            variables: Attribute(color: NSColor(hex: "4EB0CC"), italic: true),
-            values: Attribute(color: NSColor(hex: "B281EB")),
-            numbers: Attribute(color: NSColor(hex: "D9C97C")),
-            strings: Attribute(color: NSColor(hex: "FF8170")),
-            characters: Attribute(color: NSColor(hex: "D9C97C")),
-            comments: Attribute(color: NSColor(hex: "7F8C98"))
-        )
-    }
-}
+// MARK: - Helpers
 
 private extension NSColor {
     convenience init(hex: String) {

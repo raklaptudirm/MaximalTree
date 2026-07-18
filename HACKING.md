@@ -43,6 +43,10 @@ any other type.
 ```
 project.yml                     # XcodeGen project definition — THE source of truth
 Sources/
+  MaximalEditorKit/             # the ONE target touching the editor engine
+    EditorKit.swift             #   MaximalEditor view, styles, tokenizer protocol,
+                                #   EditorController; wraps CodeEditSourceEditor
+                                #   (Swift 5 mode — see project.yml)
   MaximalTreeKit/               # the plugin SDK (dynamic framework)
     Core.swift                  #   NodeID, TypeID, Node, NodeIcon/Tint, Attributes, Related
     Provider.swift              #   NodeProvider + NodeBroker protocols
@@ -62,10 +66,8 @@ Sources/
   TypstPlugin/                  # reference compiler-backed canvas (loadable bundle)
     TypstCore.swift             #   CLI wrapper, diagnostics, notes pkg, tokenizer,
                                 #   TypstRef URIs + structure parsing (all tested)
-    TypstHighlighter.swift      #   HighlightProviding over the tokenizer
     TypstProvider.swift         #   section/task/agenda nodes, agenda canvas, toggles
     TypstPlugin.swift           #   Write/Typeset/Read modes, autosave, note actions
-                                #   (target builds in Swift 5 mode — see project.yml)
 Vendor/SwiftLintPlugin/         # stub overriding a dependency's build-tool plugin
   GitPlugin/                    # reference non-file provider (loadable bundle)
     Git.swift                   #   git:// URI model, git CLI, provider, mount action
@@ -411,6 +413,33 @@ Run `xcodegen generate` and build. Watch the console for
 >   plugin means relaunching the host.
 
 ---
+
+## The editor seam
+
+Plugins that need a text editor use **MaximalEditorKit** (`MaximalEditor` view +
+`EditorStyle` + `EditorTokenizer` + `EditorController`) and never import
+CodeEditSourceEditor directly. The framework is embedded once by the app and linked
+(not embedded) by plugins — before this seam existed, two plugins each statically
+linked the engine and shipped ~100MB apiece. It also quarantines the engine's warts
+in one Swift 5 target (its protocols reject Swift 6 witnesses), and makes a future
+engine change a one-target job. Engine semantics still leak where they must: the
+text binding is read **once at construction**, so gate editor creation on the text
+being loaded and give it a per-document `.id(...)`.
+
+### The mobile plan
+
+An iOS version is intended eventually. The engine strategy is this seam:
+CodeEditSourceEditor is macOS-only, so mobile means a second MaximalEditorKit
+*implementation* (likely [STTextView](https://github.com/krzyzanowskim/STTextView),
+which ships AppKit and UIKit implementations; Runestone is the iOS-native
+alternative). The framework's public API is deliberately platform-neutral (SwiftUI,
+NSRange, CGFloat — no AppKit types escape), so that swap requires zero plugin-code
+changes. Don't migrate engines preemptively.
+
+Known mobile blockers beyond the editor, in order: the `typst` CLI can't run on iOS
+(no `Process` — needs typst as a Rust static library or WASM); iOS only executes
+code shipped in the app, so `PluginHost` needs the compiled-in registration path
+there; and routine AppKit swaps (panels, pasteboard, Quick Look, sidebar material).
 
 ## Vendored overrides
 
