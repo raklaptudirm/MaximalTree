@@ -118,12 +118,25 @@ targets:
         embed: false
       - target: MaximalEditorKit
         embed: false
+    preBuildScripts:
+      - name: Build typst-ffi (cargo)
+        # cargo caches; a no-change run is sub-second. PATH covers nix profiles,
+        # rustup, and Homebrew since Xcode build phases get a minimal environment.
+        script: |
+          export PATH="/etc/profiles/per-user/$USER/bin:/run/current-system/sw/bin:$HOME/.cargo/bin:/opt/homebrew/bin:$PATH"
+          cd "$SRCROOT/Vendor/typst-ffi"
+          cargo build --release
+        basedOnDependencyAnalysis: false
     settings:
       base:
         PRODUCT_NAME: Typst
         PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.plugin.typst
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_NSPrincipalClass: TypstPlugin
+        SWIFT_INCLUDE_PATHS: $(SRCROOT)/Vendor/typst-ffi/include
+        OTHER_LDFLAGS:
+          - "-L$(SRCROOT)/Vendor/typst-ffi/target/release"
+          - "-ltypst_ffi"
         LD_RUNPATH_SEARCH_PATHS:
           - "@loader_path/../../../../Frameworks"
 
@@ -194,12 +207,19 @@ targets:
       - Sources/FileSystemPlugin
       - Sources/GitPlugin
       - path: Sources/TypstPlugin/TypstCore.swift
+      - path: Sources/TypstPlugin/TypstEngine.swift
     dependencies:
       - target: MaximalTree          # hosts the tests; wires TEST_HOST/BUNDLE_LOADER
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.tests
         GENERATE_INFOPLIST_FILE: YES
+        # The compile paths under test call into the typst engine directly, which
+        # makes them hermetic — no typst CLI needed on the machine.
+        SWIFT_INCLUDE_PATHS: $(SRCROOT)/Vendor/typst-ffi/include
+        OTHER_LDFLAGS:
+          - "-L$(SRCROOT)/Vendor/typst-ffi/target/release"
+          - "-ltypst_ffi"
 
 schemes:
   MaximalTree:

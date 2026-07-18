@@ -1,0 +1,23 @@
+[package]
+name = "typst-ffi"
+version = "0.1.0"
+edition = "2021"
+description = "C ABI bindings to the typst compiler for MaximalTree (macOS now, iOS later)."
+
+[lib]
+name = "typst_ffi"
+crate-type = ["staticlib"]
+
+[dependencies]
+typst = "0.15"
+typst-pdf = "0.15"
+typst-layout = "0.15"
+# fonts + embedded fallbacks only — no package downloads, no networking, no openssl.
+# (@local packages are resolved by our World from the data directory.)
+typst-kit = { version = "0.15", default-features = false, features = ["scan-fonts", "embedded-fonts"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+time = "0.3"
+
+[profile.release]
+strip = true

@@ -305,6 +305,54 @@ import Foundation
     }
 }
 
+/// The in-process engine (Vendor/typst-ffi). NOT gated on the CLI — the library is
+/// linked into the test target, making these hermetic.
+@Suite struct TypstEngineTests {
+    private func tempRoot() throws -> URL {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("typst-engine-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    @Test func compilesToPDF() throws {
+        let output = TypstEngine.compile(source: "= Hello\nFrom the engine.",
+                                         root: try tempRoot())
+        let result = try #require(output, "engine must not internal-error")
+        #expect(result.pdf != nil)
+        #expect(result.diagnostics.isEmpty)
+    }
+
+    @Test func reportsLocatedErrors() throws {
+        let output = TypstEngine.compile(source: "= Bad\n#nonexistent()",
+                                         root: try tempRoot())
+        let result = try #require(output)
+        #expect(result.pdf == nil)
+        #expect(result.diagnostics.contains { $0.severity == .error && $0.line == 2 })
+    }
+
+    @Test func resolvesRelativeFilesAgainstRoot() throws {
+        let root = try tempRoot()
+        try "world".write(to: root.appendingPathComponent("data.txt"),
+                          atomically: true, encoding: .utf8)
+        let output = TypstEngine.compile(source: "#read(\"data.txt\")", root: root)
+        let result = try #require(output)
+        #expect(result.pdf != nil)
+    }
+
+    @Test func resolvesLocalPackages() throws {
+        try TypstNotes.installPackage()
+        let source = """
+        \(TypstNotes.packageImport)
+        #task[Engine-compiled task]
+        """
+        let output = TypstEngine.compile(source: source, root: try tempRoot())
+        let result = try #require(output)
+        #expect(result.diagnostics.filter { $0.severity == .error }.isEmpty)
+        #expect(result.pdf != nil)
+    }
+}
+
 /// Integration tests against the real typst CLI; skipped on machines without it.
 @Suite(.enabled(if: TypstCompiler.isAvailable))
 struct TypstCompilerTests {

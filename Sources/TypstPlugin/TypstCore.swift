@@ -45,10 +45,16 @@ enum TypstCompiler {
 
     static var isAvailable: Bool { executable != nil }
 
-    /// Compile `source` as though it were the contents of `documentURL`.
+    /// Compile `source` as though it were the contents of `documentURL`. Prefers
+    /// the in-process engine (Vendor/typst-ffi); falls back to the CLI only when
+    /// the engine reports an internal failure.
     static func compile(source: String, documentURL: URL) async -> Output {
         await Task.detached(priority: .userInitiated) {
-            compileSync(source: source, documentURL: documentURL)
+            let root = documentURL.deletingLastPathComponent()
+            if let output = TypstEngine.compile(source: source, root: root) {
+                return output
+            }
+            return compileSync(source: source, documentURL: documentURL)
         }.value
     }
 

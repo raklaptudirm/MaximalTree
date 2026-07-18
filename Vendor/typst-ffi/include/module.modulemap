@@ -1,0 +1,4 @@
+module TypstFFI {
+    header "typst_ffi.h"
+    export *
+}
