@@ -93,6 +93,65 @@ enum TypstCompiler {
         return Output(pdf: try? Data(contentsOf: outURL), diagnostics: diagnostics)
     }
 
+    enum ExportFormat: String, CaseIterable {
+        case pdf, svg, png
+
+        var title: String { rawValue.uppercased() }
+        /// Paged formats need a `{p}` page marker in the output path.
+        var isPaged: Bool { self != .pdf }
+    }
+
+    /// Compile `source` to `destination` in the given format. For paged formats the
+    /// filename gains `-{p}` (page number) before the extension, since a multi-page
+    /// document can't land in a single SVG/PNG. Returns diagnostics; empty of errors
+    /// means the export happened.
+    static func export(source: String, documentURL: URL,
+                       format: ExportFormat, to destination: URL) async -> [TypstDiagnostic] {
+        await Task.detached(priority: .userInitiated) {
+            exportSync(source: source, documentURL: documentURL,
+                       format: format, to: destination)
+        }.value
+    }
+
+    static func exportSync(source: String, documentURL: URL,
+                           format: ExportFormat, to destination: URL) -> [TypstDiagnostic] {
+        guard let executable else {
+            return [TypstDiagnostic(severity: .error, line: nil, column: nil,
+                                    message: "typst is not installed")]
+        }
+
+        var outPath = destination.path
+        if format.isPaged {
+            let stem = destination.deletingPathExtension()
+            outPath = stem.path + "-{p}." + format.rawValue
+        }
+
+        let root = documentURL.deletingLastPathComponent()
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = ["compile", "--diagnostic-format", "short",
+                             "--format", format.rawValue,
+                             "--root", root.path, "-", outPath]
+        if format == .png { process.arguments?.insert(contentsOf: ["--ppi", "300"], at: 2) }
+        process.currentDirectoryURL = root
+
+        let stdinPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardInput = stdinPipe
+        process.standardOutput = Pipe()
+        process.standardError = stderrPipe
+
+        do { try process.run() } catch {
+            return [TypstDiagnostic(severity: .error, line: nil, column: nil,
+                                    message: "couldn't run typst: \(error.localizedDescription)")]
+        }
+        stdinPipe.fileHandleForWriting.write(Data(source.utf8))
+        stdinPipe.fileHandleForWriting.closeFile()
+        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return parseDiagnostics(String(decoding: stderrData, as: UTF8.self))
+    }
+
     /// Parse `--diagnostic-format short` lines. Tolerates messages without a
     /// location (`error: no such file`) and skips anything that isn't a diagnostic.
     static func parseDiagnostics(_ stderr: String) -> [TypstDiagnostic] {
@@ -227,6 +286,75 @@ enum TypstNotes {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: date)
+    }
+}
+
+// MARK: - Editing operations
+
+/// Pure text-edit computations for the prose keybindings. Each returns a minimal
+/// `Edit` (what to replace, with what, and where the selection lands) rather than a
+/// whole new document, so the editor applies it with proper undo granularity.
+enum TypstEdit {
+    struct Edit: Equatable {
+        let range: NSRange          // region of the original text to replace
+        let replacement: String
+        let selection: NSRange      // selection in the *resulting* text
+    }
+
+    /// Toggle a symmetric marker (Typst: `*` strong, `_` emphasis, `` ` `` raw)
+    /// around the selection:
+    /// - empty selection → insert a marker pair, caret inside;
+    /// - selection includes the markers → strip them;
+    /// - markers sit just outside the selection → strip them;
+    /// - otherwise → wrap, selection covering the inner text.
+    static func toggleWrap(_ marker: String, in text: String, selection: NSRange) -> Edit {
+        let ns = text as NSString
+        let markerLength = (marker as NSString).length
+        let selected = selection.length > 0 ? ns.substring(with: selection) : ""
+
+        if selection.length == 0 {
+            return Edit(range: selection,
+                        replacement: marker + marker,
+                        selection: NSRange(location: selection.location + markerLength, length: 0))
+        }
+
+        if selection.length >= 2 * markerLength,
+           selected.hasPrefix(marker), selected.hasSuffix(marker) {
+            let inner = String(selected.dropFirst(marker.count).dropLast(marker.count))
+            return Edit(range: selection,
+                        replacement: inner,
+                        selection: NSRange(location: selection.location,
+                                           length: (inner as NSString).length))
+        }
+
+        let before = NSRange(location: selection.location - markerLength, length: markerLength)
+        let after = NSRange(location: selection.location + selection.length, length: markerLength)
+        if before.location >= 0, after.location + after.length <= ns.length,
+           ns.substring(with: before) == marker, ns.substring(with: after) == marker {
+            return Edit(range: NSRange(location: before.location,
+                                       length: selection.length + 2 * markerLength),
+                        replacement: selected,
+                        selection: NSRange(location: before.location, length: selection.length))
+        }
+
+        return Edit(range: selection,
+                    replacement: marker + selected + marker,
+                    selection: NSRange(location: selection.location + markerLength,
+                                       length: selection.length))
+    }
+
+    /// Turn the selection into a `#task[…]` (or insert an empty one at the caret,
+    /// caret placed inside the brackets).
+    static func insertTask(in text: String, selection: NSRange) -> Edit {
+        let ns = text as NSString
+        let selected = selection.length > 0 ? ns.substring(with: selection) : ""
+        let replacement = "#task[\(selected)]"
+        let innerStart = selection.location + ("#task[" as NSString).length
+        return Edit(range: selection,
+                    replacement: replacement,
+                    selection: selection.length > 0
+                        ? NSRange(location: innerStart, length: (selected as NSString).length)
+                        : NSRange(location: innerStart, length: 0))
     }
 }
 
@@ -448,6 +576,44 @@ enum TypstStructure {
     static func outline(ofFileAt url: URL) -> [Item] {
         guard let source = try? String(contentsOf: url, encoding: .utf8) else { return [] }
         return outline(of: source)
+    }
+
+    /// Local files this document references via `#include "…"` / `#import "…"`.
+    /// Package imports (`@local/…`, `@preview/…`) are not file links and are skipped.
+    static func links(of source: String) -> [String] {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"#(?:include|import)\s*"([^"@][^"]*)""#) else { return [] }
+        let ns = source as NSString
+        return regex.matches(in: source, range: NSRange(location: 0, length: ns.length))
+            .map { ns.substring(with: $0.range(at: 1)) }
+    }
+
+    /// All `.typ` files under `dir` (recursive, hidden skipped, capped).
+    static func typFiles(under dir: URL, limit: Int = 300) -> [URL] {
+        var files: [URL] = []
+        if let enumerator = FileManager.default.enumerator(
+            at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+            for case let url as URL in enumerator {
+                if url.pathExtension.lowercased() == "typ" { files.append(url) }
+                if files.count >= limit { break }
+            }
+        }
+        return files.sorted { $0.path < $1.path }
+    }
+
+    /// Documents under `dir` that link to `file` (their `#include`/`#import` paths,
+    /// resolved relative to each document, hit `file`).
+    static func backlinks(to file: URL, under dir: URL) -> [URL] {
+        let target = file.standardizedFileURL.path
+        return typFiles(under: dir).filter { candidate in
+            guard candidate.standardizedFileURL.path != target,
+                  let source = try? String(contentsOf: candidate, encoding: .utf8)
+            else { return false }
+            let base = candidate.deletingLastPathComponent()
+            return links(of: source).contains { link in
+                URL(fileURLWithPath: link, relativeTo: base).standardizedFileURL.path == target
+            }
+        }
     }
 
     /// Every task in every `.typ` under `dir` (recursive, hidden files skipped,

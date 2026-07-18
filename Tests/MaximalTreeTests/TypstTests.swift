@@ -232,6 +232,79 @@ import Foundation
     }
 }
 
+@Suite struct TypstEditTests {
+    private func apply(_ edit: TypstEdit.Edit, to text: String) -> String {
+        (text as NSString).replacingCharacters(in: edit.range, with: edit.replacement)
+    }
+
+    @Test func wrapSelection() {
+        let text = "make this bold"
+        let edit = TypstEdit.toggleWrap("*", in: text, selection: NSRange(location: 10, length: 4))
+        #expect(apply(edit, to: text) == "make this *bold*")
+        #expect(edit.selection == NSRange(location: 11, length: 4))   // inner text stays selected
+    }
+
+    @Test func unwrapWhenSelectionIncludesMarkers() {
+        let text = "make this *bold*"
+        let edit = TypstEdit.toggleWrap("*", in: text, selection: NSRange(location: 10, length: 6))
+        #expect(apply(edit, to: text) == "make this bold")
+    }
+
+    @Test func unwrapWhenMarkersSitOutsideSelection() {
+        let text = "make this *bold*"
+        let edit = TypstEdit.toggleWrap("*", in: text, selection: NSRange(location: 11, length: 4))
+        #expect(apply(edit, to: text) == "make this bold")
+        #expect(edit.selection == NSRange(location: 10, length: 4))
+    }
+
+    @Test func emptySelectionInsertsPairWithCaretInside() {
+        let edit = TypstEdit.toggleWrap("_", in: "ab", selection: NSRange(location: 1, length: 0))
+        #expect(apply(edit, to: "ab") == "a__b")
+        #expect(edit.selection == NSRange(location: 2, length: 0))
+    }
+
+    @Test func insertTaskWrapsSelection() {
+        let text = "Buy milk"
+        let edit = TypstEdit.insertTask(in: text, selection: NSRange(location: 0, length: 8))
+        #expect(apply(edit, to: text) == "#task[Buy milk]")
+    }
+
+    @Test func insertTaskAtCaret() {
+        let edit = TypstEdit.insertTask(in: "", selection: NSRange(location: 0, length: 0))
+        #expect(apply(edit, to: "") == "#task[]")
+        #expect(edit.selection == NSRange(location: 6, length: 0))    // caret in brackets
+    }
+}
+
+@Suite struct TypstLinksTests {
+    @Test func parsesIncludesAndImportsSkippingPackages() {
+        let source = """
+        #import "@local/mtnotes:0.1.0": *
+        #import "helpers.typ": thing
+        #include "chapters/one.typ"
+        """
+        #expect(TypstStructure.links(of: source) == ["helpers.typ", "chapters/one.typ"])
+    }
+
+    @Test func backlinksResolveRelativePaths() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("typst-links-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("sub"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let target = dir.appendingPathComponent("target.typ")
+        try "= Target".write(to: target, atomically: true, encoding: .utf8)
+        try "#include \"../target.typ\"".write(
+            to: dir.appendingPathComponent("sub/linker.typ"), atomically: true, encoding: .utf8)
+        try "= Unrelated".write(
+            to: dir.appendingPathComponent("other.typ"), atomically: true, encoding: .utf8)
+
+        let backlinks = TypstStructure.backlinks(to: target, under: dir)
+        #expect(backlinks.map(\.lastPathComponent) == ["linker.typ"])
+    }
+}
+
 /// Integration tests against the real typst CLI; skipped on machines without it.
 @Suite(.enabled(if: TypstCompiler.isAvailable))
 struct TypstCompilerTests {
@@ -264,6 +337,19 @@ struct TypstCompilerTests {
             documentURL: try tempDocURL())
         #expect(output.pdf != nil)
         #expect(output.diagnostics.contains { $0.severity == .warning })
+    }
+
+    @Test func exportsSVGPerPage() async throws {
+        let doc = try tempDocURL()
+        let dest = doc.deletingLastPathComponent().appendingPathComponent("out.svg")
+        let diagnostics = await TypstCompiler.export(
+            source: "= Page One\n#pagebreak()\n= Page Two",
+            documentURL: doc, format: .svg, to: dest)
+
+        #expect(diagnostics.filter { $0.severity == .error }.isEmpty)
+        let dir = dest.deletingLastPathComponent()
+        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("out-1.svg").path))
+        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("out-2.svg").path))
     }
 
     /// The whole notes convention hinges on this: the bundled package installs into

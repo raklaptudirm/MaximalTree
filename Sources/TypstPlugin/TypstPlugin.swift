@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import PDFKit
 import CodeEditSourceEditor
+import CodeEditTextView
 import CodeEditLanguages
 import MaximalTreeKit
 
@@ -74,6 +75,13 @@ final class TypstPlugin: NSObject, Plugin {
         registry.register(inspector: InspectorContribution(
             matches: { $0.type == TypeID("typst.task") },
             make: { id, host in AnyView(TaskInspector(nodeID: id).environment(host)) }
+        ))
+        // Stacks with the FileSystem plugin's file inspector — composition at work.
+        registry.register(inspector: InspectorContribution(
+            matches: { node in
+                node.id.scheme == "file" && node.id.uri.lowercased().hasSuffix(".typ")
+            },
+            make: { id, host in AnyView(TypstDocumentInspector(nodeID: id).environment(host)) }
         ))
 
         registry.register(action: Action(
@@ -176,6 +184,7 @@ struct TypstCanvas: View {
     @State private var loadError: String?
     @State private var editorState = SourceEditorState()
     @State private var highlighter = TypstHighlighter()
+    @State private var editing = TypstEditingCoordinator()
     @State private var mode: TypstMode = .write
 
     @State private var preview: PDFDocument?
@@ -264,13 +273,15 @@ struct TypstCanvas: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
+                formatMenu
             case .typeset:
                 if compiling { ProgressView().controlSize(.small) }
                 if let preview {
                     Text("\(preview.pageCount) page\(preview.pageCount == 1 ? "" : "s")")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                exportButton
+                formatMenu
+                exportMenu
                 Toggle(isOn: $showPreview) {
                     Image(systemName: "sidebar.squares.trailing")
                 }
@@ -284,7 +295,7 @@ struct TypstCanvas: View {
                     Text("\(preview.pageCount) page\(preview.pageCount == 1 ? "" : "s")")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                exportButton
+                exportMenu
             }
 
             Picker("Mode", selection: $mode) {
@@ -300,14 +311,38 @@ struct TypstCanvas: View {
         .padding(8)
     }
 
-    private var exportButton: some View {
-        Button {
-            exportPDF()
+    /// Prose keybindings. Menu items register their key equivalents window-wide, so
+    /// ⌘B/⌘I/⌘E/⇧⌘T work while typing without opening the menu.
+    private var formatMenu: some View {
+        Menu {
+            Button("Bold") { editing.apply { TypstEdit.toggleWrap("*", in: $0, selection: $1) } }
+                .keyboardShortcut("b", modifiers: .command)
+            Button("Emphasis") { editing.apply { TypstEdit.toggleWrap("_", in: $0, selection: $1) } }
+                .keyboardShortcut("i", modifiers: .command)
+            Button("Raw") { editing.apply { TypstEdit.toggleWrap("`", in: $0, selection: $1) } }
+                .keyboardShortcut("e", modifiers: .command)
+            Divider()
+            Button("Insert Task") { editing.apply { TypstEdit.insertTask(in: $0, selection: $1) } }
+                .keyboardShortcut("t", modifiers: [.command, .shift])
         } label: {
-            Label("Export PDF", systemImage: "square.and.arrow.up")
+            Label("Format", systemImage: "textformat")
         }
-        .disabled(previewData == nil)
-        .help("Export the compiled PDF")
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private var exportMenu: some View {
+        Menu {
+            ForEach(TypstCompiler.ExportFormat.allCases, id: \.self) { format in
+                Button(format.title) { export(format) }
+            }
+        } label: {
+            Label("Export", systemImage: "square.and.arrow.up")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(!TypstCompiler.isAvailable)
+        .help("Export the document")
     }
 
     private var wordCountSummary: String {
@@ -348,6 +383,19 @@ struct TypstCanvas: View {
         }
     }
 
+    /// Write mode reads like a manuscript (system serif, roomier leading); Typeset
+    /// stays a code editor (monospace).
+    private var editorFont: NSFont {
+        guard mode == .write else { return .monospacedSystemFont(ofSize: 12, weight: .regular) }
+        let size: CGFloat = 15
+        let base = NSFont.systemFont(ofSize: size)
+        if let descriptor = base.fontDescriptor.withDesign(.serif),
+           let serif = NSFont(descriptor: descriptor, size: size) {
+            return serif
+        }
+        return base
+    }
+
     private func editor(fontSize: CGFloat) -> some View {
         SourceEditor(
             $text,
@@ -355,14 +403,15 @@ struct TypstCanvas: View {
             configuration: SourceEditorConfiguration(
                 appearance: .init(
                     theme: colorScheme == .dark ? .typstDark : .typstLight,
-                    font: .monospacedSystemFont(ofSize: fontSize, weight: .regular),
-                    lineHeightMultiple: mode == .write ? 1.35 : 1.2,
+                    font: editorFont,
+                    lineHeightMultiple: mode == .write ? 1.5 : 1.2,
                     wrapLines: true
                 ),
                 behavior: .init(indentOption: .spaces(count: 2))
             ),
             state: $editorState,
-            highlightProviders: [highlighter]
+            highlightProviders: [highlighter],
+            coordinators: [editing]
         )
         .id(nodeID)
         .clipped()
@@ -505,14 +554,112 @@ struct TypstCanvas: View {
         ]
     }
 
-    private func exportPDF() {
-        guard let data = previewData else { return }
+    private func export(_ format: TypstCompiler.ExportFormat) {
+        guard let documentURL = fileURL else { return }
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.pdf]
-        panel.nameFieldStringValue = (host.node(nodeID)?.label as NSString?)?
-            .deletingPathExtension.appending(".pdf") ?? "document.pdf"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        try? data.write(to: url)
+        switch format {
+        case .pdf: panel.allowedContentTypes = [.pdf]
+        case .svg: panel.allowedContentTypes = [.svg]
+        case .png: panel.allowedContentTypes = [.png]
+        }
+        let stem = (host.node(nodeID)?.label as NSString?)?.deletingPathExtension ?? "document"
+        panel.nameFieldStringValue = "\(stem).\(format.rawValue)"
+        if format.isPaged {
+            panel.message = "Multi-page documents export one \(format.title) per page."
+        }
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        let source = text
+        Task {
+            let exportDiagnostics = await TypstCompiler.export(
+                source: source, documentURL: documentURL, format: format, to: destination)
+            if exportDiagnostics.contains(where: { $0.severity == .error }) {
+                diagnostics = exportDiagnostics    // surface in the Typeset strip
+                mode = .typeset
+            }
+        }
+    }
+}
+
+// MARK: - Editing coordinator
+
+/// Bridges the Format commands to the live text view. Edits go through
+/// `replaceCharacters` (undo-registered) with the selection placed afterward, so
+/// ⌘B/⌘I behave like a word processor's.
+final class TypstEditingCoordinator: TextViewCoordinator {
+    private weak var controller: TextViewController?
+
+    func prepareCoordinator(controller: TextViewController) { self.controller = controller }
+    func destroy() { controller = nil }
+
+    @MainActor
+    func apply(_ makeEdit: (String, NSRange) -> TypstEdit.Edit) {
+        guard let textView = controller?.textView else { return }
+        let selection = textView.selectionManager.textSelections.first?.range
+            ?? NSRange(location: 0, length: 0)
+        let edit = makeEdit(textView.string, selection)
+        textView.replaceCharacters(in: edit.range, with: edit.replacement)
+        textView.selectionManager.setSelectedRange(edit.selection)
+    }
+}
+
+// MARK: - Document inspector (links + backlinks)
+
+/// The graph-y side of a document, stacked under the FileSystem inspector: what it
+/// includes/imports, and which documents point back at it.
+struct TypstDocumentInspector: View {
+    let nodeID: NodeID
+    @Environment(HostContext.self) private var host
+
+    @State private var links: [URL] = []
+    @State private var backlinks: [URL] = []
+    @State private var loaded = false
+
+    var body: some View {
+        Form {
+            if !links.isEmpty {
+                Section("Links") { rows(links) }
+            }
+            if !backlinks.isEmpty {
+                Section("Backlinks") { rows(backlinks) }
+            }
+            if loaded && links.isEmpty && backlinks.isEmpty {
+                Section("Document") {
+                    Text("No links to or from this document.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .task(id: nodeID) { await reload() }
+    }
+
+    private func rows(_ urls: [URL]) -> some View {
+        ForEach(urls, id: \.absoluteString) { url in
+            Button {
+                host.openURI(url.absoluteString)
+            } label: {
+                Label(url.deletingPathExtension().lastPathComponent,
+                      systemImage: "doc.text")
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private func reload() async {
+        loaded = false
+        guard nodeID.scheme == "file", let file = URL(string: nodeID.uri) else { return }
+        let result = await Task.detached(priority: .utility) { () -> ([URL], [URL]) in
+            let base = file.deletingLastPathComponent()
+            let forward = (try? String(contentsOf: file, encoding: .utf8))
+                .map(TypstStructure.links(of:))?
+                .map { URL(fileURLWithPath: $0, relativeTo: base).standardizedFileURL }
+                .filter { FileManager.default.fileExists(atPath: $0.path) } ?? []
+            let back = TypstStructure.backlinks(to: file, under: base)
+            return (forward, back)
+        }.value
+        links = result.0
+        backlinks = result.1
+        loaded = true
     }
 }
 
