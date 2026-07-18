@@ -96,19 +96,15 @@ xcodegen generate
 # Build
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
   xcodebuild -project MaximalTree.xcodeproj -scheme MaximalTree \
-  -destination 'platform=macOS' -skipPackagePluginValidation build
+  -destination 'platform=macOS' build
 
 # Test
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
   xcodebuild -project MaximalTree.xcodeproj -scheme MaximalTree \
-  -destination 'platform=macOS' -skipPackagePluginValidation test
+  -destination 'platform=macOS' test
 ```
 
 Or just open `MaximalTree.xcodeproj` in Xcode and ⌘R / ⌘U.
-
-> `-skipPackagePluginValidation` is needed because a dependency ships a build-tool
-> plugin, and Xcode otherwise demands interactive "Trust & Enable" approval that a CLI
-> build can't answer. See [Vendored overrides](#vendored-overrides).
 
 ### When the app launches but does nothing
 
@@ -417,44 +413,34 @@ Run `xcodegen generate` and build. Watch the console for
 ## The editor seam
 
 Plugins that need a text editor use **MaximalEditorKit** (`MaximalEditor` view +
-`EditorStyle` + `EditorTokenizer` + `EditorController`) and never import
-CodeEditSourceEditor directly. The framework is embedded once by the app and linked
-(not embedded) by plugins — before this seam existed, two plugins each statically
-linked the engine and shipped ~100MB apiece. It also quarantines the engine's warts
-in one Swift 5 target (its protocols reject Swift 6 witnesses), and makes a future
-engine change a one-target job. Engine semantics still leak where they must: the
-text binding is read **once at construction**, so gate editor creation on the text
-being loaded and give it a per-document `.id(...)`.
+`EditorStyle` + `EditorTokenizer` + `EditorController`) and never import the engine
+directly. The framework is embedded once by the app and linked (not embedded) by
+plugins. The engine is **[STTextView](https://github.com/krzyzanowskim/STTextView)**
+(TextKit 2) — one package with AppKit and UIKit implementations behind the same
+import, which is the mobile path. The seam has already survived one full engine
+swap (from CodeEditSourceEditor) with zero plugin-code changes; keep it that way.
+
+The text binding is live in both directions — external changes push into the view —
+but still give each document a per-document `.id(...)` so undo and scroll state
+reset. Highlighting is painted as *rendering attributes*: display-only, never
+touching the text storage or the undo stack.
 
 ### The mobile plan
 
-An iOS version is intended eventually. The engine strategy is this seam:
-CodeEditSourceEditor is macOS-only, so mobile means a second MaximalEditorKit
-*implementation* (likely [STTextView](https://github.com/krzyzanowskim/STTextView),
-which ships AppKit and UIKit implementations; Runestone is the iOS-native
-alternative). The framework's public API is deliberately platform-neutral (SwiftUI,
-NSRange, CGFloat — no AppKit types escape), so that swap requires zero plugin-code
-changes. Don't migrate engines preemptively.
+An iOS version is intended eventually. The editor is ready for it (same engine,
+UIKit implementation, behind this seam). Remaining blockers, in order: the Typst
+compile path on iOS uses `Vendor/typst-ffi` (already built — cross-compile the
+crate for iOS targets); iOS only executes code shipped in the app, so `PluginHost`
+needs the compiled-in registration path there; and routine AppKit swaps (panels,
+pasteboard, Quick Look, sidebar material).
 
-Known mobile blockers beyond the editor, in order: the `typst` CLI can't run on iOS
-(no `Process` — needs typst as a Rust static library or WASM); iOS only executes
-code shipped in the app, so `PluginHost` needs the compiled-in registration path
-there; and routine AppKit swaps (panels, pasteboard, Quick Look, sidebar material).
+## Vendored code
 
-## Vendored overrides
+`Vendor/typst-ffi` is our Rust crate binding the typst compiler in-process (see the
+Typst plugin sources). It's built by a cargo pre-build phase on the Typst plugin
+target; `Cargo.lock` is committed, `target/` is ignored.
 
-`Vendor/SwiftLintPlugin` is a **stub that deliberately overrides a transitive
-dependency**. CodeEditSourceEditor attaches a SwiftLint build-tool plugin to its own
-target, so merely depending on it makes SwiftLint run over *their* sources during *our*
-build — and its pinned binary can't load `sourcekitd` on current toolchains, failing the
-build outright. A local package overrides a remote one of the same identity, so the stub
-satisfies the plugin reference and emits no build commands.
-
-We don't want a dependency's linter in our build regardless, but be aware it's there: if
-CodeEditSourceEditor ever drops the plugin, delete `Vendor/SwiftLintPlugin` and its
-`packages:` entry.
-
-Note that dependency versions are pinned only by `project.yml` constraints —
+Note that Swift dependency versions are pinned only by `project.yml` constraints —
 `Package.resolved` lives inside the generated (gitignored) `.xcodeproj`, so it isn't
 committed and builds aren't byte-for-byte reproducible across machines.
 

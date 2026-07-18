@@ -8,20 +8,13 @@ options:
 
 # Local dev: ad-hoc sign so the app + hosted tests launch without a team/identity.
 # Distribution signing (hardened runtime, notarization) is layered on later.
-# A plugin bringing its own third-party dependencies — the source editor and its
-# tree-sitter grammars. CodeEditSourceEditor pins CodeEditLanguages to exactly
-# 0.1.20, so we match that to avoid an unsatisfiable resolution.
 packages:
-  CodeEditSourceEditor:
-    url: https://github.com/CodeEditApp/CodeEditSourceEditor.git
-    from: "0.15.2"
-  CodeEditLanguages:
-    url: https://github.com/CodeEditApp/CodeEditLanguages.git
-    exactVersion: "0.1.20"
-  # Local override (same identity wins over the transitive remote) that stubs out
-  # CodeEditSourceEditor's SwiftLint build-tool plugin. See Vendor/SwiftLintPlugin.
-  SwiftLintPlugin:
-    path: Vendor/SwiftLintPlugin
+  # The editor engine (TextKit 2). One package with AppKit AND UIKit
+  # implementations behind the same import — the same product serves the
+  # eventual iOS version of MaximalEditorKit.
+  STTextView:
+    url: https://github.com/krzyzanowskim/STTextView
+    from: "2.3.11"
 
 settings:
   base:
@@ -67,29 +60,22 @@ targets:
         LD_RUNPATH_SEARCH_PATHS:
           - "@loader_path/../../../../Frameworks"
 
-  # The ONE target that touches the editor engine. The app embeds it once; editor
-  # plugins link it without embedding — previously each such plugin statically
-  # linked CodeEditSourceEditor and shipped its own ~100MB copy of the grammar
-  # resources. No library evolution: its dependencies aren't evolution-safe, so
-  # in-repo plugins simply rebuild with the host (already the case).
+  # The ONE target that touches the editor engine (STTextView). The app embeds it
+  # once; editor plugins link it without embedding. No library evolution: its
+  # dependencies aren't evolution-safe, so in-repo plugins simply rebuild with
+  # the host (already the case).
   MaximalEditorKit:
     type: framework
     platform: macOS
     sources: [Sources/MaximalEditorKit]
     dependencies:
-      - package: CodeEditSourceEditor
-        product: CodeEditSourceEditor
-      - package: CodeEditLanguages
-        product: CodeEditLanguages
+      - package: STTextView
+        product: STTextView
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.editorkit
         GENERATE_INFOPLIST_FILE: YES
         DEFINES_MODULE: YES
-        # Swift 5 mode: this target conforms to HighlightProviding and
-        # TextViewCoordinator from a Swift 5 module; Swift 6 witness checking
-        # rejects every spelling of those @MainActor completion closures.
-        SWIFT_VERSION: "5.0"
 
   TextEditorPlugin:
     type: bundle
