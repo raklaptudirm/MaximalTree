@@ -186,6 +186,23 @@ and tasks as children of `.typ` file nodes — the sidebar becomes an org-style
 outline, and the contributed nodes are ordinary nodes (their own provider, canvases,
 inspector) from there on.
 
+### Phony nodes: pointers into a real node
+
+A node whose `anchor` is set is **phony**: not a document of its own, but a pointer
+into a specific part of its nearest real ancestor (`NodeAnchor.node` + an opaque
+`fragment`). Opening one opens the *target's* canvas — one shared editing buffer —
+with focus, selection, and the inspector all resolving to the real node, and the
+fragment posted on `HostContext.activeFragment` for the target's canvas to consume
+(`.onChange`, match `target` to your node, honour the one-shot `nonce`). The fragment
+format is a private contract between the provider and the canvas plugin; the typst
+plugin uses `"line=N"`. This is what makes org-style outlines work properly: every
+heading and task in a document is a sidebar node, but they all edit the same buffer.
+Any plain navigation clears the pending fragment, so stale jumps never replay.
+
+Reference uses: typst sections/tasks (fragment jumps into the document), git
+branches (a branch *is* a pointer to its head commit), filesystem symlinks (opening
+one opens the destination's node — one identity per real file).
+
 ### Composing across plugins
 
 A provider can ask the host for nodes owned by *other* providers via `NodeBroker`

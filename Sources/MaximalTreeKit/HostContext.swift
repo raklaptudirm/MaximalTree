@@ -19,6 +19,11 @@ public final class HostContext {
     public internal(set) var focusedNode: NodeID?
     /// Current selection in the explorer (drives action applicability).
     public internal(set) var selection: [NodeID] = []
+    /// Posted when a *phony* node (see `NodeAnchor`) was opened: the host
+    /// navigated to `target`, and target's canvas should jump to `fragment`.
+    /// Canvases observe this (`.onChange`) and act when `target` is their node.
+    /// The nonce makes repeat jumps to the same fragment observable.
+    public internal(set) var activeFragment: NodeFragment?
 
     // Observable caches, filled by the backend.
     internal var nodes: [NodeID: Node] = [:]
@@ -32,6 +37,19 @@ public final class HostContext {
     public weak var backend: GraphBackend?
 
     public init() {}
+
+    /// A phony-node jump request — see `activeFragment`.
+    public struct NodeFragment: Equatable, Sendable {
+        public let target: NodeID
+        public let fragment: String
+        public let nonce: UUID
+
+        public init(target: NodeID, fragment: String) {
+            self.target = target
+            self.fragment = fragment
+            self.nonce = UUID()
+        }
+    }
 
     // MARK: Reads (safe to call from a view body)
 
@@ -92,6 +110,7 @@ public final class HostContext {
     public func _setRoots(_ ids: [NodeID]) { roots = ids }
     public func _setFocus(_ id: NodeID?) { focusedNode = id }
     public func _setSelection(_ ids: [NodeID]) { selection = ids }
+    public func _postFragment(_ fragment: NodeFragment?) { activeFragment = fragment }
 
     /// Rewrite every cached reference to `old` as `new` after a rename. Note this is
     /// shallow: for a directory rename, descendant URIs also change, so the caller

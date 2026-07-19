@@ -59,13 +59,24 @@ struct FileSystemProvider: NodeProvider {
         let name = url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
         var attrs = Attributes()
         var contentType: UTType?
+        var anchor: NodeAnchor?
         if let vals = try? url.resourceValues(
-            forKeys: [.fileSizeKey, .contentModificationDateKey, .contentTypeKey]) {
+            forKeys: [.fileSizeKey, .contentModificationDateKey, .contentTypeKey,
+                      .isSymbolicLinkKey]) {
             if let size = vals.fileSize { attrs["size"] = .int(size) }
             if let mod = vals.contentModificationDate { attrs["modified"] = .date(mod) }
             if let type = vals.contentType {
                 attrs["uti"] = .string(type.identifier)
                 contentType = type
+            }
+            // A symlink IS a pointer to another file — phony: opening it opens
+            // the destination's node (one identity per real file), the link
+            // stays selected in the sidebar.
+            if vals.isSymbolicLink == true {
+                let resolved = url.resolvingSymlinksInPath()
+                if resolved.path != url.path {
+                    anchor = NodeID(fileURL: resolved).map { NodeAnchor(node: $0) }
+                }
             }
         }
         return Node(id: id,
@@ -73,7 +84,8 @@ struct FileSystemProvider: NodeProvider {
                     label: name,
                     icon: isDir ? NodeIcon("folder.fill", tint: .blue) : icon(for: contentType),
                     attributes: attrs,
-                    hasChildren: isDir)
+                    hasChildren: isDir,
+                    anchor: anchor)
     }
 
     /// Content-type-aware icons, so the sidebar reads at a glance.

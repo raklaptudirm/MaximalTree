@@ -74,15 +74,72 @@ final class GraphStore: GraphBackend {
 
     // The plugin-facing `open` navigates the active tab; all navigation flows
     // through `didNavigate()` so focus/selection and the tab model stay in sync.
-    func open(_ id: NodeID) { nav.navigate(to: id); didNavigate() }
+    // Phony nodes (see `NodeAnchor`) resolve to their real target first: the
+    // target's canvas opens — one shared buffer — and focus, selection, and the
+    // inspector all follow the real node; the fragment posts for the canvas to
+    // jump to.
+    func open(_ id: NodeID) {
+        withResolved(id) { target, fragment in
+            self.nav.navigate(to: target)
+            self.finishAnchoredNavigation(phony: id, target: target, fragment: fragment)
+        }
+    }
 
     func select(_ ids: [NodeID]) { context._setSelection(ids) }
+
+    /// Resolve `id` through its anchor chain (phony → real), then run `body`.
+    /// Synchronous when the node is cached — the common case, since anything
+    /// clickable was ingested — one async fetch otherwise (e.g. `openURI`).
+    private func withResolved(_ id: NodeID,
+                              _ body: @escaping @MainActor (NodeID, String?) -> Void) {
+        func resolve(from node: Node?) -> (NodeID, String?) {
+            var target = id
+            var fragment: String?
+            var node = node
+            var hops = 0
+            while let anchor = node?.anchor, hops < 4 {
+                target = anchor.node
+                if fragment == nil { fragment = anchor.fragment }  // clicked node's wins
+                node = context.node(target)
+                hops += 1
+            }
+            return (target, fragment)
+        }
+
+        if let node = context.node(id) {
+            let (target, fragment) = resolve(from: node)
+            body(target, fragment)
+        } else if let p = provider(for: id) {
+            Task { @MainActor in
+                let node = await p.node(for: id)
+                if let node { self.context._ingest(self.decorate(node)) }
+                let (target, fragment) = resolve(from: node)
+                body(target, fragment)
+            }
+        } else {
+            body(id, nil)
+        }
+    }
+
+    private func finishAnchoredNavigation(phony: NodeID, target: NodeID, fragment: String?) {
+        didNavigate()   // focus + selection land on the real target
+        if phony != target, let fragment {
+            context._postFragment(.init(target: target, fragment: fragment))
+        }
+    }
 
     // MARK: Host-only navigation (not in GraphBackend; driven by the UI)
 
     func back() { nav.back(); didNavigate() }
     func forward() { nav.forward(); didNavigate() }
-    func newTab(with id: NodeID?) { nav.newTab(with: id); didNavigate() }
+
+    func newTab(with id: NodeID?) {
+        guard let id else { nav.newTab(with: nil); didNavigate(); return }
+        withResolved(id) { target, fragment in
+            self.nav.newTab(with: target)
+            self.finishAnchoredNavigation(phony: id, target: target, fragment: fragment)
+        }
+    }
     func closeTab(_ tabID: NavigationModel.Tab.ID) { nav.closeTab(tabID); didNavigate() }
     func selectTab(_ i: Int) { nav.selectTab(i); didNavigate() }
     func splitActivePane(horizontal: Bool) { nav.splitActivePane(horizontal: horizontal); didNavigate() }
@@ -90,6 +147,9 @@ final class GraphStore: GraphBackend {
     func activatePane(_ id: UUID) { nav.activatePane(id); didNavigate() }
 
     private func didNavigate() {
+        // Any navigation invalidates a pending phony-node jump; an anchored open
+        // re-posts its fragment right after this.
+        context._postFragment(nil)
         let current = nav.current
         context._setFocus(current)
         context._setSelection(current.map { [$0] } ?? [])

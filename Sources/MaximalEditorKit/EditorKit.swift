@@ -386,6 +386,12 @@ public struct MaximalEditor: NSViewRepresentable {
         /// views once layout settles.
         private var pendingMath: [(range: NSRange, equation: RenderedEquation, block: Bool)] = []
         private var mathOverlays: [NSImageView] = []
+
+        /// The caret's viewport position captured before a repaint, restored
+        /// after layout settles. Lazily arriving math images change line
+        /// heights; without anchoring, a fragment jump (or plain reading
+        /// position) drifts as the document reflows above the caret.
+        private var pendingScrollAnchor: (location: NSTextLocation, offset: CGFloat)?
         // nonisolated(unsafe): only written once from installObservers (main)
         // and read in deinit; NotificationCenter removal is thread-safe.
         private nonisolated(unsafe) var observers: [NSObjectProtocol] = []
@@ -492,12 +498,19 @@ public struct MaximalEditor: NSViewRepresentable {
             let full = NSRange(location: 0, length: ns.length)
             paragraphStyles.removeAll()
             pendingMath.removeAll()
-            // Every exit re-syncs overlays — including removal when the doc
-            // emptied or the style stopped rendering markup. Deferred a tick:
-            // TextKit must lay out the new attributes before frames are real.
+            // Repaints can change layout (math reservations landing, markup
+            // concealment) — anchor the caret's viewport position now so the
+            // text doesn't jump under the reader when line heights change.
+            pendingScrollAnchor = caretScrollAnchor()
+            // Every exit re-syncs overlays and the anchor — including removal
+            // when the doc emptied or the style stopped rendering markup.
+            // Deferred a tick: TextKit must lay out the new attributes first.
             defer {
                 DispatchQueue.main.async { [weak self] in
-                    MainActor.assumeIsolated { self?.layoutMathOverlays() }
+                    MainActor.assumeIsolated {
+                        self?.layoutMathOverlays()
+                        self?.restoreScrollAnchor()
+                    }
                 }
             }
             guard full.length > 0 else { return }
@@ -740,6 +753,42 @@ public struct MaximalEditor: NSViewRepresentable {
                     size: image.size)
                 textView.addSubview(overlay)
                 mathOverlays.append(overlay)
+            }
+        }
+
+        // MARK: Scroll anchoring
+
+        /// Where the caret sits in the viewport right now — nil when it isn't
+        /// visible (then the repaint shouldn't touch the scroll position).
+        private func caretScrollAnchor() -> (location: NSTextLocation, offset: CGFloat)? {
+            guard let textView,
+                  let contentManager = textView.textLayoutManager.textContentManager
+            else { return nil }
+            let length = ((textView.text ?? "") as NSString).length
+            let caret = min(textView.textSelection.location, length)
+            guard let range = NSTextRange(NSRange(location: caret, length: 0),
+                                          in: contentManager),
+                  let frame = textView.textLayoutManager.textSegmentFrame(
+                    at: range.location, type: .standard)
+            else { return nil }
+            let visible = textView.visibleRect
+            guard frame.midY >= visible.minY, frame.midY <= visible.maxY else { return nil }
+            return (range.location, frame.minY - visible.minY)
+        }
+
+        /// Put the caret's line back at the viewport offset it had before the
+        /// repaint, compensating for whatever line-height changes landed above it.
+        private func restoreScrollAnchor() {
+            guard let anchor = pendingScrollAnchor else { return }
+            pendingScrollAnchor = nil
+            guard let textView,
+                  let frame = textView.textLayoutManager.textSegmentFrame(
+                    at: anchor.location, type: .standard)
+            else { return }
+            let visible = textView.visibleRect
+            let targetY = max(0, frame.minY - anchor.offset)
+            if abs(targetY - visible.minY) > 0.5 {
+                textView.scroll(CGPoint(x: visible.minX, y: targetY))
             }
         }
 

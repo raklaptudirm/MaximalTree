@@ -88,7 +88,16 @@ struct TypstProvider: NodeProvider {
                     label: section.title,
                     icon: NodeIcon("number", tint: .purple),
                     attributes: attrs,
-                    hasChildren: hasChildren)
+                    hasChildren: hasChildren,
+                    // Phony: a pointer into the document, not a document. Opening
+                    // it opens the file's one canvas at this heading's line.
+                    anchor: fileAnchor(file: file, line: section.line))
+    }
+
+    /// The anchor that makes outline nodes phony: the file node (same identity
+    /// the FileSystem provider uses) plus the line to jump to.
+    static func fileAnchor(file: URL, line: Int) -> NodeAnchor? {
+        NodeID(file.absoluteString).map { NodeAnchor(node: $0, fragment: "line=\(line)") }
     }
 
     static func taskNode(_ task: TypstStructure.TaskItem, file: URL) -> Node {
@@ -105,7 +114,8 @@ struct TypstProvider: NodeProvider {
                     label: task.body,
                     icon: task.done ? NodeIcon("checkmark.circle.fill", tint: .green)
                                     : NodeIcon("circle", tint: .secondary),
-                    attributes: attrs)
+                    attributes: attrs,
+                    anchor: fileAnchor(file: file, line: task.line))
     }
 
     static func agendaNode(dir: URL) -> Node {

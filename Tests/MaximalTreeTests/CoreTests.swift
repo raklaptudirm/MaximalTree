@@ -63,6 +63,24 @@ import Foundation
         #expect(!txt.hasChildren)
     }
 
+    @Test func symlinksArePhonyPointersToTheirDestination() async throws {
+        let base = try makeTempTree()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let target = base.appendingPathComponent("a.txt")
+        let link = base.appendingPathComponent("link.txt")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+
+        let id = try #require(NodeID(fileURL: base))
+        let page = await FileSystemProvider().children(of: id, page: nil)
+        let linkNode = try #require(page.items.first { $0.label == "link.txt" })
+        let anchor = try #require(linkNode.anchor, "a symlink is a pointer, not a file")
+        // The destination resolves fully (temp dirs live behind /var → /private/var).
+        #expect(anchor.node == NodeID(fileURL: target.resolvingSymlinksInPath()))
+        #expect(anchor.fragment == nil)
+        // Regular files stay real.
+        #expect(page.items.first { $0.label == "a.txt" }?.anchor == nil)
+    }
+
     @Test func nodesCarryProviderSuppliedIcons() async throws {
         let base = try makeTempTree()
         defer { try? FileManager.default.removeItem(at: base) }

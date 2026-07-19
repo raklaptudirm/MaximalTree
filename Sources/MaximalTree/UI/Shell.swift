@@ -156,11 +156,21 @@ struct ExplorerSidebar: View {
             if newValue.count == 1, let id = newValue.first, id != host.focusedNode {
                 host.open(id)
             }
+            // `open` resolves phony nodes to their real ancestor synchronously
+            // when cached. If the ancestor was already selected, host.selection
+            // ends where it started — no net change, so the observation below
+            // never fires. Reconcile directly.
+            let resolved = Set(host.selection)
+            if !resolved.isEmpty, resolved != newValue, selection != resolved {
+                selection = resolved
+            }
         }
-        .onChange(of: host.focusedNode) { _, newValue in
-            // Keep the list in step when focus moves from somewhere else: a tab
-            // switch, back/forward, or following a Related link.
-            if let newValue, selection != [newValue] { selection = [newValue] }
+        .onChange(of: host.selection) { _, newValue in
+            // The host is authoritative: every focus move (tab switch,
+            // back/forward, Related links) rewrites the selection, and opening
+            // a phony node resolves it to the real ancestor — even when focus
+            // didn't change because that ancestor was already open. Mirror it.
+            if selection != Set(newValue) { selection = Set(newValue) }
         }
         .overlay {
             if host.roots.isEmpty {

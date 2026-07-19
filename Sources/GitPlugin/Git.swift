@@ -218,11 +218,18 @@ struct GitProvider: NodeProvider {
             guard let name = f.first, !name.isEmpty,
                   let id = GitRef(repo: repo, kind: .branch, id: name).nodeID else { return nil }
             var attrs = Attributes()
-            if f.count > 1 { attrs["tip"] = .string(f[1]) }
+            var anchor: NodeAnchor?
+            if f.count > 1 {
+                attrs["tip"] = .string(f[1])
+                // A branch IS a pointer to its head commit — phony: opening it
+                // opens that commit's canvas, with the branch kept selected.
+                anchor = GitRef(repo: repo, kind: .commit, id: f[1]).nodeID
+                    .map { NodeAnchor(node: $0) }
+            }
             return Node(id: id, type: TypeID("git.branch"),
                         label: name,
                         icon: NodeIcon("arrow.triangle.branch", tint: .green),
-                        attributes: attrs, hasChildren: false)
+                        attributes: attrs, hasChildren: false, anchor: anchor)
         }
     }
 

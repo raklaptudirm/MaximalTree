@@ -114,6 +114,25 @@ public enum NodeTint: Hashable, Sendable {
 // MARK: - Node
 
 /// A single entry in the forest. Identity + type + cheap metadata. No payload.
+/// Marks a node as *phony*: not a document of its own, but a pointer into a
+/// specific part of its nearest real ancestor. Opening a phony node opens the
+/// anchor's `node` instead — one shared canvas and editing buffer — and hands
+/// that canvas the `fragment` so it can jump to the right place. The fragment
+/// format is a contract between the provider and the canvas plugin (the typst
+/// plugin uses `"line=N"`); the host just delivers it.
+///
+/// This is what makes org-style outlines work properly: a document's headings
+/// appear as sidebar nodes, but they all edit the same buffer.
+public struct NodeAnchor: Hashable, Sendable {
+    public let node: NodeID
+    public let fragment: String?
+
+    public init(node: NodeID, fragment: String? = nil) {
+        self.node = node
+        self.fragment = fragment
+    }
+}
+
 public struct Node: Identifiable, Hashable, Sendable {
     public let id: NodeID
     public let type: TypeID
@@ -125,6 +144,8 @@ public struct Node: Identifiable, Hashable, Sendable {
     /// Cheap hint so the sidebar can show a disclosure triangle without loading
     /// children. Providers may set this from metadata (e.g. directory bit).
     public var hasChildren: Bool
+    /// Non-nil makes this a phony node — see `NodeAnchor`.
+    public var anchor: NodeAnchor?
 
     public init(
         id: NodeID,
@@ -132,7 +153,8 @@ public struct Node: Identifiable, Hashable, Sendable {
         label: String? = nil,
         icon: NodeIcon? = nil,
         attributes: Attributes = .init(),
-        hasChildren: Bool = false
+        hasChildren: Bool = false,
+        anchor: NodeAnchor? = nil
     ) {
         self.id = id
         self.type = type
@@ -140,6 +162,7 @@ public struct Node: Identifiable, Hashable, Sendable {
         self.icon = icon
         self.attributes = attributes
         self.hasChildren = hasChildren
+        self.anchor = anchor
     }
 
     private static func lastSegment(of id: NodeID) -> String {

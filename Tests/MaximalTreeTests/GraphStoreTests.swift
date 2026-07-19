@@ -96,6 +96,82 @@ private struct PagingProvider: NodeProvider {
 }
 
 @MainActor
+@Suite struct PhonyNodeTests {
+    private func makeStore() -> (GraphStore, HostContext, NavigationModel) {
+        let context = HostContext()
+        let registry = Registry()
+        registry.register(provider: PagingProvider())
+        let nav = NavigationModel()
+        let store = GraphStore(context: context, registry: registry, nav: nav)
+        return (store, context, nav)
+    }
+
+    private func phony(_ uri: String, target: NodeID, fragment: String?) throws -> Node {
+        Node(id: try #require(NodeID(uri)), type: "stub.phony",
+             anchor: NodeAnchor(node: target, fragment: fragment))
+    }
+
+    @Test func openingPhonyNodeResolvesEverythingToTheRealTarget() throws {
+        let (store, context, nav) = makeStore()
+        let real = try #require(NodeID("stub://doc"))
+        context._ingest(Node(id: real, type: "stub.item"))
+        let section = try phony("stub://doc/sec", target: real, fragment: "line=12")
+        context._ingest(section)
+
+        store.open(section.id)
+        #expect(nav.current == real, "the canvas is the real node's — one buffer")
+        #expect(context.focusedNode == real)
+        #expect(context.selection == [real], "selection + inspector follow the real node")
+        #expect(context.activeFragment?.target == real)
+        #expect(context.activeFragment?.fragment == "line=12")
+    }
+
+    @Test func plainNavigationClearsThePendingFragment() throws {
+        let (store, context, _) = makeStore()
+        let real = try #require(NodeID("stub://doc"))
+        context._ingest(Node(id: real, type: "stub.item"))
+        let section = try phony("stub://doc/sec", target: real, fragment: "line=3")
+        context._ingest(section)
+
+        store.open(section.id)
+        #expect(context.activeFragment != nil)
+        store.open(real)   // direct open: no stale jump may replay
+        #expect(context.activeFragment == nil)
+    }
+
+    @Test func anchorChainsResolveWithClickedFragmentWinning() throws {
+        let (store, context, nav) = makeStore()
+        let real = try #require(NodeID("stub://doc"))
+        context._ingest(Node(id: real, type: "stub.item"))
+        let outer = try phony("stub://doc/outer", target: real, fragment: "line=1")
+        context._ingest(outer)
+        let inner = try phony("stub://doc/inner", target: outer.id, fragment: "line=9")
+        context._ingest(inner)
+
+        store.open(inner.id)
+        #expect(nav.current == real)
+        #expect(context.activeFragment?.fragment == "line=9",
+                "the clicked node's fragment wins over intermediate anchors")
+    }
+
+    @Test func uncachedPhonyNodeResolvesViaProviderFetch() async throws {
+        // PagingProvider serves plain nodes; a phony one must round-trip through
+        // the async fetch path (openURI-style opens).
+        let (store, context, nav) = makeStore()
+        let real = try #require(NodeID("stub://doc"))
+        context._ingest(Node(id: real, type: "stub.item"))
+        let id = try #require(NodeID("stub://item/5"))
+
+        store.open(id)   // not cached: resolves through provider.node(for:)
+        for _ in 0..<200 where nav.current == nil {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(nav.current == id, "non-phony nodes open as themselves")
+        #expect(context.activeFragment == nil)
+    }
+}
+
+@MainActor
 @Suite struct ChildContributionTests {
     private func makeStore() -> (GraphStore, HostContext) {
         let context = HostContext()

@@ -66,6 +66,18 @@ import Foundation
         #expect(branches.first?.type == TypeID("git.branch"))
     }
 
+    @Test func branchesArePhonyPointersToTheirHeadCommit() throws {
+        let repo = try makeTempRepo()
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+        let branch = try #require(GitProvider.branches(repo).first)
+        let anchor = try #require(branch.anchor, "a branch is a pointer to its head")
+        guard case .string(let tip)? = branch.attributes["tip"] else {
+            Issue.record("branch must carry its tip SHA"); return
+        }
+        #expect(anchor.node == GitRef(repo: repo, kind: .commit, id: tip).nodeID)
+        #expect(anchor.fragment == nil)
+    }
+
     /// The cohesion feature: a git repo node lists Branches/Commits *and* the working
     /// tree, with the file nodes coming from the FileSystem provider via the broker.
     @Test func repoNodeIncludesWorkingTreeFromFileSystemProvider() async throws {

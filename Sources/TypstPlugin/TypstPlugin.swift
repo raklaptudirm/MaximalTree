@@ -57,23 +57,9 @@ final class TypstPlugin: NSObject, Plugin {
             }
         ))
 
-        // Opening a section or task opens its document at the right line.
-        registry.register(canvas: CanvasContribution(
-            priority: 150,
-            matches: { $0.type == TypeID("typst.section") || $0.type == TypeID("typst.task") },
-            prepare: { _ in TypstEngine.warmUp() },
-            make: { id, host in
-                let node = host.node(id)
-                var file: URL? = TypstRef(uri: id.uri).map(\.fileURL)
-                if case .string(let path)? = node?.attributes["file"] {
-                    file = URL(string: path) ?? file
-                }
-                var line: Int?
-                if case .int(let l)? = node?.attributes["line"] { line = l }
-                return AnyView(TypstCanvas(nodeID: id, fileURLOverride: file,
-                                           initialLine: line).environment(host))
-            }
-        ))
+        // Sections and tasks are *phony* nodes (NodeAnchor): the host resolves
+        // an open to the file node's one canvas and posts a "line=N" fragment —
+        // no per-heading canvas, no per-heading editing buffer.
         registry.register(canvas: CanvasContribution(
             priority: 150,
             matches: { $0.type == TypeID("typst.agenda") },
@@ -179,10 +165,6 @@ enum TypstMode: String, CaseIterable, Identifiable {
 
 struct TypstCanvas: View {
     let nodeID: NodeID
-    /// Set when the opened node is a section/task: the document it lives in.
-    var fileURLOverride: URL? = nil
-    /// Jump the cursor here after loading (section/task navigation).
-    var initialLine: Int? = nil
     @Environment(HostContext.self) private var host
     @Environment(\.colorScheme) private var colorScheme
 
@@ -202,6 +184,7 @@ struct TypstCanvas: View {
     @State private var editorFraction: CGFloat = 0.5
     @State private var compileTask: Task<Void, Never>?
     @State private var autosaveTask: Task<Void, Never>?
+    @State private var consumedFragment: UUID?
 
     private var dirty: Bool { text != savedText }
     private var hasErrors: Bool { diagnostics.contains { $0.severity == .error } }
@@ -235,8 +218,9 @@ struct TypstCanvas: View {
             await load()
             loadedNode = nodeID
             if loadError == nil { scheduleCompile(delay: .zero) }
-            // initialLine is honoured by the editor itself (initialCursorLine).
+            handleFragment()   // a phony-node open may have posted before we existed
         }
+        .onChange(of: host.activeFragment) { _, _ in handleFragment() }
         .onChange(of: mode) { previous, current in
             current.store(forFile: fileURL)
             // Entering an autosave mode (or leaving Typeset with edits pending)
@@ -393,7 +377,6 @@ struct TypstCanvas: View {
             text: $text,
             style: mode == .write ? .prose()
                                   : .code(size: fontSize, wrapLines: true, indentSpaces: 2),
-            initialCursorLine: initialLine,
             tokenizer: tokenizer,
             mathRenderer: TypstMathRenderer.shared,
             controller: editor
@@ -463,9 +446,30 @@ struct TypstCanvas: View {
     // MARK: File IO
 
     private var fileURL: URL? {
-        if let fileURLOverride { return fileURLOverride }
         guard nodeID.scheme == "file" else { return nil }
         return URL(string: nodeID.uri)
+    }
+
+    /// A phony node (section/task) was opened onto this canvas: jump to its
+    /// line. The nonce guard makes each jump one-shot — re-renders and later
+    /// direct opens of the same file don't replay it.
+    private func handleFragment() {
+        guard let fragment = host.activeFragment,
+              fragment.target == nodeID,
+              fragment.nonce != consumedFragment,
+              loadedNode == nodeID,
+              fragment.fragment.hasPrefix("line="),
+              let line = Int(fragment.fragment.dropFirst("line=".count))
+        else { return }
+        consumedFragment = fragment.nonce
+        Task { @MainActor in
+            // On a fresh open the editor mounts a beat after the canvas —
+            // wait for it (bounded), then jump. No editor in Read mode: no-op.
+            for _ in 0..<10 where editor.textAndSelection() == nil {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            editor.moveCursor(toLine: line, column: 1)
+        }
     }
 
     /// The document's *file node* — what change notifications must target, even
