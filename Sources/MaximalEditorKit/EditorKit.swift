@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Highlightr
 import STTextView
 import STTextKitPlus
 
@@ -946,6 +947,96 @@ public struct MaximalEditor: NSViewRepresentable {
                 return false   // only the fragment containing the location
             }
             return baseline
+        }
+    }
+}
+
+// MARK: - Stock tokenizer (Highlightr)
+
+/// The framework's batteries-included tokenizer: whole-document syntax
+/// highlighting via Highlightr (highlight.js, ~190 languages), emitted as
+/// appearance-paired `.colored` tokens so one tokenize serves light and dark.
+/// Plugins with a real parser (typst) use their own tokenizer; everything else
+/// gets this one for free.
+@MainActor
+public final class HighlightrTokenizer: EditorTokenizer {
+    /// One highlighter per appearance, shared process-wide. Lazily built on
+    /// first use (a JS context + highlight.js load, ~100ms once).
+    private static let lightHighlighter: Highlightr? = {
+        let highlighter = Highlightr()
+        highlighter?.setTheme(to: "xcode")
+        return highlighter
+    }()
+    private static let darkHighlighter: Highlightr? = {
+        let highlighter = Highlightr()
+        highlighter?.setTheme(to: "atom-one-dark")
+        return highlighter
+    }()
+
+    /// Highlighted runs per (language, code). Whole documents make big keys —
+    /// keep the cache tiny; its job is absorbing repaints, not history.
+    private static var cache: [String: [(NSRange, EditorTokenKind)]] = [:]
+
+    /// Skip pathological inputs: highlight.js is O(document) per repaint.
+    private static let sizeLimit = 512 * 1024
+
+    private let language: String
+
+    public init(language: String) {
+        self.language = language
+    }
+
+    /// Nil when the file's language is unknown — pass no tokenizer, plain text.
+    public convenience init?(fileURL: URL) {
+        guard let name = editorLanguageName(for: fileURL) else { return nil }
+        self.init(language: Self.hljsName(for: name))
+    }
+
+    /// Pay the JS-context + highlight.js load behind a loading indicator
+    /// instead of the first paint.
+    public static func warmUp() {
+        _ = lightHighlighter
+        _ = darkHighlighter
+    }
+
+    public func tokens(in text: String) -> [(range: NSRange, kind: EditorTokenKind)] {
+        Self.highlight(text, language: language)
+            .map { (range: $0.0, kind: $0.1) }
+    }
+
+    /// The reusable core: highlight `code` as `language`, cached. Also serves
+    /// embedded regions (typst raw blocks) at an offset the caller applies.
+    public static func highlight(_ code: String,
+                                 language: String) -> [(NSRange, EditorTokenKind)] {
+        guard code.utf8.count <= sizeLimit else { return [] }
+        let key = "\(language)\u{0}\(code)"
+        if let cached = cache[key] { return cached }
+
+        var runs: [(NSRange, EditorTokenKind)] = []
+        if let light = lightHighlighter?.highlight(code, as: language),
+           let dark = darkHighlighter?.highlight(code, as: language),
+           light.string == code, dark.length == light.length {
+            light.enumerateAttribute(.foregroundColor,
+                                     in: NSRange(location: 0, length: light.length)) { value, range, _ in
+                guard let lightColor = value as? NSColor else { return }
+                let darkColor = dark.attribute(.foregroundColor, at: range.location,
+                                               effectiveRange: nil) as? NSColor ?? lightColor
+                runs.append((range, .colored(light: lightColor, dark: darkColor)))
+            }
+        }
+        if cache.count >= 4 { cache.removeAll(keepingCapacity: true) }
+        cache[key] = runs
+        return runs
+    }
+
+    /// `editorLanguageName` speaks display names; highlight.js has its own ids.
+    static func hljsName(for languageName: String) -> String {
+        switch languageName {
+        case "objective-c": return "objectivec"
+        case "c++": return "cpp"
+        case "html": return "xml"
+        case "shell": return "bash"
+        default: return languageName
         }
     }
 }

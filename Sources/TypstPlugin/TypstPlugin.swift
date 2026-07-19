@@ -1,7 +1,6 @@
 import SwiftUI
 import AppKit
 import PDFKit
-import Highlightr
 import MaximalEditorKit
 import MaximalTreeKit
 
@@ -37,7 +36,7 @@ final class TypstPlugin: NSObject, Plugin {
             // loading indicator) — never inside a paint.
             prepare: { _ in
                 TypstEngine.warmUp()
-                await TypstTokenizer.warmUpHighlighter()
+                await HighlightrTokenizer.warmUp()
             },
             make: { id, host in AnyView(TypstCanvas(nodeID: id).environment(host)) }
         ))
@@ -577,33 +576,9 @@ struct TypstCanvas: View {
 
 /// Maps the real typst parser's tokens (via the FFI) to the editor's
 /// engine-neutral vocabulary. Foreign-language code inside raw blocks arrives
-/// as `embed` regions carrying their language; those are expanded with
-/// Highlightr (highlight.js — a real highlighting library, ~190 languages)
-/// into appearance-paired `.colored` tokens, cached per (language, code).
+/// as `embed` regions carrying their language; those are expanded through the
+/// editor framework's shared Highlightr tokenizer.
 final class TypstTokenizer: EditorTokenizer {
-    /// One highlighter per appearance, shared across canvases. Lazily built on
-    /// first use (a JS context + highlight.js load, ~100ms once per process).
-    private static let lightHighlighter: Highlightr? = {
-        let highlighter = Highlightr()
-        highlighter?.setTheme(to: "xcode")
-        return highlighter
-    }()
-    private static let darkHighlighter: Highlightr? = {
-        let highlighter = Highlightr()
-        highlighter?.setTheme(to: "atom-one-dark")
-        return highlighter
-    }()
-
-    /// Highlighted runs per (language, code), in code-relative coordinates.
-    private var embedCache: [String: [(NSRange, EditorTokenKind)]] = [:]
-
-    /// Pay the JS-context + highlight.js load (~100ms, main-confined) during
-    /// canvas preparation — behind the loading indicator, not the first paint.
-    static func warmUpHighlighter() {
-        _ = lightHighlighter
-        _ = darkHighlighter
-    }
-
     func tokens(in text: String) -> [(range: NSRange, kind: EditorTokenKind)] {
         // The real parser (mode-aware, exact spans) — the only tokenizer.
         guard let parsed = TypstEngine.tokens(in: text) else { return [] }
@@ -652,36 +627,9 @@ final class TypstTokenizer: EditorTokenizer {
 
     private func embeddedTokens(for code: String, language: String,
                                 at offset: Int) -> [(range: NSRange, kind: EditorTokenKind)] {
-        let key = "\(language)\u{0}\(code)"
-        let relative: [(NSRange, EditorTokenKind)]
-        if let cached = embedCache[key] {
-            relative = cached
-        } else {
-            relative = Self.highlight(code, language: language)
-            if embedCache.count > 128 { embedCache.removeAll(keepingCapacity: true) }
-            embedCache[key] = relative
-        }
-        return relative.map {
+        HighlightrTokenizer.highlight(code, language: language).map {
             (NSRange(location: $0.0.location + offset, length: $0.0.length), $0.1)
         }
-    }
-
-    private static func highlight(_ code: String,
-                                  language: String) -> [(NSRange, EditorTokenKind)] {
-        guard let light = lightHighlighter?.highlight(code, as: language),
-              let dark = darkHighlighter?.highlight(code, as: language),
-              light.string == code, dark.length == light.length
-        else { return [] }   // unknown language, or output didn't round-trip
-
-        var runs: [(NSRange, EditorTokenKind)] = []
-        light.enumerateAttribute(.foregroundColor,
-                                 in: NSRange(location: 0, length: light.length)) { value, range, _ in
-            guard let lightColor = value as? NSColor else { return }
-            let darkColor = dark.attribute(.foregroundColor, at: range.location,
-                                           effectiveRange: nil) as? NSColor ?? lightColor
-            runs.append((range, .colored(light: lightColor, dark: darkColor)))
-        }
-        return runs
     }
 }
 

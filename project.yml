@@ -16,9 +16,10 @@ packages:
     url: https://github.com/krzyzanowskim/STTextView
     from: "2.3.11"
 
-  # highlight.js via JavaScriptCore: syntax highlighting for foreign languages
-  # inside typst raw blocks (~190 languages, macOS + iOS). Typst code itself is
-  # highlighted by the real typst parser in Vendor/typst-ffi.
+  # highlight.js via JavaScriptCore (~190 languages, macOS + iOS): the editor
+  # framework's stock tokenizer for source files, and the highlighter for
+  # foreign languages inside typst raw blocks. Typst code itself is highlighted
+  # by the real typst parser in Vendor/typst-ffi.
   Highlightr:
     url: https://github.com/raspu/Highlightr
     from: "2.2.0"
@@ -85,6 +86,7 @@ targets:
       - package: STTextView
         product: STTextView
       - package: STTextKitPlus
+      - package: Highlightr
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.editorkit
@@ -118,7 +120,6 @@ targets:
         embed: false
       - target: MaximalEditorKit
         embed: false
-      - package: Highlightr
     preBuildScripts:
       - name: Build typst-ffi (cargo)
         # cargo caches; a no-change run is sub-second. PATH covers nix profiles,
@@ -212,6 +213,7 @@ targets:
       - path: Sources/TypstPlugin/TypstLSP.swift
     dependencies:
       - target: MaximalTree          # hosts the tests; wires TEST_HOST/BUNDLE_LOADER
+      - target: MaximalEditorKit
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.tests

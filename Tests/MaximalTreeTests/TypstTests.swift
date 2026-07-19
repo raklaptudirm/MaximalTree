@@ -2,6 +2,34 @@ import Testing
 import Foundation
 @testable import MaximalTreeKit
 @testable import MaximalTree
+@testable import MaximalEditorKit
+
+/// The editor framework's stock Highlightr tokenizer — language-name mapping
+/// and a live highlight through the real JS engine.
+@MainActor
+@Suite struct HighlightrTokenizerTests {
+    @Test func displayNamesMapToHljsIdentifiers() {
+        #expect(HighlightrTokenizer.hljsName(for: "objective-c") == "objectivec")
+        #expect(HighlightrTokenizer.hljsName(for: "c++") == "cpp")
+        #expect(HighlightrTokenizer.hljsName(for: "html") == "xml")
+        #expect(HighlightrTokenizer.hljsName(for: "shell") == "bash")
+        #expect(HighlightrTokenizer.hljsName(for: "swift") == "swift")
+    }
+
+    @Test func fileURLInitFollowsLanguageDetection() {
+        #expect(HighlightrTokenizer(fileURL: URL(fileURLWithPath: "/a/b.swift")) != nil)
+        #expect(HighlightrTokenizer(fileURL: URL(fileURLWithPath: "/a/b.xyzunknown")) == nil)
+    }
+
+    @Test func highlightsSwiftSourceWithPairedColors() {
+        let tokenizer = HighlightrTokenizer(language: "swift")
+        let tokens = tokenizer.tokens(in: "let x = 1 // done")
+        #expect(!tokens.isEmpty)
+        #expect(tokens.allSatisfy {
+            if case .colored = $0.kind { return true } else { return false }
+        })
+    }
+}
 
 @Suite struct TypstNotesTests {
     private func tempDir() throws -> URL {

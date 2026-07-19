@@ -22,6 +22,9 @@ final class TextEditorPlugin: NSObject, Plugin {
                 guard let uti = node.uti, let type = UTType(uti) else { return false }
                 return type.conforms(to: .text)  // plain text, source code, …
             },
+            // First open pays the highlighter's JS load behind the host's
+            // loading indicator, not inside the first paint.
+            prepare: { _ in await HighlightrTokenizer.warmUp() },
             make: { id, host in AnyView(TextEditorCanvas(nodeID: id).environment(host)) }
         ))
     }
@@ -55,7 +58,8 @@ struct TextEditorCanvas: View {
                 ContentUnavailableView("Can't Open", systemImage: "exclamationmark.triangle",
                                        description: Text(loadError))
             } else {
-                MaximalEditor(text: $text, fileURL: fileURL, style: .code())
+                MaximalEditor(text: $text, fileURL: fileURL, style: .code(),
+                              tokenizer: fileURL.flatMap(HighlightrTokenizer.init(fileURL:)))
                     .id(nodeID)      // per-document identity: switching files rebuilds
                     .clipped()       // AppKit-backed: keep it inside our layout
             }
