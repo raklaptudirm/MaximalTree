@@ -43,36 +43,45 @@ any other type.
 ```
 project.yml                     # XcodeGen project definition — THE source of truth
 Sources/
-  MaximalEditorKit/             # the ONE target touching the editor engine
-    EditorKit.swift             #   MaximalEditor view, styles, tokenizer protocol,
-                                #   EditorController; wraps CodeEditSourceEditor
-                                #   (Swift 5 mode — see project.yml)
+  MaximalEditorKit/             # the ONE target touching the editor engine (STTextView)
+    EditorKit.swift             #   MaximalEditor view + style + controller + coordinator
+                                #   (markup rendering, concealment, math overlays,
+                                #   completion triggering, scroll anchoring)
+    EditorHighlighting.swift    #   token vocabulary, palette, Highlightr tokenizer
+    EditorCompletion.swift      #   completion seam onto the engine's window
+    EditorMath.swift            #   rendered-math seam (baseline-annotated images)
   MaximalTreeKit/               # the plugin SDK (dynamic framework)
-    Core.swift                  #   NodeID, TypeID, Node, NodeIcon/Tint, Attributes, Related
+    Core.swift                  #   NodeID, TypeID, Node + NodeAnchor (phony nodes),
+                                #   NodeIcon/Tint, Attributes, Related
     Provider.swift              #   NodeProvider + NodeBroker protocols
     IconView.swift              #   NodeIconView + tint→Color (shared by host + plugins)
     Mutation.swift              #   GraphMutation, NodeChange, MutatingNodeProvider
     HostContext.swift           #   @Observable HostContext + GraphBackend seam
-    Interface.swift             #   Action, Canvas/InspectorContribution, Plugin, Registry
+    Interface.swift             #   Action (+shortcut), Canvas/Inspector/Child
+                                #   contributions, Plugin, Registry
   MaximalTree/                  # the host app
     App.swift                   #   @main, AppModel wiring
     Host/                       #   Registry, GraphStore, HostBroker, NavigationModel, Workspace, PluginHost
-    UI/                         #   Shell (3 panes + tabs) + Commands (menu/palette)
+    UI/                         #   Shell (3 panes + tabs + zen) + Commands (menu/palette)
   FileSystemPlugin/             # reference provider plugin (loadable bundle)
-    FileSystem.swift            #   provider, mutations, principal class, actions
+    FileSystem.swift            #   provider, mutations, symlink anchors, actions
     FileViews.swift             #   canvas (Quick Look) + inspector (editable)
   TextEditorPlugin/             # reference cross-plugin renderer (loadable bundle)
-    TextEditor.swift            #   CodeEditSourceEditor canvas over filesystem files
-  TypstPlugin/                  # reference compiler-backed canvas (loadable bundle)
+    TextEditor.swift            #   Highlightr-highlighted editor over filesystem files
+  TypstPlugin/                  # the flagship: typst as a daily driver (loadable bundle)
     TypstCore.swift             #   diagnostics, notes pkg, TypstRef URIs,
                                 #   structure/edit helpers (all tested)
-    TypstProvider.swift         #   section/task/agenda nodes, agenda canvas, toggles
-    TypstPlugin.swift           #   Write/Typeset/Read modes, autosave, note actions
-Vendor/SwiftLintPlugin/         # stub overriding a dependency's build-tool plugin
+    TypstEngine.swift           #   in-process compiler facade: compile, export, math
+    TypstLSP.swift              #   minimal JSON-RPC client for tinymist completions
+    TypstProvider.swift         #   section/task/agenda nodes (phony), agenda canvas
+    TypstPlugin.swift           #   registration, actions, modes, TypstUIState
+    TypstCanvas.swift           #   Write/Typeset/Read canvas + inspector + preview
+    TypstServices.swift         #   editor-seam impls: tokens, completions, math
   GitPlugin/                    # reference non-file provider (loadable bundle)
-    Git.swift                   #   git:// URI model, git CLI, provider, mount action
+    Git.swift                   #   git:// URI model, git CLI, provider, branch anchors
     GitViews.swift              #   commit / list canvases + inspector
-Tests/MaximalTreeTests/         # swift-testing suite (35 tests)
+Vendor/typst-ffi/               # Rust staticlib: typst compiler/parser/renderers (C ABI)
+Tests/MaximalTreeTests/         # swift-testing suite (131 tests)
 ```
 
 The generated `MaximalTree.xcodeproj` is **not** committed — regenerate it (below).
@@ -134,9 +143,8 @@ scheme) before it's ever used as a key — two spellings of the same node must c
 to one identity.
 
 Identity is coupled to location by design. When a node is renamed/moved, its identity
-changes; a provider signals this with a rename event so the host can remap open state
-(rename events are part of the write path, not yet implemented — see
-[What's not done](#whats-not-done-yet)).
+changes; the provider's `apply(.rename)` returns `.renamed(from:to:)` and the host
+remaps open tabs, history, and selection (see `GraphStore.process`).
 
 ### Structure: a forest, not a general graph
 
@@ -375,10 +383,21 @@ the unsaved buffer through the bundled in-process engine (Vendor/typst-ffi) on a
 debounce and composes an editor, a PDFKit preview, and a diagnostics strip in one
 canvas — no external tools involved).
 
-### 3. `Action`s (optional)
+### 3. `Action`s (optional — but the *primary* manipulation surface)
 
-One registry feeds the menu bar and the command palette; each surface filters by the
-action's `appliesTo` predicate (`.always`, `.type(_)`, or `.custom { ctx in … }`).
+One registry feeds the menu bar, the command palette, the context menu, and the
+inspector's Actions section; each surface filters by the action's `appliesTo`
+predicate (`.always`, `.type(_)`, or `.custom { ctx in … }`). Pass `shortcut:` and
+the menu bar registers it window-wide.
+
+**Design rule: canvases are content.** Don't put headers, toolbars, or control
+strips on a canvas — the node's label is already in the window subtitle, tab, and
+sidebar, and controls belong here (actions) or in the inspector. What a canvas may
+keep: interactions *on* the content (checkboxes in a list, clickable rows), buffer
+keybindings registered invisibly (zero-sized buttons — see the typst canvas's ⌘S
+and format shortcuts), and at most a corner status dot. The typst plugin is the
+reference: mode switching is three actions (⌥⌘1/2/3) plus an inspector picker,
+export is actions, word count lives in the inspector.
 
 ```swift
 Action(id: "myscheme.doThing", title: "Do the Thing",
@@ -453,6 +472,8 @@ plugins. The engine is **[STTextView](https://github.com/krzyzanowskim/STTextVie
 (TextKit 2) — one package with AppKit and UIKit implementations behind the same
 import, which is the mobile path. The seam has already survived one full engine
 swap (from CodeEditSourceEditor) with zero plugin-code changes; keep it that way.
+The framework is split by concern (view/coordinator, highlighting, completion,
+math), but only EditorKit.swift touches engine types beyond protocol adapters.
 
 The text binding is live in both directions — external changes push into the view —
 but still give each document a per-document `.id(...)` so undo and scroll state
@@ -507,14 +528,23 @@ committed and builds aren't byte-for-byte reproducible across machines.
 
 ## What's not done yet
 
-Working today: navigation (tabs + history), cross-plugin rendering, and structural
-writes (rename + delete-to-Trash). Known gaps, roughly in order:
+Working today: workspaces, tabs + splits + history, cross-plugin rendering, phony
+nodes, zen mode, structural writes (rename + delete-to-Trash), and the full typst
+stack (in-process compile/preview/export, parser-backed highlighting and outline,
+rendered math, tinymist completions). Known gaps, roughly in order:
 
-- **More mutations** — `.move` (needs tree drag-and-drop) and `.create` as first-class
-  vocabulary (creation currently works via actions + `notify`).
-- **External change feed** — plugins report their *own* side effects via `notify`, but
-  nothing watches for edits by other apps yet. A provider change-stream
-  (FSEvents/`DispatchSource`) would feed the same `NodeChange` funnel.
-- **Dynamic plugins** — loading is launch-time from the bundled `PlugIns/`. No external
-  user plugin directory, enable/disable, or revocable registrations yet.
-- **Smaller**: richer inspector composition, undo, multi-select in the directory grid.
+- **External change feed** — plugins report their *own* side effects via `notify`,
+  but nothing watches for edits by other apps yet. A provider change-stream
+  (FSEvents/`DispatchSource`) would feed the same `NodeChange` funnel — the typst
+  agenda's manual Refresh action is the visible symptom.
+- **More mutations** — `.move` (needs tree drag-and-drop) and `.create` as
+  first-class vocabulary (creation currently works via actions + `notify`).
+- **Dynamic plugins** — loading is launch-time from the bundled `PlugIns/`. No
+  external user plugin directory, enable/disable, or revocable registrations yet.
+- **Typst follow-ups** — tinymist hover/go-to-definition, snippet tab-stops, and
+  a rename event doesn't yet remap a file's `typst://` section nodes in history.
+- **The iOS spike** — the hard prerequisites are done (in-process compiler, no
+  CLI dependencies, cross-platform editor engine); what remains is target setup,
+  compiled-in plugin registration, and AppKit→UIKit view swaps.
+- **Smaller**: richer inspector composition, undo for structural mutations,
+  multi-select in the directory grid.

@@ -189,14 +189,10 @@ struct AgendaCanvas: View {
             }
         }
         .task(id: nodeID) { await reload() }
-        .toolbar {
-            ToolbarItem {
-                Button {
-                    Task { await reload() }
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
-            }
+        // Refresh is an Action ("Refresh Agenda", \u{2318}R) — the canvas keeps
+        // no chrome, it just reloads when the action bumps the nonce.
+        .onChange(of: TypstUIState.shared.agendaRefresh) { _, _ in
+            Task { await reload() }
         }
     }
 

@@ -201,9 +201,8 @@ targets:
     platform: macOS
     # Compiles the plugin sources directly so provider logic stays unit-testable
     # without dlopen. The host skips loading the .bundle under XCTest to avoid a
-    # duplicate principal class in-process.
-    # TypstCore only (not the views): the compiler/diagnostics logic is unit-testable
-    # without dragging CodeEditSourceEditor into the test target.
+    # duplicate principal class in-process. TypstPlugin contributes only its
+    # view-free core files (engine, LSP, structure) — the canvases stay out.
     sources:
       - Tests/MaximalTreeTests
       - Sources/FileSystemPlugin

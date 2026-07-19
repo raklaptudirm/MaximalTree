@@ -48,18 +48,6 @@ struct TextEditorCanvas: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if !host.isZenMode {
-                header
-                Divider()
-            } else {
-                // The header's Save button carries the shortcut — keep ⌘S
-                // alive while the header is hidden.
-                Button("", action: save)
-                    .keyboardShortcut("s", modifiers: .command)
-                    .frame(width: 0, height: 0)
-                    .opacity(0)
-            }
-
             if loadedNode != nodeID {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -73,32 +61,25 @@ struct TextEditorCanvas: View {
                     .clipped()       // AppKit-backed: keep it inside our layout
             }
         }
+        // Content-only canvas: metadata lives in the inspector, saving on the
+        // (invisible) shortcut, unsaved state on a corner dot.
+        .overlay(alignment: .topTrailing) {
+            if dirty {
+                Circle().fill(.secondary).frame(width: 7, height: 7).padding(10)
+                    .help("Unsaved changes \u{2014} \u{2318}S")
+            }
+        }
+        .background(
+            Button("", action: save)
+                .keyboardShortcut("s", modifiers: .command)
+                .frame(width: 0, height: 0)
+                .opacity(0)
+        )
         .task(id: nodeID) {
             loadedNode = nil     // stop showing the previous file immediately
             await load()
             loadedNode = nodeID  // set either way: this node is resolved, error or not
         }
-    }
-
-    private var header: some View {
-        HStack(spacing: 8) {
-            Text(host.node(nodeID)?.label ?? "")
-                .font(.headline)
-                .lineLimit(1)
-            if dirty {
-                Text("Edited").font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-            if let url = fileURL, let language = editorLanguageName(for: url) {
-                Text(language)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Button("Save", action: save)
-                .keyboardShortcut("s", modifiers: .command)
-                .disabled(!dirty)
-        }
-        .padding(8)
     }
 
     private var fileURL: URL? {

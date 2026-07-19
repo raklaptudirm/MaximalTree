@@ -41,12 +41,18 @@ public enum ActionPredicate {
     }
 }
 
-/// A named, invokable command contributed by a plugin.
+/// A named, invokable command contributed by a plugin. Actions are the app's
+/// primary manipulation surface — canvases stay minimal and content-only, while
+/// actions reach every host surface at once: the menu bar (with `shortcut`, when
+/// set), the command palette, the context menu, and the inspector.
 public struct Action: Identifiable {
     public let id: String
     public let title: String
     public let systemImage: String?
     public let appliesTo: ActionPredicate
+    /// Menu-bar key equivalent. Only the menu bar renders it (that's what makes
+    /// it window-wide); other surfaces list the action without one.
+    public let shortcut: KeyboardShortcut?
     public let handler: @MainActor (ActionContext) -> Void
 
     public init(
@@ -54,12 +60,14 @@ public struct Action: Identifiable {
         title: String,
         systemImage: String? = nil,
         appliesTo: ActionPredicate = .always,
+        shortcut: KeyboardShortcut? = nil,
         handler: @escaping @MainActor (ActionContext) -> Void
     ) {
         self.id = id
         self.title = title
         self.systemImage = systemImage
         self.appliesTo = appliesTo
+        self.shortcut = shortcut
         self.handler = handler
     }
 }

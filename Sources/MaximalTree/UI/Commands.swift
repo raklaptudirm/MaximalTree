@@ -93,7 +93,14 @@ private struct ActionMenuItems: View {
             Button("No Actions") {}.disabled(true)
         } else {
             ForEach(actions) { action in
-                Button(action.title) { model.run(action) }
+                // Actions carrying a key equivalent register it window-wide
+                // from here — the menu bar is what makes shortcuts global.
+                if let shortcut = action.shortcut {
+                    Button(action.title) { model.run(action) }
+                        .keyboardShortcut(shortcut)
+                } else {
+                    Button(action.title) { model.run(action) }
+                }
             }
         }
     }

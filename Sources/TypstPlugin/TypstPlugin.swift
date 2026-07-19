@@ -90,6 +90,49 @@ final class TypstPlugin: NSObject, Plugin {
             }
         ))
 
+        // The canvas is content-only: modes, export, and agenda refresh are
+        // Actions — menu bar (with shortcuts), palette, context menu — plus a
+        // mode picker in the document inspector.
+        let modeShortcuts: [(TypstMode, KeyEquivalent, String)] = [
+            (.write, "1", "square.and.pencil"),
+            (.typeset, "2", "doc.richtext"),
+            (.read, "3", "book"),
+        ]
+        for (mode, key, image) in modeShortcuts {
+            registry.register(action: Action(
+                id: "typst.mode.\(mode.rawValue)",
+                title: "Typst: \(mode.title) Mode",
+                systemImage: image,
+                appliesTo: .custom { Self.typFileURL(in: $0) != nil },
+                shortcut: KeyboardShortcut(key, modifiers: [.command, .option]),
+                handler: { ctx in
+                    TypstUIState.shared.setMode(mode, for: Self.typFileURL(in: ctx))
+                }
+            ))
+        }
+
+        for format in TypstEngine.ExportFormat.allCases {
+            registry.register(action: Action(
+                id: "typst.export.\(format.rawValue)",
+                title: "Export as \(format.title)",
+                systemImage: "square.and.arrow.up",
+                appliesTo: .custom { Self.typFileURL(in: $0) != nil },
+                handler: { ctx in Self.export(format, in: ctx) }
+            ))
+        }
+
+        registry.register(action: Action(
+            id: "typst.agenda.refresh",
+            title: "Refresh Agenda",
+            systemImage: "arrow.clockwise",
+            appliesTo: .type(TypeID("typst.agenda")),
+            shortcut: KeyboardShortcut("r", modifiers: .command),
+            handler: { ctx in
+                TypstUIState.shared.agendaRefresh += 1
+                for id in ctx.targets { ctx.host.notify([.childrenChanged(id)]) }
+            }
+        ))
+
         registry.register(action: Action(
             id: "typst.newNote",
             title: "New Typst Note",
@@ -104,6 +147,40 @@ final class TypstPlugin: NSObject, Plugin {
             appliesTo: .type(TypeID("file.directory")),
             handler: { ctx in Self.createNote(in: ctx, daily: true) }
         ))
+    }
+
+    /// The `.typ` file the action context points at (selection first, then
+    /// focus — phony-node opens resolve both to the real file node).
+    @MainActor
+    static func typFileURL(in ctx: ActionContext) -> URL? {
+        guard let id = ctx.selection.first ?? ctx.focused,
+              id.scheme == "file", id.uri.lowercased().hasSuffix(".typ")
+        else { return nil }
+        return URL(string: id.uri)
+    }
+
+    /// Export the document *as saved on disk* (Write/Read autosave, so this is
+    /// current; in Typeset, ⌘S first).
+    @MainActor
+    static func export(_ format: TypstEngine.ExportFormat, in ctx: ActionContext) {
+        guard let url = typFileURL(in: ctx),
+              let source = try? String(contentsOf: url, encoding: .utf8) else { return }
+        let panel = NSSavePanel()
+        switch format {
+        case .pdf: panel.allowedContentTypes = [.pdf]
+        case .svg: panel.allowedContentTypes = [.svg]
+        case .png: panel.allowedContentTypes = [.png]
+        }
+        panel.nameFieldStringValue =
+            url.deletingPathExtension().lastPathComponent + ".\(format.rawValue)"
+        if format == .png {
+            panel.message = "Multi-page documents export one PNG per page."
+        }
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        Task {
+            _ = await TypstEngine.export(source: source, documentURL: url,
+                                         format: format, to: destination)
+        }
     }
 
     /// Create (or, for the daily note, reuse) a templated note in the selected
@@ -160,707 +237,26 @@ enum TypstMode: String, CaseIterable, Identifiable {
     }
 }
 
-// MARK: - Canvas
+/// Plugin-level UI state: what actions and inspectors mutate and canvases
+/// observe. This is the channel that lets controls live OUTSIDE the canvas
+/// (menu bar, palette, inspector) while the canvas itself stays content-only.
+@MainActor
+@Observable
+final class TypstUIState {
+    static let shared = TypstUIState()
 
-struct TypstCanvas: View {
-    let nodeID: NodeID
-    @Environment(HostContext.self) private var host
-    @Environment(\.colorScheme) private var colorScheme
+    private var modes: [URL: TypstMode] = [:]
+    /// Bumped by "Refresh Agenda"; agenda canvases reload on change.
+    var agendaRefresh = 0
 
-    @State private var text = ""
-    @State private var savedText = ""
-    @State private var loadedNode: NodeID?
-    @State private var loadError: String?
-    @State private var tokenizer = TypstTokenizer()
-    @State private var editor = EditorController()
-    @State private var mode: TypstMode = .write
-
-    @State private var preview: PDFDocument?
-    @State private var previewData: Data?
-    @State private var diagnostics: [TypstDiagnostic] = []
-    @State private var compiling = false
-    @State private var showPreview = true
-    @State private var editorFraction: CGFloat = 0.5
-    @State private var compileTask: Task<Void, Never>?
-    @State private var autosaveTask: Task<Void, Never>?
-    @State private var consumedFragment: UUID?
-
-    private var dirty: Bool { text != savedText }
-    private var hasErrors: Bool { diagnostics.contains { $0.severity == .error } }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            if !host.isZenMode {
-                header
-                Divider()
-            } else if mode == .typeset {
-                // The header's Save button carries the shortcut — keep ⌘S
-                // alive while the header is hidden.
-                Button("", action: saveToDisk)
-                    .keyboardShortcut("s", modifiers: .command)
-                    .frame(width: 0, height: 0)
-                    .opacity(0)
-            }
-
-            if loadedNode != nodeID {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let loadError {
-                ContentUnavailableView("Can't Open", systemImage: "exclamationmark.triangle",
-                                       description: Text(loadError))
-            } else {
-                switch mode {
-                case .write: writeLayout
-                case .typeset: typesetLayout
-                case .read: previewColumn
-                }
-            }
-
-            if mode == .typeset && !diagnostics.isEmpty {
-                Divider()
-                DiagnosticsBar(diagnostics: diagnostics) { jump(to: $0) }
-            }
-        }
-        .task(id: nodeID) {
-            loadedNode = nil
-            mode = TypstMode.stored(forFile: fileURL)
-            await load()
-            loadedNode = nodeID
-            if loadError == nil { scheduleCompile(delay: .zero) }
-            handleFragment()   // a phony-node open may have posted before we existed
-        }
-        .onChange(of: host.activeFragment) { _, _ in handleFragment() }
-        .onChange(of: mode) { previous, current in
-            current.store(forFile: fileURL)
-            // Entering an autosave mode (or leaving Typeset with edits pending)
-            // flushes, so disk always matches what Write/Read show.
-            if current.autosaves && dirty { saveToDisk() }
-        }
-        .onDisappear {
-            if mode.autosaves && dirty && loadedNode == nodeID { saveToDisk() }
-        }
+    func mode(for url: URL?) -> TypstMode {
+        guard let url else { return .typeset }
+        return modes[url] ?? TypstMode.stored(forFile: url)
     }
 
-    // MARK: Header
-
-    private var header: some View {
-        HStack(spacing: 10) {
-            Text(host.node(nodeID)?.label ?? "")
-                .font(.headline)
-                .lineLimit(1)
-            if mode == .typeset && dirty {
-                Text("Edited").font(.caption).foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            switch mode {
-            case .write:
-                if hasErrors {
-                    Button {
-                        mode = .typeset
-                    } label: {
-                        Circle().fill(.red).frame(width: 8, height: 8)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Compile errors — open Typeset mode")
-                }
-                Text(wordCountSummary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                formatMenu
-            case .typeset:
-                if compiling { ProgressView().controlSize(.small) }
-                if let preview {
-                    Text("\(preview.pageCount) page\(preview.pageCount == 1 ? "" : "s")")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                formatMenu
-                exportMenu
-                Toggle(isOn: $showPreview) {
-                    Image(systemName: "sidebar.squares.trailing")
-                }
-                .toggleStyle(.button)
-                .help("Show preview")
-                Button("Save", action: saveToDisk)
-                    .keyboardShortcut("s", modifiers: .command)
-                    .disabled(!dirty)
-            case .read:
-                if let preview {
-                    Text("\(preview.pageCount) page\(preview.pageCount == 1 ? "" : "s")")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                exportMenu
-            }
-
-            Picker("Mode", selection: $mode) {
-                ForEach(TypstMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .controlSize(.small)
-            .fixedSize()
-            .labelsHidden()
-        }
-        .padding(8)
-    }
-
-    /// Prose keybindings. Menu items register their key equivalents window-wide, so
-    /// ⌘B/⌘I/⌘E/⇧⌘T work while typing without opening the menu.
-    private var formatMenu: some View {
-        Menu {
-            Button("Bold") { applyFormat { TypstEdit.toggleWrap("*", in: $0, selection: $1) } }
-                .keyboardShortcut("b", modifiers: .command)
-            Button("Emphasis") { applyFormat { TypstEdit.toggleWrap("_", in: $0, selection: $1) } }
-                .keyboardShortcut("i", modifiers: .command)
-            Button("Raw") { applyFormat { TypstEdit.toggleWrap("`", in: $0, selection: $1) } }
-                .keyboardShortcut("e", modifiers: .command)
-            Divider()
-            Button("Insert Task") { applyFormat { TypstEdit.insertTask(in: $0, selection: $1) } }
-                .keyboardShortcut("t", modifiers: [.command, .shift])
-        } label: {
-            Label("Format", systemImage: "textformat")
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-    }
-
-    private var exportMenu: some View {
-        Menu {
-            ForEach(TypstEngine.ExportFormat.allCases, id: \.self) { format in
-                Button(format.title) { export(format) }
-            }
-        } label: {
-            Label("Export", systemImage: "square.and.arrow.up")
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .help("Export the document")
-    }
-
-    private var wordCountSummary: String {
-        let words = text.split { $0.isWhitespace || $0.isNewline }.count
-        let minutes = max(1, Int((Double(words) / 200).rounded()))
-        return "\(words) words · ~\(minutes) min"
-    }
-
-    // MARK: Layouts
-
-    /// Prose layout: a centered column on the page color, nothing else.
-    private var writeLayout: some View {
-        HStack(spacing: 0) {
-            Spacer(minLength: 24)
-            editor(fontSize: 14)
-                .frame(maxWidth: 760)
-            Spacer(minLength: 24)
-        }
-        .background(Color(nsColor: pageBackground))
-    }
-
-    private var typesetLayout: some View {
-        GeometryReader { geo in
-            let handle: CGFloat = 7
-            let available = max(geo.size.width - (showPreview ? handle : 0), 1)
-            let editorWidth = showPreview
-                ? min(max(available * editorFraction, 200), max(available - 200, 200))
-                : geo.size.width
-
-            HStack(spacing: 0) {
-                editor(fontSize: 12).frame(width: editorWidth)
-                if showPreview {
-                    divider(available: available)
-                    previewColumn.frame(maxWidth: .infinity)
-                }
-            }
-            .coordinateSpace(name: "typst-split")
-        }
-    }
-
-    private func editor(fontSize: CGFloat) -> some View {
-        // Write reads like a manuscript (serif, roomy); Typeset is a code editor
-        // that wraps (prose-like source).
-        MaximalEditor(
-            text: $text,
-            style: mode == .write ? .prose()
-                                  : .code(size: fontSize, wrapLines: true, indentSpaces: 2),
-            tokenizer: tokenizer,
-            mathRenderer: TypstMathRenderer.shared,
-            completionProvider: fileURL.map(TypstCompletionProvider.init),
-            controller: editor
-        )
-        .id(nodeID)
-        .clipped()
-        .onChange(of: text) {
-            guard loadedNode == nodeID else { return }
-            scheduleCompile(delay: .milliseconds(400))
-            if mode.autosaves { scheduleAutosave() }
-        }
-    }
-
-    /// Compute a formatting edit against the live text/selection and apply it.
-    private func applyFormat(_ makeEdit: (String, NSRange) -> TypstEdit.Edit) {
-        guard let (currentText, selection) = editor.textAndSelection() else { return }
-        let edit = makeEdit(currentText, selection)
-        editor.applyEdit(range: edit.range, replacement: edit.replacement,
-                         selection: edit.selection)
-    }
-
-    private func divider(available: CGFloat) -> some View {
-        ZStack {
-            Color.clear
-            Rectangle()
-                .fill(Color(nsColor: .separatorColor))
-                .frame(width: 1)
-        }
-        .frame(width: 7)
-        .contentShape(Rectangle())
-        .onHover { inside in
-            if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
-        }
-        .gesture(
-            DragGesture(minimumDistance: 1, coordinateSpace: .named("typst-split"))
-                .onChanged { value in
-                    editorFraction = min(max(value.location.x / available, 0.15), 0.85)
-                }
-        )
-        .onTapGesture(count: 2) { editorFraction = 0.5 }
-    }
-
-    @ViewBuilder
-    private var previewColumn: some View {
-        if let preview {
-            PDFPreview(document: preview)
-        } else if hasErrors {
-            ContentUnavailableView("Compile Failed", systemImage: "exclamationmark.triangle",
-                                   description: Text(mode == .typeset
-                                        ? "Fix the errors below to see the preview."
-                                        : "Open Typeset mode to see the errors."))
-        } else {
-            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-
-    private var pageBackground: NSColor {
-        colorScheme == .dark ? NSColor(hex: "292A30") : NSColor(hex: "FFFFFF")
-    }
-
-    // MARK: File IO
-
-    private var fileURL: URL? {
-        guard nodeID.scheme == "file" else { return nil }
-        return URL(string: nodeID.uri)
-    }
-
-    /// A phony node (section/task) was opened onto this canvas: jump to its
-    /// line. The nonce guard makes each jump one-shot — re-renders and later
-    /// direct opens of the same file don't replay it.
-    private func handleFragment() {
-        guard let fragment = host.activeFragment,
-              fragment.target == nodeID,
-              fragment.nonce != consumedFragment,
-              loadedNode == nodeID,
-              fragment.fragment.hasPrefix("line="),
-              let line = Int(fragment.fragment.dropFirst("line=".count))
-        else { return }
-        consumedFragment = fragment.nonce
-        Task { @MainActor in
-            // On a fresh open the editor mounts a beat after the canvas —
-            // wait for it (bounded), then jump. No editor in Read mode: no-op.
-            for _ in 0..<10 where editor.textAndSelection() == nil {
-                try? await Task.sleep(for: .milliseconds(50))
-            }
-            editor.moveCursor(toLine: line, column: 1)
-        }
-    }
-
-    /// The document's *file node* — what change notifications must target, even
-    /// when this canvas was opened via a section/task node.
-    private var fileNodeID: NodeID? {
-        fileURL.flatMap { NodeID($0.absoluteString) }
-    }
-
-    private func load() async {
-        loadError = nil
-        preview = nil
-        previewData = nil
-        diagnostics = []
-        guard let url = fileURL else { loadError = "Not a file."; return }
-        do {
-            // Off-main: a large document must not stall the app loop while the
-            // canvas's own ProgressView is showing.
-            let contents = try await Task.detached(priority: .userInitiated) {
-                try String(contentsOf: url, encoding: .utf8)
-            }.value
-            text = contents
-            savedText = contents
-        } catch {
-            text = ""
-            savedText = ""
-            loadError = error.localizedDescription
-        }
-    }
-
-    private func scheduleAutosave() {
-        autosaveTask?.cancel()
-        autosaveTask = Task {
-            try? await Task.sleep(for: .seconds(1))
-            guard !Task.isCancelled, dirty else { return }
-            saveToDisk()
-        }
-    }
-
-    private func saveToDisk() {
-        guard let url = fileURL, dirty else { return }
-        do {
-            try text.write(to: url, atomically: true, encoding: .utf8)
-            savedText = text
-            // childrenChanged too: the document's contributed outline (sections,
-            // tasks) may have changed shape with the edit.
-            if let fileNodeID {
-                host.notify([.modified(fileNodeID), .childrenChanged(fileNodeID)])
-            }
-        } catch {
-            loadError = error.localizedDescription
-        }
-    }
-
-    // MARK: Compilation
-
-    private func scheduleCompile(delay: Duration) {
-        compileTask?.cancel()
-        guard let url = fileURL else { return }
-        let source = text
-        compileTask = Task {
-            if delay > .zero {
-                try? await Task.sleep(for: delay)
-                guard !Task.isCancelled else { return }
-            }
-            compiling = true
-            let output = await TypstEngine.compile(source: source, documentURL: url)
-            guard !Task.isCancelled else { compiling = false; return }
-            compiling = false
-            diagnostics = output.diagnostics
-            if let pdf = output.pdf {
-                previewData = pdf
-                preview = PDFDocument(data: pdf)
-            }
-            // On error, keep showing the last good preview alongside the diagnostics.
-        }
-    }
-
-    private func jump(to diagnostic: TypstDiagnostic) {
-        guard let line = diagnostic.line else { return }
-        // typst reports 1-based lines, 0-based columns; the editor is 1-based.
-        editor.moveCursor(toLine: line, column: (diagnostic.column ?? 0) + 1)
-    }
-
-    private func export(_ format: TypstEngine.ExportFormat) {
-        guard let documentURL = fileURL else { return }
-        let panel = NSSavePanel()
-        switch format {
-        case .pdf: panel.allowedContentTypes = [.pdf]
-        case .svg: panel.allowedContentTypes = [.svg]
-        case .png: panel.allowedContentTypes = [.png]
-        }
-        let stem = (host.node(nodeID)?.label as NSString?)?.deletingPathExtension ?? "document"
-        panel.nameFieldStringValue = "\(stem).\(format.rawValue)"
-        if format == .png {
-            panel.message = "Multi-page documents export one PNG per page."
-        }
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
-        let source = text
-        Task {
-            let exportDiagnostics = await TypstEngine.export(
-                source: source, documentURL: documentURL, format: format, to: destination)
-            if exportDiagnostics.contains(where: { $0.severity == .error }) {
-                diagnostics = exportDiagnostics    // surface in the Typeset strip
-                mode = .typeset
-            }
-        }
-    }
-}
-
-// MARK: - Tokenizer
-
-/// Maps the real typst parser's tokens (via the FFI) to the editor's
-/// engine-neutral vocabulary. Foreign-language code inside raw blocks arrives
-/// as `embed` regions carrying their language; those are expanded through the
-/// editor framework's shared Highlightr tokenizer.
-final class TypstTokenizer: EditorTokenizer {
-    func tokens(in text: String) -> [(range: NSRange, kind: EditorTokenKind)] {
-        // The real parser (mode-aware, exact spans) — the only tokenizer.
-        guard let parsed = TypstEngine.tokens(in: text) else { return [] }
-        let ns = text as NSString
-        var out: [(range: NSRange, kind: EditorTokenKind)] = []
-        for token in parsed {
-            let kind: EditorTokenKind
-            switch token.k {
-            case "comment":  kind = .comment
-            case "string":   kind = .string
-            case "math":     kind = .math(block: token.a == "block")
-            case "raw":      kind = .raw
-            case "heading":  kind = .heading(level: token.n ?? 1)
-            case "strong":   kind = .strong
-            case "emphasis": kind = .emphasis
-            case "function": kind = .function
-            case "tag":      kind = .tag
-            case "property": kind = .property
-            case "punct":    kind = .punctuation
-            case "link":     kind = .link
-            case "marker":   kind = .listMarker
-            case "item":     kind = .listItem
-            case "term":     kind = .term
-            case "struck":   kind = .struck
-            case "underlined": kind = .underlined
-            case "aligned":
-                switch token.a {
-                case "center":   kind = .aligned(.center)
-                case "trailing": kind = .aligned(.trailing)
-                default:         kind = .aligned(.leading)
-                }
-            case "embed":
-                guard let language = token.a,
-                      token.range.location + token.range.length <= ns.length
-                else { continue }
-                out += embeddedTokens(for: ns.substring(with: token.range),
-                                      language: language,
-                                      at: token.range.location)
-                continue
-            default: continue
-            }
-            out.append((token.range, kind))
-        }
-        return out
-    }
-
-    private func embeddedTokens(for code: String, language: String,
-                                at offset: Int) -> [(range: NSRange, kind: EditorTokenKind)] {
-        HighlightrTokenizer.highlight(code, language: language).map {
-            (NSRange(location: $0.0.location + offset, length: $0.0.length), $0.1)
-        }
-    }
-}
-
-// MARK: - Completions (tinymist)
-
-/// Bridges the editor's completion seam to tinymist, the typst language
-/// server. Instances are stateless — the shared client owns the server
-/// process; when tinymist isn't installed, completions are simply absent.
-final class TypstCompletionProvider: EditorCompletionProvider {
-    private let fileURL: URL
-
-    init(fileURL: URL) {
-        self.fileURL = fileURL
-    }
-
-    func completions(in text: String, at offset: Int) async -> [EditorCompletion] {
-        await TinymistClient.shared
-            .completions(fileURL: fileURL, text: text, offset: offset)
-            .map {
-                EditorCompletion(label: $0.label, detail: $0.detail,
-                                 insertText: $0.insertText,
-                                 replaceRange: $0.replaceRange)
-            }
-    }
-}
-
-// MARK: - Math renderer
-
-/// Renders `$…$` equations for the prose editor's inline preview using typst's
-/// native PNG renderer (2× for retina), which also reports the equation's
-/// typographic baseline from the layout frame — the editor sits the image
-/// exactly on the text baseline. Compiles run off the main actor; results and
-/// failures are cached so the paint path is a dictionary lookup.
-final class TypstMathRenderer: EditorMathRenderer {
-    static let shared = TypstMathRenderer()
-
-    private var rendered: [String: RenderedEquation] = [:]
-    private var pending: Set<String> = []
-    private var failed: Set<String> = []
-
-    func renderedMath(for equation: String, fontSize: CGFloat, dark: Bool,
-                      block: Bool,
-                      completion: @escaping @MainActor () -> Void) -> RenderedEquation? {
-        let key = "\(dark ? "dark" : "light")|\(block ? "b" : "i")|\(fontSize)|\(equation)"
-        if let hit = rendered[key] { return hit }
-        guard !failed.contains(key), !pending.contains(key) else { return nil }
-
-        pending.insert(key)
-        Task.detached(priority: .userInitiated) {
-            let render = TypstEngine.renderMath(equation: equation,
-                                                fontSize: fontSize, dark: dark,
-                                                scale: 2, block: block)
-            await MainActor.run {
-                self.pending.remove(key)
-                if let render, let image = NSImage(data: render.png) {
-                    // The PNG is 2×; its point size and baseline come from the
-                    // layout, in points.
-                    image.size = NSSize(width: render.w, height: render.h)
-                    if self.rendered.count > 256 {
-                        self.rendered.removeAll(keepingCapacity: true)
-                    }
-                    self.rendered[key] = RenderedEquation(image: image,
-                                                          baseline: render.b)
-                    completion()
-                } else {
-                    // Mid-edit equations rarely parse; cache the failure so we
-                    // don't recompile on every paint. Any edit changes the key.
-                    self.failed.insert(key)
-                }
-            }
-        }
-        return nil
-    }
-}
-
-// MARK: - Document inspector (links + backlinks)
-
-/// The graph-y side of a document, stacked under the FileSystem inspector: what it
-/// includes/imports, and which documents point back at it.
-struct TypstDocumentInspector: View {
-    let nodeID: NodeID
-    @Environment(HostContext.self) private var host
-
-    @State private var links: [URL] = []
-    @State private var backlinks: [URL] = []
-    @State private var loaded = false
-
-    var body: some View {
-        Form {
-            if !links.isEmpty {
-                Section("Links") { rows(links) }
-            }
-            if !backlinks.isEmpty {
-                Section("Backlinks") { rows(backlinks) }
-            }
-            if loaded && links.isEmpty && backlinks.isEmpty {
-                Section("Document") {
-                    Text("No links to or from this document.")
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .formStyle(.grouped)
-        .task(id: nodeID) { await reload() }
-    }
-
-    private func rows(_ urls: [URL]) -> some View {
-        ForEach(urls, id: \.absoluteString) { url in
-            Button {
-                host.openURI(url.absoluteString)
-            } label: {
-                Label(url.deletingPathExtension().lastPathComponent,
-                      systemImage: "doc.text")
-                    .lineLimit(1)
-            }
-        }
-    }
-
-    private func reload() async {
-        loaded = false
-        guard nodeID.scheme == "file", let file = URL(string: nodeID.uri) else { return }
-        let result = await Task.detached(priority: .utility) { () -> ([URL], [URL]) in
-            let base = file.deletingLastPathComponent()
-            let forward = (try? String(contentsOf: file, encoding: .utf8))
-                .map(TypstStructure.links(of:))?
-                .map { URL(fileURLWithPath: $0, relativeTo: base).standardizedFileURL }
-                .filter { FileManager.default.fileExists(atPath: $0.path) } ?? []
-            let back = TypstStructure.backlinks(to: file, under: base)
-            return (forward, back)
-        }.value
-        links = result.0
-        backlinks = result.1
-        loaded = true
-    }
-}
-
-// MARK: - Diagnostics bar
-
-private struct DiagnosticsBar: View {
-    let diagnostics: [TypstDiagnostic]
-    let jump: (TypstDiagnostic) -> Void
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(diagnostics) { diagnostic in
-                    Button {
-                        jump(diagnostic)
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: diagnostic.severity == .error
-                                  ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
-                                .foregroundStyle(diagnostic.severity == .error ? .red : .yellow)
-                            if let line = diagnostic.line {
-                                Text("\(line):\((diagnostic.column ?? 0) + 1)")
-                                    .monospacedDigit()
-                                    .foregroundStyle(.secondary)
-                            }
-                            Text(diagnostic.message).lineLimit(1)
-                            Spacer(minLength: 0)
-                        }
-                        .font(.caption)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-        }
-        .frame(maxHeight: 76)
-    }
-}
-
-// MARK: - PDF preview
-
-/// PDFKit-backed preview that keeps the reader's place: on recompile it swaps the
-/// document and restores the previous destination instead of jumping to page 1.
-private struct PDFPreview: NSViewRepresentable {
-    let document: PDFDocument
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    final class Coordinator {
-        var lastDocument: PDFDocument?
-    }
-
-    func makeNSView(context: Context) -> PDFView {
-        let view = PDFView()
-        view.autoScales = true
-        view.displayMode = .singlePageContinuous
-        view.displaysPageBreaks = true
-        return view
-    }
-
-    func updateNSView(_ view: PDFView, context: Context) {
-        guard context.coordinator.lastDocument !== document else { return }
-        context.coordinator.lastDocument = document
-
-        let destination = view.currentDestination
-        let pageIndex = destination?.page.map { view.document?.index(for: $0) ?? 0 } ?? 0
-        view.document = document
-        if let destination, document.pageCount > 0 {
-            let index = min(pageIndex, document.pageCount - 1)
-            if let page = document.page(at: index) {
-                view.go(to: PDFDestination(page: page, at: destination.point))
-            }
-        }
-    }
-}
-
-// MARK: - Helpers
-
-private extension NSColor {
-    convenience init(hex: String) {
-        var value: UInt64 = 0
-        Scanner(string: hex).scanHexInt64(&value)
-        self.init(
-            srgbRed: CGFloat((value >> 16) & 0xFF) / 255,
-            green: CGFloat((value >> 8) & 0xFF) / 255,
-            blue: CGFloat(value & 0xFF) / 255,
-            alpha: 1
-        )
+    func setMode(_ mode: TypstMode, for url: URL?) {
+        guard let url else { return }
+        modes[url] = mode
+        mode.store(forFile: url)
     }
 }

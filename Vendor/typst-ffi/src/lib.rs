@@ -86,15 +86,16 @@ impl FfiWorld {
     /// Resolve a FileId to an on-disk path: package files under the package
     /// directory, everything else under the compilation root.
     fn path_for(&self, id: FileId) -> FileResult<PathBuf> {
-        let base = match id.package() {
-            Some(spec) => self
+        let path = id.get();
+        let base = match path.root() {
+            VirtualRoot::Package(spec) => self
                 .packages
                 .join(spec.namespace.as_str())
                 .join(spec.name.as_str())
                 .join(spec.version.to_string()),
-            None => self.root.clone(),
+            VirtualRoot::Project => self.root.clone(),
         };
-        id.vpath().resolve(&base).ok_or(FileError::AccessDenied)
+        path.vpath().realize(&base).map_err(|_| FileError::AccessDenied)
     }
 
     fn read(&self, id: FileId) -> FileResult<Vec<u8>> {
