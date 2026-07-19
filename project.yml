@@ -158,6 +158,22 @@ targets:
         LD_RUNPATH_SEARCH_PATHS:
           - "@loader_path/../../../../Frameworks"
 
+  WebPlugin:
+    type: bundle
+    platform: macOS
+    sources: [Sources/WebPlugin]
+    dependencies:
+      - target: MaximalTreeKit
+        embed: false
+    settings:
+      base:
+        PRODUCT_NAME: Web
+        PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.plugin.web
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSPrincipalClass: WebPlugin
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@loader_path/../../../../Frameworks"
+
   MaximalTree:
     type: application
     platform: macOS
@@ -178,6 +194,12 @@ targets:
           destination: plugins
           codeSign: true
       - target: GitPlugin
+        embed: true
+        link: false
+        copy:
+          destination: plugins
+          codeSign: true
+      - target: WebPlugin
         embed: true
         link: false
         copy:
