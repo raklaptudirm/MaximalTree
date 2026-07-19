@@ -282,13 +282,60 @@ import Foundation
         #expect(heading.n == 2)
     }
 
-    @Test func alignEmitsBodyAndBracketPunctuation() throws {
+    @Test func alignEmitsBodyAndConcealableHead() throws {
         let source = "#align(center)[Hi there]"
         let tokens = try #require(TypstEngine.tokens(in: source))
         let aligned = try #require(tokens.first { $0.k == "aligned" })
         #expect(aligned.a == "center")
         #expect((source as NSString).substring(with: aligned.range) == "Hi there")
-        #expect(tokens.filter { $0.k == "punct" }.count == 2)   // [ and ]
+        // # + head + [ + ] — all punct, so the editor can conceal the machinery.
+        let puncts = tokens.filter { $0.k == "punct" }
+        #expect(puncts.count == 4)
+        #expect((source as NSString).substring(with: puncts[0].range) == "#")
+        #expect((source as NSString).substring(with: puncts[1].range) == "align(center)")
+        #expect(!tokens.contains { $0.k == "function" })
+    }
+
+    @Test func strikeAndUnderlineDecorateTheirBodies() throws {
+        let source = "#strike[gone] and #underline[kept]"
+        let tokens = try #require(TypstEngine.tokens(in: source))
+        let struck = try #require(tokens.first { $0.k == "struck" })
+        #expect((source as NSString).substring(with: struck.range) == "gone")
+        let underlined = try #require(tokens.first { $0.k == "underlined" })
+        #expect((source as NSString).substring(with: underlined.range) == "kept")
+        // Heads are concealable punct, not function runs.
+        #expect(!tokens.contains { $0.k == "function" })
+    }
+
+    @Test func decoratedBodiesStillStyleNestedMarkup() throws {
+        let tokens = try #require(TypstEngine.tokens(in: "#strike[*bold* text]"))
+        #expect(tokens.contains { $0.k == "struck" })
+        #expect(tokens.contains { $0.k == "strong" })
+    }
+
+    @Test func listItemsEmitItemAndMarker() throws {
+        let source = "- first\n+ second\n"
+        let tokens = try #require(TypstEngine.tokens(in: source))
+        #expect(tokens.filter { $0.k == "item" }.count == 2)
+        let markers = tokens.filter { $0.k == "marker" }
+        #expect(markers.count == 2)
+        #expect((source as NSString).substring(with: markers[0].range) == "-")
+        #expect((source as NSString).substring(with: markers[1].range) == "+")
+    }
+
+    @Test func termItemsBoldTheTerm() throws {
+        let source = "/ Forest: a set of rooted trees\n"
+        let tokens = try #require(TypstEngine.tokens(in: source))
+        let term = try #require(tokens.first { $0.k == "term" })
+        #expect((source as NSString).substring(with: term.range) == "Forest")
+        #expect(tokens.contains { $0.k == "item" })
+    }
+
+    @Test func autolinksAreLinkTokens() throws {
+        let source = "See https://typst.app for docs."
+        let tokens = try #require(TypstEngine.tokens(in: source))
+        let link = try #require(tokens.first { $0.k == "link" })
+        #expect((source as NSString).substring(with: link.range) == "https://typst.app")
     }
 
     @Test func rangesAreUTF16() throws {

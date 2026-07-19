@@ -252,16 +252,87 @@ impl<'a> EditorTokenizer<'a> {
             K::Equation => self.emit(offset, node.len(), "math", None, None),
             K::Label => self.emit(offset, node.len(), "tag", None, None),
             K::Ref => self.emit(offset, node.len(), "property", None, None),
+            K::Link => self.emit(offset, node.len(), "link", None, None),
+            K::Escape | K::Linebreak | K::Shorthand => {
+                self.emit(offset, node.len(), "marker", None, None);
+            }
             K::LineComment | K::BlockComment => self.emit(offset, node.len(), "comment", None, None),
-            K::FuncCall | K::LetBinding | K::SetRule | K::ShowRule | K::ModuleImport | K::ModuleInclude => {
-                self.detect_alignment(node, offset);
+            K::ListItem | K::EnumItem => {
+                self.emit(offset, node.len(), "item", None, None);
+                let mut child_offset = offset;
+                for child in node.children() {
+                    match child.kind() {
+                        K::ListMarker | K::EnumMarker => {
+                            self.emit(child_offset, child.len(), "marker", None, None);
+                        }
+                        _ => self.walk(child, child_offset),
+                    }
+                    child_offset += child.len();
+                }
+            }
+            K::TermItem => {
+                self.emit(offset, node.len(), "item", None, None);
+                let mut child_offset = offset;
+                let mut term_start: Option<usize> = None;
+                let mut term_end: Option<usize> = None;
+                for child in node.children() {
+                    match child.kind() {
+                        K::TermMarker => {
+                            self.emit(child_offset, child.len(), "marker", None, None);
+                        }
+                        K::Colon => {
+                            if term_end.is_none() {
+                                term_end = Some(child_offset);
+                            }
+                            self.emit(child_offset, child.len(), "marker", None, None);
+                        }
+                        K::Space => {}
+                        _ => {
+                            if term_start.is_none() && term_end.is_none() {
+                                term_start = Some(child_offset);
+                            }
+                            self.walk(child, child_offset);
+                        }
+                    }
+                    child_offset += child.len();
+                }
+                if let (Some(start), Some(end)) = (term_start, term_end) {
+                    if end > start {
+                        self.emit(start, end - start, "term", None, None);
+                    }
+                }
+            }
+            K::FuncCall => {
+                if !self.try_decorated_call(node, offset) {
+                    self.walk_code(node, offset);
+                }
+            }
+            K::LetBinding | K::SetRule | K::ShowRule | K::ModuleImport | K::ModuleInclude => {
                 self.walk_code(node, offset);
             }
             _ if node.children().len() == 0 => {}
             _ => {
+                // The `#` introducing embedded code is a sibling of the call it
+                // starts — pair them so it styles (and conceals) with its call.
                 let mut child_offset = offset;
+                let mut pending_hash: Option<(usize, usize)> = None;
                 for child in node.children() {
-                    self.walk(child, child_offset);
+                    match child.kind() {
+                        K::Hash => pending_hash = Some((child_offset, child.len())),
+                        _ => {
+                            if let Some((hash_offset, hash_len)) = pending_hash.take() {
+                                let kind = if child.kind() == K::FuncCall
+                                    && self.decorated_parts(child, child_offset).is_some()
+                                {
+                                    "punct"
+                                } else {
+                                    "function"
+                                };
+                                self.emit(hash_offset, hash_len, kind, None, None);
+                            }
+                            self.walk(child, child_offset);
+                        }
+                    }
                     child_offset += child.len();
                 }
             }
@@ -282,7 +353,7 @@ impl<'a> EditorTokenizer<'a> {
         let mut cursor = offset;
         let mut strings: Vec<(usize, usize)> = Vec::new();
 
-        let mut close_run = |this: &mut Self, start: usize, end: usize| {
+        let close_run = |this: &mut Self, start: usize, end: usize| {
             if end > start {
                 this.emit(start, end - start, "function", None, None);
             }
@@ -332,26 +403,61 @@ impl<'a> EditorTokenizer<'a> {
         }
     }
 
-    /// `#align(<where>)[body]`: emit the content-block body as an `aligned` token.
-    fn detect_alignment(&mut self, node: &typst::syntax::SyntaxNode, offset: usize) {
+    /// Markup-decorating calls — `#align(<where>)[body]`, `#strike[body]`,
+    /// `#underline[body]`. The head (everything before the content block) is
+    /// emitted as `punct` so the editor can conceal it, the body carries the
+    /// decoration kind, and the body's markup is walked normally so nested
+    /// styling still applies. Returns false (caller falls back to the generic
+    /// code walk) when the call isn't one of these shapes.
+    fn try_decorated_call(&mut self, node: &typst::syntax::SyntaxNode, offset: usize) -> bool {
         use typst::syntax::SyntaxKind as K;
-        if node.kind() != K::FuncCall {
-            return;
+        let Some((body_kind, alignment, block_offset, block)) =
+            self.decorated_parts(node, offset) else { return false };
+
+        self.emit(offset, block_offset - offset, "punct", None, None);
+        let mut inner_offset = block_offset;
+        for inner in block.children() {
+            match inner.kind() {
+                K::LeftBracket | K::RightBracket => {
+                    self.emit(inner_offset, inner.len(), "punct", None, None);
+                }
+                K::Markup => {
+                    self.emit(inner_offset, inner.len(), body_kind, None, alignment);
+                    self.walk(inner, inner_offset);
+                }
+                _ => self.walk(inner, inner_offset),
+            }
+            inner_offset += inner.len();
         }
+        true
+    }
+
+    /// Pure classification behind `try_decorated_call`: for a decorating call,
+    /// (body kind, alignment, content-block offset, content-block node).
+    fn decorated_parts<'n>(
+        &self,
+        node: &'n typst::syntax::SyntaxNode,
+        offset: usize,
+    ) -> Option<(&'static str, Option<&'static str>, usize, &'n typst::syntax::SyntaxNode)> {
+        use typst::syntax::SyntaxKind as K;
         let mut child_offset = offset;
-        let mut is_align = false;
+        let mut callee: Option<&str> = None;
         for child in node.children() {
             if child.kind() == K::Ident {
-                is_align = self.slice(child_offset, child.len()) == "align";
+                callee = Some(self.slice(child_offset, child.len()));
                 break;
             }
             child_offset += child.len();
         }
-        if !is_align {
-            return;
-        }
+        let body_kind: &'static str = match callee {
+            Some("align") => "aligned",
+            Some("strike") => "struck",
+            Some("underline") => "underlined",
+            _ => return None,
+        };
 
         let mut alignment: Option<&'static str> = None;
+        let mut block: Option<(usize, &typst::syntax::SyntaxNode)> = None;
         let mut args_offset = offset;
         for child in node.children() {
             if child.kind() == K::Args {
@@ -365,23 +471,19 @@ impl<'a> EditorTokenizer<'a> {
                             _ => None,
                         };
                     }
-                    if inner.kind() == K::ContentBlock {
-                        if let Some(alignment) = alignment {
-                            let mut body_offset = inner_offset;
-                            for block_child in inner.children() {
-                                if block_child.kind() == K::Markup {
-                                    self.emit(body_offset, block_child.len(),
-                                              "aligned", None, Some(alignment));
-                                }
-                                body_offset += block_child.len();
-                            }
-                        }
+                    if inner.kind() == K::ContentBlock && block.is_none() {
+                        block = Some((inner_offset, inner));
                     }
                     inner_offset += inner.len();
                 }
             }
             args_offset += child.len();
         }
+        let (block_offset, block) = block?;
+        if body_kind == "aligned" && alignment.is_none() {
+            return None;
+        }
+        Some((body_kind, alignment, block_offset, block))
     }
 }
 

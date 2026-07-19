@@ -93,9 +93,22 @@ public enum EditorTokenKind: Equatable {
     case heading(level: Int)
     case strong, emphasis, raw
     case aligned(EditorAlignment)
-    /// Structural delimiters (content brackets, markers): dimmed mono in markup
-    /// rendering, uncolored in code styles.
+    /// Structural delimiters (content brackets, decorator-call heads): dimmed mono
+    /// in markup rendering — and *concealed* on lines not being edited — uncolored
+    /// in code styles.
     case punctuation
+    /// A URL in markup: link-colored and underlined.
+    case link
+    /// A list/enum/term bullet (or escape/linebreak shorthand): always visible,
+    /// dimmed — it carries meaning, unlike delimiters.
+    case listMarker
+    /// A whole list/enum/term item: hanging indent so wrapped lines align.
+    case listItem
+    /// The term half of a `/ term: description` item: bold.
+    case term
+    /// Bodies of `#strike[…]` / `#underline[…]`: drawn with the decoration.
+    case struck
+    case underlined
 }
 
 public enum EditorAlignment: Equatable {
@@ -129,7 +142,9 @@ private enum TokenPalette {
         case .function: return NSColor(hex: dark ? "78C2B3" : "326D74")
         case .tag:      return NSColor(hex: dark ? "CC9768" : "815F03")
         case .property: return NSColor(hex: dark ? "B281EB" : "6C36A9")
-        case .aligned, .punctuation:
+        case .link:     return .linkColor
+        case .aligned, .punctuation, .listMarker, .listItem, .term,
+             .struck, .underlined:
             return nil
         }
     }
@@ -308,6 +323,12 @@ public struct MaximalEditor: NSViewRepresentable {
         private var highlightTask: Task<Void, Never>?
         private var lastHighlightedText: String?
         private var lastHighlightedDark: Bool?
+        private var lastHighlightedRevealStart: Int?
+
+        /// The paragraph (line) holding the caret. Markup on this line shows its
+        /// delimiters (dimmed) for editing; elsewhere they're concealed — the
+        /// live-preview reveal-on-caret behavior.
+        private var revealedParagraph: NSRange?
 
         init(text: Binding<String>, tokenizer: EditorTokenizer?) {
             self.text = text
@@ -337,6 +358,23 @@ public struct MaximalEditor: NSViewRepresentable {
             scheduleHighlight()
         }
 
+        public func textViewDidChangeSelection(_ notification: Notification) {
+            guard !isPushingText, let textView,
+                  (lastStyle ?? .code()).rendersMarkup else { return }
+            let ns = (textView.text ?? "") as NSString
+            let caret = min(textView.textSelection.location, ns.length)
+            let paragraph = ns.paragraphRange(
+                for: NSRange(location: caret,
+                             length: min(textView.textSelection.length,
+                                         ns.length - caret)))
+            // Repaint only when the caret crosses onto a different line — typing
+            // within a line rides the (debounced) text-change repaint, which reads
+            // the updated range from here.
+            let moved = paragraph.location != revealedParagraph?.location
+            revealedParagraph = paragraph
+            if moved { highlightNow() }
+        }
+
         private func scheduleHighlight() {
             highlightTask?.cancel()
             highlightTask = Task { @MainActor [weak self] in
@@ -360,9 +398,11 @@ public struct MaximalEditor: NSViewRepresentable {
         func highlightNow() {
             guard let textView, let tokenizer else { return }
             let content = textView.text ?? ""
-            if content == lastHighlightedText && isDark == lastHighlightedDark { return }
+            if content == lastHighlightedText && isDark == lastHighlightedDark
+                && revealedParagraph?.location == lastHighlightedRevealStart { return }
             lastHighlightedText = content
             lastHighlightedDark = isDark
+            lastHighlightedRevealStart = revealedParagraph?.location
 
             let style = lastStyle ?? .code()
             let ns = content as NSString
@@ -376,6 +416,8 @@ public struct MaximalEditor: NSViewRepresentable {
                 .foregroundColor: NSColor.labelColor,
             ], range: full)
             textView.removeRenderingAttribute(.foregroundColor, range: full)
+            textView.removeRenderingAttribute(.underlineStyle, range: full)
+            textView.removeRenderingAttribute(.strikethroughStyle, range: full)
 
             for token in tokenizer.tokens(in: content) {
                 if style.rendersMarkup {
@@ -392,14 +434,33 @@ public struct MaximalEditor: NSViewRepresentable {
                 [.foregroundColor: NSColor.tertiaryLabelColor], range: range)
         }
 
-        /// The WYSIWYG-ish path: real formatting for markup, colors for the rest,
-        /// delimiters dimmed rather than hidden (the source stays honest).
+        /// Markup delimiters: dimmed on the caret's line (visible for editing),
+        /// hidden everywhere else. There's no display-only way to remove glyphs
+        /// from layout, so "hidden" is a near-zero font (storage) plus a clear
+        /// rendering color — the standard live-preview conceal.
+        private func conceal(_ range: NSRange, on textView: STTextView) {
+            if let revealed = revealedParagraph,
+               NSIntersectionRange(revealed, range).length > 0
+                || range.location == revealed.location {
+                dim(range, on: textView)
+            } else {
+                textView.addAttributes([.font: NSFont.systemFont(ofSize: 0.1)],
+                                       range: range)
+                textView.addRenderingAttributes([.foregroundColor: NSColor.clear],
+                                                range: range)
+            }
+        }
+
+        /// The WYSIWYG-ish path: real formatting for markup, colors for the rest.
+        /// Delimiters conceal on lines not being edited and show dimmed on the
+        /// caret's line (the source stays honest where you're working).
         private func renderMarkup(_ token: (range: NSRange, kind: EditorTokenKind),
                                   style: EditorStyle, in ns: NSString, on textView: STTextView) {
             let dim = { (range: NSRange) in self.dim(range, on: textView) }
-            let dimEnds = { (range: NSRange, width: Int) in
-                dim(NSRange(location: range.location, length: width))
-                dim(NSRange(location: range.location + range.length - width, length: width))
+            let conceal = { (range: NSRange) in self.conceal(range, on: textView) }
+            let concealEnds = { (range: NSRange, width: Int) in
+                conceal(NSRange(location: range.location, length: width))
+                conceal(NSRange(location: range.location + range.length - width, length: width))
             }
 
             switch token.kind {
@@ -410,24 +471,24 @@ public struct MaximalEditor: NSViewRepresentable {
                     range: token.range)
                 let line = ns.substring(with: token.range)
                 if let markerEnd = line.firstIndex(of: " ") {
-                    dim(NSRange(location: token.range.location,
-                                length: line.distance(from: line.startIndex,
-                                                      to: markerEnd) + 1))
+                    conceal(NSRange(location: token.range.location,
+                                    length: line.distance(from: line.startIndex,
+                                                          to: markerEnd) + 1))
                 }
             case .strong:
                 textView.addAttributes([.font: fontVariant(of: style.font, bold: true)],
                                        range: token.range)
-                dimEnds(token.range, 1)
+                concealEnds(token.range, 1)
             case .emphasis:
                 textView.addAttributes([.font: fontVariant(of: style.font, italic: true)],
                                        range: token.range)
-                dimEnds(token.range, 1)
+                concealEnds(token.range, 1)
             case .raw:
                 textView.addAttributes(
                     [.font: fontVariant(of: style.font, scale: 0.9, monospaced: true)],
                     range: token.range)
                 let fence = ns.substring(with: token.range).hasPrefix("```") ? 3 : 1
-                if token.range.length > 2 * fence { dimEnds(token.range, fence) }
+                if token.range.length > 2 * fence { concealEnds(token.range, fence) }
             case .aligned(let alignment):
                 let paragraph = (style.paragraphStyle.mutableCopy() as! NSMutableParagraphStyle)
                 paragraph.alignment = switch alignment {
@@ -440,12 +501,37 @@ public struct MaximalEditor: NSViewRepresentable {
                 // must cover the whole paragraph or it silently doesn't apply.
                 textView.addAttributes([.paragraphStyle: paragraph],
                                        range: ns.paragraphRange(for: token.range))
+            case .link:
+                textView.addRenderingAttributes([
+                    .foregroundColor: NSColor.linkColor,
+                    .underlineStyle: NSUnderlineStyle.single.rawValue,
+                ], range: token.range)
+            case .listMarker:
+                // Bullets and escapes carry meaning — dimmed, never concealed.
+                dim(token.range)
+            case .listItem:
+                let paragraph = (style.paragraphStyle.mutableCopy() as! NSMutableParagraphStyle)
+                paragraph.headIndent = style.font.pointSize * 1.4
+                textView.addAttributes([.paragraphStyle: paragraph],
+                                       range: ns.paragraphRange(for: token.range))
+            case .term:
+                textView.addAttributes([.font: fontVariant(of: style.font, bold: true)],
+                                       range: token.range)
+            case .struck:
+                textView.addRenderingAttributes(
+                    [.strikethroughStyle: NSUnderlineStyle.single.rawValue],
+                    range: token.range)
+            case .underlined:
+                textView.addRenderingAttributes(
+                    [.underlineStyle: NSUnderlineStyle.single.rawValue],
+                    range: token.range)
             case .punctuation:
-                // Structural delimiters (content brackets): dimmed mono.
+                // Structural delimiters (content brackets, decorator heads):
+                // mono, concealed off the caret's line.
                 textView.addAttributes(
                     [.font: fontVariant(of: style.font, scale: 0.9, monospaced: true)],
                     range: token.range)
-                dim(token.range)
+                conceal(token.range)
             default:
                 // Code constructs read as code even in prose: monospaced and
                 // colored. Content stays serif; the machinery doesn't. Spans come

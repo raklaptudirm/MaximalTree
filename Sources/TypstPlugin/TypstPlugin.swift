@@ -566,7 +566,7 @@ struct TypstCanvas: View {
 /// engine-neutral vocabulary.
 final class TypstTokenizer: EditorTokenizer {
     func tokens(in text: String) -> [(range: NSRange, kind: EditorTokenKind)] {
-        // The real parser first (mode-aware, exact spans); regex as fallback.
+        // The real parser (mode-aware, exact spans) — the only tokenizer.
         if let parsed = TypstEngine.tokens(in: text) {
             return parsed.compactMap { token in
                 let kind: EditorTokenKind
@@ -582,6 +582,12 @@ final class TypstTokenizer: EditorTokenizer {
                 case "tag":      kind = .tag
                 case "property": kind = .property
                 case "punct":    kind = .punctuation
+                case "link":     kind = .link
+                case "marker":   kind = .listMarker
+                case "item":     kind = .listItem
+                case "term":     kind = .term
+                case "struck":   kind = .struck
+                case "underlined": kind = .underlined
                 case "aligned":
                     switch token.a {
                     case "center":   kind = .aligned(.center)
