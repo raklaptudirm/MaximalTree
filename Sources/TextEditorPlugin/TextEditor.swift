@@ -62,7 +62,7 @@ struct TextEditorCanvas: View {
         }
         .task(id: nodeID) {
             loadedNode = nil     // stop showing the previous file immediately
-            load()
+            await load()
             loadedNode = nodeID  // set either way: this node is resolved, error or not
         }
     }
@@ -93,11 +93,15 @@ struct TextEditorCanvas: View {
         return URL(string: nodeID.uri)
     }
 
-    private func load() {
+    private func load() async {
         loadError = nil
         guard let url = fileURL else { loadError = "Not a file."; return }
         do {
-            let contents = try String(contentsOf: url, encoding: .utf8)
+            // Off-main: a large file must not stall the app loop while the
+            // ProgressView above is showing.
+            let contents = try await Task.detached(priority: .userInitiated) {
+                try String(contentsOf: url, encoding: .utf8)
+            }.value
             text = contents
             savedText = contents
         } catch {

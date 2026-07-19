@@ -73,19 +73,29 @@ public struct Action: Identifiable {
 /// highest-priority contribution whose `matches` returns true for the focused node.
 ///
 /// `AnyView` erasure at the boundary is the cost of a heterogeneous registry.
+///
+/// `make` runs on the main actor during view updates, so it must be cheap —
+/// construct views, never do I/O or heavy computation. Slow, movable work
+/// (file reads, engine warmup, first-use caches) belongs in `prepare`: the host
+/// awaits it *off* the main actor before calling `make`, showing a loading
+/// indicator if it takes long. `prepare` reruns on every node switch, so it
+/// should be idempotent and near-instant once warm.
 @MainActor
 public struct CanvasContribution {
     public let priority: Int
     public let matches: (Node) -> Bool
+    public let prepare: (@Sendable (NodeID) async -> Void)?
     public let make: (NodeID, HostContext) -> AnyView
 
     public init(
         priority: Int = 0,
         matches: @escaping (Node) -> Bool,
+        prepare: (@Sendable (NodeID) async -> Void)? = nil,
         make: @escaping (NodeID, HostContext) -> AnyView
     ) {
         self.priority = priority
         self.matches = matches
+        self.prepare = prepare
         self.make = make
     }
 }
@@ -153,10 +163,12 @@ public extension PluginRegistry {
     /// Convenience for the common "render exactly this type" case.
     func registerCanvas(
         forType typeID: TypeID, priority: Int = 0,
+        prepare: (@Sendable (NodeID) async -> Void)? = nil,
         make: @escaping (NodeID, HostContext) -> AnyView
     ) {
         register(canvas: CanvasContribution(priority: priority,
-                                            matches: { $0.type == typeID }, make: make))
+                                            matches: { $0.type == typeID },
+                                            prepare: prepare, make: make))
     }
 
     func registerInspector(

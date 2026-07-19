@@ -483,13 +483,54 @@ struct PaneView: View {
     private var content: some View {
         if let id = pane.current {
             if let node = host.node(id), let canvas = model.store?.canvas(for: node) {
-                canvas.make(id, host)
+                PreparedCanvas(node: id, canvas: canvas)
             } else {
                 ContentUnavailableView("Loading…", systemImage: "hourglass")
             }
         } else {
             ContentUnavailableView("Nothing Selected", systemImage: "square.dashed",
                                    description: Text("Pick something in the sidebar."))
+        }
+    }
+}
+
+/// Runs a canvas's async `prepare` (off the main actor) before building its view,
+/// so slow openings — first-use warmups, big file reads — never stall the app.
+/// The progress indicator only appears when preparation actually takes a moment;
+/// warm switches render without a flash.
+private struct PreparedCanvas: View {
+    let node: NodeID
+    let canvas: CanvasContribution
+    @Environment(HostContext.self) private var host
+
+    @State private var readyNode: NodeID?
+    @State private var showsProgress = false
+
+    var body: some View {
+        Group {
+            if canvas.prepare == nil || readyNode == node {
+                canvas.make(node, host)
+            } else if showsProgress {
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text("Opening…").font(.callout).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                Color.clear
+            }
+        }
+        .task(id: node) {
+            guard let prepare = canvas.prepare, readyNode != node else { return }
+            let delayedSpinner = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(150))
+                guard !Task.isCancelled else { return }
+                showsProgress = true
+            }
+            await prepare(node)   // @Sendable nonisolated: runs off the main actor
+            delayedSpinner.cancel()
+            showsProgress = false
+            readyNode = node
         }
     }
 }

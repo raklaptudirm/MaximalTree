@@ -31,6 +31,9 @@ final class TypstPlugin: NSObject, Plugin {
             matches: { node in
                 node.id.scheme == "file" && node.id.uri.lowercased().hasSuffix(".typ")
             },
+            // First open pays the engine's system font scan — behind the host's
+            // loading indicator, off the main actor, instead of hanging the app.
+            prepare: { _ in TypstEngine.warmUp() },
             make: { id, host in AnyView(TypstCanvas(nodeID: id).environment(host)) }
         ))
 
@@ -53,6 +56,7 @@ final class TypstPlugin: NSObject, Plugin {
         registry.register(canvas: CanvasContribution(
             priority: 150,
             matches: { $0.type == TypeID("typst.section") || $0.type == TypeID("typst.task") },
+            prepare: { _ in TypstEngine.warmUp() },
             make: { id, host in
                 let node = host.node(id)
                 var file: URL? = TypstRef(uri: id.uri).map(\.fileURL)
@@ -68,6 +72,7 @@ final class TypstPlugin: NSObject, Plugin {
         registry.register(canvas: CanvasContribution(
             priority: 150,
             matches: { $0.type == TypeID("typst.agenda") },
+            prepare: { _ in TypstEngine.warmUp() },
             make: { id, host in AnyView(AgendaCanvas(nodeID: id).environment(host)) }
         ))
         registry.register(inspector: InspectorContribution(
@@ -222,7 +227,7 @@ struct TypstCanvas: View {
         .task(id: nodeID) {
             loadedNode = nil
             mode = TypstMode.stored(forFile: fileURL)
-            load()
+            await load()
             loadedNode = nodeID
             if loadError == nil { scheduleCompile(delay: .zero) }
             // initialLine is honoured by the editor itself (initialCursorLine).
@@ -463,14 +468,18 @@ struct TypstCanvas: View {
         fileURL.flatMap { NodeID($0.absoluteString) }
     }
 
-    private func load() {
+    private func load() async {
         loadError = nil
         preview = nil
         previewData = nil
         diagnostics = []
         guard let url = fileURL else { loadError = "Not a file."; return }
         do {
-            let contents = try String(contentsOf: url, encoding: .utf8)
+            // Off-main: a large document must not stall the app loop while the
+            // canvas's own ProgressView is showing.
+            let contents = try await Task.detached(priority: .userInitiated) {
+                try String(contentsOf: url, encoding: .utf8)
+            }.value
             text = contents
             savedText = contents
         } catch {

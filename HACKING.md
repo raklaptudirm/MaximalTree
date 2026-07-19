@@ -335,7 +335,17 @@ registry.registerInspector(forType: "myscheme.thing") { id, host in
 
 `AnyView` erasure at the boundary is the cost of a heterogeneous registry; inside your
 views write ordinary strongly-typed SwiftUI. Pass `HostContext` into the environment so
-your views can observe it. Providers should attach a UTI via `attributes["uti"]` so
+your views can observe it.
+
+**`make` must be cheap.** It runs on the main actor during view updates — construct
+views, never do I/O or heavy computation there. Slow, movable work (engine warmup,
+first-use caches, big file reads) goes in the contribution's optional `prepare`
+closure: the host awaits it **off the main actor** before calling `make`, and shows a
+loading indicator if it takes more than a beat. `prepare` reruns on every node switch,
+so make it idempotent and near-instant once warm (`TypstPlugin` uses it to pay the
+engine's one-time system font scan). Work that only your view can do (loading its own
+document) should still happen in an async `.task` with a placeholder — never
+synchronously on the main actor (`TextEditorPlugin.load()` is the reference). Providers should attach a UTI via `attributes["uti"]` so
 content-type matchers work (`TextEditorPlugin` is the reference for cross-plugin
 rendering; `TypstPlugin` is the reference for a compiler-backed canvas — it shells out
 to an external CLI, compiles the unsaved buffer via stdin on a debounce, and composes

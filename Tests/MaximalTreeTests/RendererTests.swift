@@ -30,6 +30,35 @@ import SwiftUI
         #expect(store().canvas(for: node)?.priority == 0)
     }
 
+    /// The async `prepare` seam: it must survive registration and resolution
+    /// (the host awaits it off-main before `make`), and default to nil so
+    /// prepare-less canvases render without an extra hop.
+    @Test func canvasPrepareCarriesThroughResolution() async {
+        let registry = Registry()
+        let prepared = Prepared()
+        registry.register(canvas: CanvasContribution(
+            priority: 100,
+            matches: { $0.uti == "public.plain-text" },
+            prepare: { id in await prepared.record(id) },
+            make: { _, _ in AnyView(Text("editor")) }))
+        registry.registerCanvas(forType: TypeID("file.file")) { _, _ in AnyView(Text("quicklook")) }
+        let store = GraphStore(context: HostContext(), registry: registry, nav: NavigationModel())
+
+        let text = fileNode("file:///a.txt", uti: "public.plain-text")
+        let canvas = store.canvas(for: text)
+        #expect(canvas?.prepare != nil)
+        await canvas?.prepare?(text.id)
+        #expect(await prepared.ids == [text.id])
+
+        let image = fileNode("file:///a.jpg", uti: "public.jpeg")
+        #expect(store.canvas(for: image)?.prepare == nil)   // default: no prepare
+    }
+
+    private actor Prepared {
+        var ids: [NodeID] = []
+        func record(_ id: NodeID) { ids.append(id) }
+    }
+
     @Test func inspectorsCompose_allMatchesReturned() {
         let registry = Registry()
         registry.register(inspector: InspectorContribution(priority: 10,

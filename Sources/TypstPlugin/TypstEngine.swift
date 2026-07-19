@@ -19,6 +19,18 @@ enum TypstEngine {
         compile(source: source, root: root, packagesNamespaceDir: packagesRoot())
     }
 
+    /// First compile pays a system font scan (~1.4s); every one after is ~ms.
+    /// Canvas `prepare` calls this off the main actor so the cost lands behind
+    /// the host's loading indicator, never on the app loop. Thread-safe and
+    /// once-only (`static let` initialization); a no-op when already warm.
+    static func warmUp() {
+        _ = fontScan
+    }
+
+    private static let fontScan: Void = {
+        _ = compile(source: "", root: FileManager.default.temporaryDirectory)
+    }()
+
     // MARK: Tokenizer
 
     /// A token from the real typst parser, with an NSRange-ready UTF-16 range.
