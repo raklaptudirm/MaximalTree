@@ -34,6 +34,17 @@ int32_t typst_tokens(const char *source, TypstBuffer *out_tokens);
 /// using the real typst parser. Writes a JSON array; returns 0 on success.
 int32_t typst_structure(const char *source, TypstBuffer *out);
 
+/// Compile `source` and rasterize its first page to PNG at `pixel_per_pt`
+/// (typst's native renderer). out_info receives JSON {w, h, b} in points:
+/// page size and the baseline of the first baseline-bearing frame, from the
+/// top. Returns 0 on success, 1 on compile errors, 2 on internal error.
+int32_t typst_render_png(const char *source,
+                         const char *root,
+                         const char *packages,
+                         double pixel_per_pt,
+                         TypstBuffer *out_png,
+                         TypstBuffer *out_info);
+
 void typst_buffer_free(TypstBuffer buf);
 
 #endif

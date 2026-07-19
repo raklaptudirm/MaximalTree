@@ -23,6 +23,12 @@ packages:
     url: https://github.com/raspu/Highlightr
     from: "2.2.0"
 
+  # TextKit 2 conveniences (NSRange ↔ NSTextRange, segment frames) — already a
+  # transitive dependency of STTextView; imported directly for math overlays.
+  STTextKitPlus:
+    url: https://github.com/krzyzanowskim/STTextKitPlus
+    from: "0.3.0"
+
 settings:
   base:
     SWIFT_VERSION: "6.0"            # Swift 6 language mode: complete data-race checking
@@ -78,6 +84,7 @@ targets:
     dependencies:
       - package: STTextView
         product: STTextView
+      - package: STTextKitPlus
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.editorkit

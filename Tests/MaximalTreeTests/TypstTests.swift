@@ -342,6 +342,13 @@ import Foundation
         #expect(dollars.count == 2)
     }
 
+    @Test func blockEquationsAreFlagged() throws {
+        let inline = try #require(TypstEngine.tokens(in: "so $x^2$ holds"))
+        #expect(try #require(inline.first { $0.k == "math" }).a == nil)
+        let block = try #require(TypstEngine.tokens(in: "$ x^2 $"))
+        #expect(try #require(block.first { $0.k == "math" }).a == "block")
+    }
+
     @Test func codeBlocksEmitEmbedRegionsForTheHighlighter() throws {
         let source = "```rust\nlet x = 1; // one\n```"
         let tokens = try #require(TypstEngine.tokens(in: source))
@@ -434,6 +441,57 @@ import Foundation
         let output = TypstEngine.compile(source: "#read(\"data.txt\")", root: root)
         let result = try #require(output)
         #expect(result.pdf != nil)
+    }
+
+    @Test func rendersMathToPNGWithBaseline() throws {
+        let render = try #require(
+            TypstEngine.renderMath(equation: "$x^2 + y_0$", fontSize: 15,
+                                   dark: false, scale: 2),
+            "a valid equation must render")
+        #expect(render.png.starts(with: [0x89, 0x50, 0x4E, 0x47]))   // PNG magic
+        // Auto-sized page: hugs an inline equation, nowhere near paper-sized.
+        #expect(render.w > 0 && render.w < 200)
+        #expect(render.h > 0 && render.h < 60)
+        // The baseline lies strictly inside the image: ascenders above it,
+        // the y₀ subscript's descender below it.
+        #expect(render.b > 0 && render.b < render.h)
+    }
+
+    /// Regression: the baseline comes from the strut on the paragraph's main
+    /// line, NOT the image bottom. A subscript deepens the image below the
+    /// baseline but must not move the baseline itself — when it did, subscripted
+    /// chemistry formulas rode visibly high in the editor.
+    @Test func subscriptsDeepenTheImageNotTheBaseline() throws {
+        let plain = try #require(TypstEngine.renderMath(equation: "$x$",
+                                                        fontSize: 15, dark: false, scale: 2))
+        let sub = try #require(TypstEngine.renderMath(equation: "$\"HNO\"_3$",
+                                                      fontSize: 15, dark: false, scale: 2))
+        // Same main baseline; the subscript hangs below it into the page's
+        // vertical margin (typst's default bottom edge IS the baseline, so the
+        // page doesn't grow — the margin is what keeps the descender unclipped).
+        #expect(abs(plain.b - sub.b) < 0.5)
+        #expect(abs(sub.h - sub.b - 15 * 0.35) < 0.5)
+    }
+
+    /// Regression: block equations render standalone — no baseline strut. The
+    /// strut formed its own phantom line above the display equation, bloating
+    /// the image with dead space (huge gap above, equation spilling below its
+    /// reserved line in the editor).
+    @Test func blockEquationsRenderTightWithoutStrutLine() throws {
+        let block = try #require(TypstEngine.renderMath(equation: "$ x + y $",
+                                                        fontSize: 15, dark: false,
+                                                        scale: 2, block: true))
+        // One display line + margins — nowhere near two lines plus block gaps.
+        #expect(block.h < 15 * 2)
+        let inline = try #require(TypstEngine.renderMath(equation: "$x + y$",
+                                                         fontSize: 15, dark: false,
+                                                         scale: 2))
+        #expect(abs(block.h - inline.h) < 15)
+    }
+
+    @Test func mathRenderReturnsNilForInvalidEquations() {
+        #expect(TypstEngine.renderMath(equation: "$#nonexistent()$",
+                                       fontSize: 15, dark: false, scale: 2) == nil)
     }
 
     @Test func resolvesLocalPackages() throws {

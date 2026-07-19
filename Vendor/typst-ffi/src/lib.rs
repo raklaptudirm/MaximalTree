@@ -253,7 +253,15 @@ impl<'a> EditorTokenizer<'a> {
             K::Emph => self.emit(offset, node.len(), "emphasis", None, None),
             K::Raw => self.walk_raw(node, offset),
             K::Equation => {
-                self.emit(offset, node.len(), "math", None, None);
+                // Block equations (`$ x $` — space inside both dollars, same
+                // check as ast::Equation::block) center in the preview.
+                let count = node.children().len();
+                let kind_at = |i: usize| node.children().nth(i).map(|n| n.kind());
+                let block = count >= 4
+                    && kind_at(1) == Some(K::Space)
+                    && kind_at(count - 2) == Some(K::Space);
+                self.emit(offset, node.len(), "math", None,
+                          if block { Some("block") } else { None });
                 let mut child_offset = offset;
                 for child in node.children() {
                     if child.kind() == K::Dollar {
@@ -923,4 +931,86 @@ pub unsafe extern "C" fn typst_compile_pdf(
             1
         }
     }
+}
+
+/// The y of the first text item in the frame tree, in page coordinates.
+/// Frames position text items *at their baselines*, and the caller's document
+/// leads with a zero-width transparent strut at full text size — so the first
+/// text item's y IS the paragraph's main baseline, whatever shape the equation
+/// takes. (Group baselines are useless here: page frames arrive flattened,
+/// with text items as direct children.)
+fn find_baseline(frame: &typst::layout::Frame, y: typst::layout::Abs) -> Option<typst::layout::Abs> {
+    use typst::layout::FrameItem;
+    for (pos, item) in frame.items() {
+        match item {
+            FrameItem::Text(_) => return Some(y + pos.y),
+            FrameItem::Group(group) => {
+                if let Some(baseline) = find_baseline(&group.frame, y + pos.y) {
+                    return Some(baseline);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Compile `source` and rasterize its FIRST page to PNG at `pixel_per_pt`
+/// (typst's native renderer — what `typst compile --format png` uses).
+/// `out_info` receives JSON `{w, h, b}` in points: page size and the baseline
+/// of the first baseline-bearing frame (the text line), measured from the top —
+/// what an editor needs to sit a rendered equation exactly on its own baseline.
+/// Returns 0 on success, 1 on compile errors, 2 on internal error.
+///
+/// # Safety
+/// All pointers must be valid; strings NUL-terminated UTF-8. Free both
+/// out-buffers with typst_buffer_free.
+#[no_mangle]
+pub unsafe extern "C" fn typst_render_png(
+    source: *const c_char,
+    root: *const c_char,
+    packages: *const c_char,
+    pixel_per_pt: f64,
+    out_png: *mut TypstBuffer,
+    out_info: *mut TypstBuffer,
+) -> i32 {
+    *out_png = TypstBuffer::empty();
+    *out_info = TypstBuffer::empty();
+
+    let (Ok(source), Ok(root), Ok(packages)) = (
+        CStr::from_ptr(source).to_str(),
+        CStr::from_ptr(root).to_str(),
+        CStr::from_ptr(packages).to_str(),
+    ) else {
+        return 2;
+    };
+
+    let world = FfiWorld::new(
+        source.to_string(),
+        Path::new(root).to_path_buf(),
+        Path::new(packages).to_path_buf(),
+    );
+
+    let result = typst::compile::<PagedDocument>(&world);
+    let Ok(document) = result.output else { return 1 };
+    let Some(page) = document.pages().first() else { return 1 };
+
+    let options = typst_render::RenderOptions {
+        pixel_per_pt: typst::utils::Scalar::new(pixel_per_pt),
+        ..Default::default()
+    };
+    let pixmap = typst_render::render(page, &options);
+    let Ok(png) = pixmap.encode_png() else { return 2 };
+
+    let size = page.frame.size();
+    let baseline = find_baseline(&page.frame, typst::layout::Abs::zero())
+        .unwrap_or(size.y);
+    let info = format!(
+        "{{\"w\":{},\"h\":{},\"b\":{}}}",
+        size.x.to_pt(), size.y.to_pt(), baseline.to_pt()
+    );
+
+    *out_png = TypstBuffer::from_vec(png);
+    *out_info = TypstBuffer::from_vec(info.into_bytes());
+    0
 }

@@ -32,9 +32,13 @@ final class TypstPlugin: NSObject, Plugin {
             matches: { node in
                 node.id.scheme == "file" && node.id.uri.lowercased().hasSuffix(".typ")
             },
-            // First open pays the engine's system font scan — behind the host's
-            // loading indicator, off the main actor, instead of hanging the app.
-            prepare: { _ in TypstEngine.warmUp() },
+            // First open pays the engine's system font scan (off the main
+            // actor) and the highlighter's JS load (main, but behind the host's
+            // loading indicator) — never inside a paint.
+            prepare: { _ in
+                TypstEngine.warmUp()
+                await TypstTokenizer.warmUpHighlighter()
+            },
             make: { id, host in AnyView(TypstCanvas(nodeID: id).environment(host)) }
         ))
 
@@ -391,6 +395,7 @@ struct TypstCanvas: View {
                                   : .code(size: fontSize, wrapLines: true, indentSpaces: 2),
             initialCursorLine: initialLine,
             tokenizer: tokenizer,
+            mathRenderer: TypstMathRenderer.shared,
             controller: editor
         )
         .id(nodeID)
@@ -594,6 +599,13 @@ final class TypstTokenizer: EditorTokenizer {
     /// Highlighted runs per (language, code), in code-relative coordinates.
     private var embedCache: [String: [(NSRange, EditorTokenKind)]] = [:]
 
+    /// Pay the JS-context + highlight.js load (~100ms, main-confined) during
+    /// canvas preparation — behind the loading indicator, not the first paint.
+    static func warmUpHighlighter() {
+        _ = lightHighlighter
+        _ = darkHighlighter
+    }
+
     func tokens(in text: String) -> [(range: NSRange, kind: EditorTokenKind)] {
         // The real parser (mode-aware, exact spans) — the only tokenizer.
         guard let parsed = TypstEngine.tokens(in: text) else { return [] }
@@ -604,7 +616,7 @@ final class TypstTokenizer: EditorTokenizer {
             switch token.k {
             case "comment":  kind = .comment
             case "string":   kind = .string
-            case "math":     kind = .math
+            case "math":     kind = .math(block: token.a == "block")
             case "raw":      kind = .raw
             case "heading":  kind = .heading(level: token.n ?? 1)
             case "strong":   kind = .strong
@@ -672,6 +684,55 @@ final class TypstTokenizer: EditorTokenizer {
             runs.append((range, .colored(light: lightColor, dark: darkColor)))
         }
         return runs
+    }
+}
+
+// MARK: - Math renderer
+
+/// Renders `$…$` equations for the prose editor's inline preview using typst's
+/// native PNG renderer (2× for retina), which also reports the equation's
+/// typographic baseline from the layout frame — the editor sits the image
+/// exactly on the text baseline. Compiles run off the main actor; results and
+/// failures are cached so the paint path is a dictionary lookup.
+final class TypstMathRenderer: EditorMathRenderer {
+    static let shared = TypstMathRenderer()
+
+    private var rendered: [String: RenderedEquation] = [:]
+    private var pending: Set<String> = []
+    private var failed: Set<String> = []
+
+    func renderedMath(for equation: String, fontSize: CGFloat, dark: Bool,
+                      block: Bool,
+                      completion: @escaping @MainActor () -> Void) -> RenderedEquation? {
+        let key = "\(dark ? "dark" : "light")|\(block ? "b" : "i")|\(fontSize)|\(equation)"
+        if let hit = rendered[key] { return hit }
+        guard !failed.contains(key), !pending.contains(key) else { return nil }
+
+        pending.insert(key)
+        Task.detached(priority: .userInitiated) {
+            let render = TypstEngine.renderMath(equation: equation,
+                                                fontSize: fontSize, dark: dark,
+                                                scale: 2, block: block)
+            await MainActor.run {
+                self.pending.remove(key)
+                if let render, let image = NSImage(data: render.png) {
+                    // The PNG is 2×; its point size and baseline come from the
+                    // layout, in points.
+                    image.size = NSSize(width: render.w, height: render.h)
+                    if self.rendered.count > 256 {
+                        self.rendered.removeAll(keepingCapacity: true)
+                    }
+                    self.rendered[key] = RenderedEquation(image: image,
+                                                          baseline: render.b)
+                    completion()
+                } else {
+                    // Mid-edit equations rarely parse; cache the failure so we
+                    // don't recompile on every paint. Any edit changes the key.
+                    self.failed.insert(key)
+                }
+            }
+        }
+        return nil
     }
 }
 

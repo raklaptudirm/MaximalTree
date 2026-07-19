@@ -19,6 +19,74 @@ enum TypstEngine {
         compile(source: source, root: root, packagesNamespaceDir: packagesRoot())
     }
 
+    /// A rendered equation: PNG pixels plus the metrics an editor needs to
+    /// place it — point size, and the typographic baseline measured from the
+    /// image's top (from typst's own layout frame, so alignment is exact).
+    struct MathRender: Decodable {
+        var png = Data()
+        let w: Double   // points
+        let h: Double
+        let b: Double   // baseline, points from the top
+
+        private enum CodingKeys: String, CodingKey { case w, h, b }
+    }
+
+    /// Render a lone equation (`$…$`, delimiters included) with typst's native
+    /// PNG renderer, on a page that hugs it. `fontSize` matches the editor;
+    /// `dark` renders white ink (the page is transparent either way); `scale`
+    /// is pixels per point (2 for retina). Nil when the equation doesn't
+    /// compile — the editor keeps the monospace source.
+    static func renderMath(equation: String, fontSize: Double, dark: Bool,
+                           scale: Double, block: Bool = false) -> MathRender? {
+        // The auto-height page hugs the text's *line box*; superscripts, tall
+        // parens, and descenders can poke past it. The vertical margin scales
+        // with the font so nothing renders clipped.
+        //
+        // Inline: the zero-width transparent strut plants a full-size glyph on
+        // the paragraph's main baseline — the first text item in the frame,
+        // which is how the renderer reports the baseline for ANY equation shape
+        // (see find_baseline in the FFI). Block: NO strut — it would form its
+        // own phantom line above the display equation and bloat the image; the
+        // equation stands alone with its display-block spacing zeroed (the
+        // editor centers block images in their line, no baseline needed).
+        let body = block
+            ? """
+              #show math.equation: set block(above: 0pt, below: 0pt)
+              \(equation)
+              """
+            : "#box(width: 0pt, text(fill: rgb(0, 0, 0, 0))[x])\(equation)"
+        let source = """
+        #set page(width: auto, height: auto, \
+        margin: (x: 1pt, y: \(fontSize * 0.35)pt), fill: none)
+        #set text(size: \(fontSize)pt\(dark ? ", fill: white" : ""))
+        \(body)
+        """
+
+        var pngBuffer = TypstBuffer()
+        var infoBuffer = TypstBuffer()
+        let status = source.withCString { sourcePtr in
+            FileManager.default.temporaryDirectory.path.withCString { rootPtr in
+                packagesRoot().path.withCString { packagesPtr in
+                    typst_render_png(sourcePtr, rootPtr, packagesPtr, scale,
+                                     &pngBuffer, &infoBuffer)
+                }
+            }
+        }
+        defer {
+            typst_buffer_free(pngBuffer)
+            typst_buffer_free(infoBuffer)
+        }
+
+        guard status == 0,
+              pngBuffer.len > 0, let pngData = pngBuffer.data,
+              infoBuffer.len > 0, let infoData = infoBuffer.data,
+              var render = try? JSONDecoder().decode(
+                MathRender.self, from: Data(bytes: infoData, count: infoBuffer.len))
+        else { return nil }
+        render.png = Data(bytes: pngData, count: pngBuffer.len)
+        return render
+    }
+
     /// First compile pays a system font scan (~1.4s); every one after is ~ms.
     /// Canvas `prepare` calls this off the main actor so the cost lands behind
     /// the host's loading indicator, never on the app loop. Thread-safe and

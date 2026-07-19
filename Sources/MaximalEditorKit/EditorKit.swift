@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import STTextView
+import STTextKitPlus
 
 // MaximalEditorKit: the one place MaximalTree touches its editor engine.
 //
@@ -92,10 +93,11 @@ public enum EditorTokenKind: Equatable {
     case comment, string, number, keyword, type, variable, function, tag, property
     case heading(level: Int)
     case strong, emphasis, raw
-    /// An equation (`$…$`): monospaced number-colored (rendered equations would
-    /// need layout participation the engine doesn't offer displays-only). The
-    /// delimiters arrive separately as `punctuation`, so they conceal.
-    case math
+    /// An equation (`$…$`): rendered as an image off the caret's line when a
+    /// math renderer is present, monospace number-colored otherwise. Block
+    /// equations (`$ x $`) center in their line. The delimiters arrive
+    /// separately as `punctuation`, so they conceal.
+    case math(block: Bool)
     /// A token colored by an external highlighter (embedded foreign-language
     /// code): the tokenizer supplies both appearances, paint-time picks one.
     case colored(light: NSColor, dark: NSColor)
@@ -129,6 +131,32 @@ public enum EditorAlignment: Equatable {
 @MainActor
 public protocol EditorTokenizer: AnyObject {
     func tokens(in text: String) -> [(range: NSRange, kind: EditorTokenKind)]
+}
+
+/// A rendered equation and where its typographic baseline sits (points from
+/// the image's top) — the editor aligns that to the text's own baseline.
+public struct RenderedEquation {
+    public let image: NSImage
+    public let baseline: CGFloat
+
+    public init(image: NSImage, baseline: CGFloat) {
+        self.image = image
+        self.baseline = baseline
+    }
+}
+
+/// Renders equations for the inline math preview. Return a cached result
+/// immediately, or nil while producing one asynchronously — then call
+/// `completion` (once, on success only) and the editor repaints with it. On
+/// failure return nil and never complete; the editor keeps the monospace
+/// source. `block` distinguishes display equations: they render as standalone
+/// blocks (tight, no surrounding-line machinery) and the editor centers them
+/// in their line instead of baseline-aligning.
+@MainActor
+public protocol EditorMathRenderer: AnyObject {
+    func renderedMath(for equation: String, fontSize: CGFloat, dark: Bool,
+                      block: Bool,
+                      completion: @escaping @MainActor () -> Void) -> RenderedEquation?
 }
 
 /// Token colors, resolved per appearance. Values carried over from the previous
@@ -225,6 +253,7 @@ public struct MaximalEditor: NSViewRepresentable {
     private let style: EditorStyle
     private let initialCursorLine: Int?
     private let tokenizer: EditorTokenizer?
+    private let mathRenderer: EditorMathRenderer?
     private let controller: EditorController?
 
     @Environment(\.colorScheme) private var colorScheme
@@ -234,21 +263,25 @@ public struct MaximalEditor: NSViewRepresentable {
     ///     current engine except through `editorLanguageName(for:)`.
     ///   - initialCursorLine: 1-based line the caret starts on.
     ///   - tokenizer: Custom highlighting, painted as rendering attributes.
+    ///   - mathRenderer: When set (and the style renders markup), equations
+    ///     display as rendered images off the caret's line.
     public init(text: Binding<String>, fileURL: URL? = nil,
                 style: EditorStyle = .code(),
                 initialCursorLine: Int? = nil,
                 tokenizer: EditorTokenizer? = nil,
+                mathRenderer: EditorMathRenderer? = nil,
                 controller: EditorController? = nil) {
         self._text = text
         self.fileURL = fileURL
         self.style = style
         self.initialCursorLine = initialCursorLine
         self.tokenizer = tokenizer
+        self.mathRenderer = mathRenderer
         self.controller = controller
     }
 
     public func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, tokenizer: tokenizer)
+        Coordinator(text: $text, tokenizer: tokenizer, mathRenderer: mathRenderer)
     }
 
     public func makeNSView(context: Context) -> NSScrollView {
@@ -264,6 +297,7 @@ public struct MaximalEditor: NSViewRepresentable {
         textView.highlightSelectedLine = true
         textView.allowsUndo = true
         apply(style: style, to: textView)
+        context.coordinator.installObservers(for: textView, in: scrollView)
 
         context.coordinator.push(text, into: textView)
 
@@ -327,6 +361,7 @@ public struct MaximalEditor: NSViewRepresentable {
     public final class Coordinator: NSObject, @preconcurrency STTextViewDelegate {
         private let text: Binding<String>
         private let tokenizer: EditorTokenizer?
+        private let mathRenderer: EditorMathRenderer?
         weak var textView: STTextView?
         var isEditing = false
         var lastStyle: EditorStyle?
@@ -342,9 +377,45 @@ public struct MaximalEditor: NSViewRepresentable {
         /// live-preview reveal-on-caret behavior.
         private var revealedParagraph: NSRange?
 
-        init(text: Binding<String>, tokenizer: EditorTokenizer?) {
+        /// Paragraph styles are one attribute: composing effects (alignment,
+        /// list indent, math line height) on the same paragraph means mutating
+        /// one shared instance per paragraph per paint, not last-write-wins.
+        private var paragraphStyles: [Int: NSMutableParagraphStyle] = [:]
+
+        /// Equations rendered this paint (range → rendering), placed as overlay
+        /// views once layout settles.
+        private var pendingMath: [(range: NSRange, equation: RenderedEquation, block: Bool)] = []
+        private var mathOverlays: [NSImageView] = []
+        // nonisolated(unsafe): only written once from installObservers (main)
+        // and read in deinit; NotificationCenter removal is thread-safe.
+        private nonisolated(unsafe) var observers: [NSObjectProtocol] = []
+
+        init(text: Binding<String>, tokenizer: EditorTokenizer?,
+             mathRenderer: EditorMathRenderer?) {
             self.text = text
             self.tokenizer = tokenizer
+            self.mathRenderer = mathRenderer
+        }
+
+        deinit {
+            for observer in observers {
+                NotificationCenter.default.removeObserver(observer)
+            }
+        }
+
+        /// Overlay positions derive from text layout, which shifts on scroll
+        /// (viewport re-layout), resize (re-wrap), and external frame changes —
+        /// none of which repaint. Track them and reposition.
+        func installObservers(for textView: STTextView, in scrollView: NSScrollView) {
+            let reposition: @Sendable (Notification) -> Void = { [weak self] _ in
+                MainActor.assumeIsolated { self?.layoutMathOverlays() }
+            }
+            observers.append(NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification,
+                object: scrollView.contentView, queue: .main, using: reposition))
+            observers.append(NotificationCenter.default.addObserver(
+                forName: NSView.frameDidChangeNotification,
+                object: textView, queue: .main, using: reposition))
         }
 
         private var isPushingText = false
@@ -419,6 +490,16 @@ public struct MaximalEditor: NSViewRepresentable {
             let style = lastStyle ?? .code()
             let ns = content as NSString
             let full = NSRange(location: 0, length: ns.length)
+            paragraphStyles.removeAll()
+            pendingMath.removeAll()
+            // Every exit re-syncs overlays — including removal when the doc
+            // emptied or the style stopped rendering markup. Deferred a tick:
+            // TextKit must lay out the new attributes before frames are real.
+            defer {
+                DispatchQueue.main.async { [weak self] in
+                    MainActor.assumeIsolated { self?.layoutMathOverlays() }
+                }
+            }
             guard full.length > 0 else { return }
 
             // Base reset: uniform font/paragraph/color, clearing prior markup styling.
@@ -506,17 +587,17 @@ public struct MaximalEditor: NSViewRepresentable {
                 textView.addRenderingAttributes(
                     [.backgroundColor: NSColor.quaternarySystemFill], range: token.range)
             case .aligned(let alignment):
-                let paragraph = (style.paragraphStyle.mutableCopy() as! NSMutableParagraphStyle)
-                paragraph.alignment = switch alignment {
-                case .leading: .natural
-                case .center: .center
-                case .trailing: .right
-                }
                 // Paragraph properties resolve from the paragraph's *start* — the
                 // token range begins mid-line (inside the brackets), so the style
                 // must cover the whole paragraph or it silently doesn't apply.
-                textView.addAttributes([.paragraphStyle: paragraph],
-                                       range: ns.paragraphRange(for: token.range))
+                composeParagraphStyle(over: ns.paragraphRange(for: token.range),
+                                      base: style.paragraphStyle, on: textView) {
+                    $0.alignment = switch alignment {
+                    case .leading: .natural
+                    case .center: .center
+                    case .trailing: .right
+                    }
+                }
             case .link:
                 textView.addRenderingAttributes([
                     .foregroundColor: NSColor.linkColor,
@@ -526,10 +607,10 @@ public struct MaximalEditor: NSViewRepresentable {
                 // Bullets and escapes carry meaning — dimmed, never concealed.
                 dim(token.range)
             case .listItem:
-                let paragraph = (style.paragraphStyle.mutableCopy() as! NSMutableParagraphStyle)
-                paragraph.headIndent = style.font.pointSize * 1.4
-                textView.addAttributes([.paragraphStyle: paragraph],
-                                       range: ns.paragraphRange(for: token.range))
+                composeParagraphStyle(over: ns.paragraphRange(for: token.range),
+                                      base: style.paragraphStyle, on: textView) {
+                    $0.headIndent = style.font.pointSize * 1.4
+                }
             case .term:
                 textView.addAttributes([.font: fontVariant(of: style.font, bold: true)],
                                        range: token.range)
@@ -548,18 +629,144 @@ public struct MaximalEditor: NSViewRepresentable {
                     [.font: fontVariant(of: style.font, scale: 0.9, monospaced: true)],
                     range: token.range)
                 conceal(token.range)
+            case .math(let block):
+                renderMath(token.range, block: block, style: style, in: ns, on: textView)
             default:
-                // Code constructs read as code even in prose: monospaced and
-                // colored. Content stays serif; the machinery doesn't. Spans come
-                // from the real parser, so no delimiter heuristics are needed.
-                textView.addAttributes(
-                    [.font: fontVariant(of: style.font, scale: 0.9, monospaced: true)],
-                    range: token.range)
-                if let color = TokenPalette.color(for: token.kind, dark: isDark) {
-                    textView.addRenderingAttributes([.foregroundColor: color],
-                                                    range: token.range)
-                }
+                styleAsCode(token.range, kind: token.kind, style: style, on: textView)
             }
+        }
+
+        /// Code constructs read as code even in prose: monospaced and colored.
+        /// Content stays serif; the machinery doesn't.
+        private func styleAsCode(_ range: NSRange, kind: EditorTokenKind,
+                                 style: EditorStyle, on textView: STTextView) {
+            textView.addAttributes(
+                [.font: fontVariant(of: style.font, scale: 0.9, monospaced: true)],
+                range: range)
+            if let color = TokenPalette.color(for: kind, dark: isDark) {
+                textView.addRenderingAttributes([.foregroundColor: color], range: range)
+            }
+        }
+
+        private func composeParagraphStyle(over paragraphRange: NSRange,
+                                           base: NSParagraphStyle, on textView: STTextView,
+                                           _ mutate: (NSMutableParagraphStyle) -> Void) {
+            let paragraph = paragraphStyles[paragraphRange.location]
+                ?? (base.mutableCopy() as! NSMutableParagraphStyle)
+            mutate(paragraph)
+            paragraphStyles[paragraphRange.location] = paragraph
+            textView.addAttributes([.paragraphStyle: paragraph], range: paragraphRange)
+        }
+
+        // MARK: Rendered math
+
+        /// The equation preview: off the caret's line, the source is hidden and
+        /// its rendered image floats over reserved space. The reservation is
+        /// pure attributes — a collapsed font plus trailing kern for the width,
+        /// a minimum line height for the height — so the text storage stays the
+        /// source, and undo/save never see a phantom character. On the caret's
+        /// line (or while the render is still compiling) the equation stays as
+        /// editable monospace source.
+        private func renderMath(_ range: NSRange, block: Bool, style: EditorStyle,
+                                in ns: NSString, on textView: STTextView) {
+            let onCaretLine = revealedParagraph.map {
+                NSIntersectionRange($0, range).length > 0 || range.location == $0.location
+            } ?? false
+            guard !onCaretLine, range.length > 0, let mathRenderer,
+                  let equation = mathRenderer.renderedMath(
+                    for: ns.substring(with: range),
+                    fontSize: style.font.pointSize, dark: isDark, block: block,
+                    completion: { [weak self] in
+                        // Coalesced: on load, every equation completes at once —
+                        // one debounced repaint, not one full repaint each.
+                        self?.invalidateHighlight()
+                        self?.scheduleHighlight()
+                    })
+            else {
+                styleAsCode(range, kind: .math(block: block), style: style, on: textView)
+                return
+            }
+
+            let image = equation.image
+            textView.addAttributes([.font: NSFont.systemFont(ofSize: 0.1)], range: range)
+            let last = NSRange(location: range.location + range.length - 1, length: 1)
+            textView.addAttributes([.kern: image.size.width + 2], range: last)
+            composeParagraphStyle(over: ns.paragraphRange(for: range),
+                                  base: style.paragraphStyle, on: textView) {
+                $0.minimumLineHeight = max(image.size.height + 2,
+                                           style.font.pointSize * style.lineHeightMultiple)
+                // A block equation centers: the collapsed source + kern is the
+                // reserved box, so centering the paragraph centers the image
+                // (which is placed at the reserved box's segment frame).
+                if block { $0.alignment = .center }
+            }
+            textView.addRenderingAttributes([.foregroundColor: NSColor.clear], range: range)
+            pendingMath.append((range, equation, block))
+        }
+
+        /// (Re)place equation images at their reserved spots. Runs a tick after
+        /// each paint (layout must settle first) and again whenever layout moves
+        /// under the overlays (scroll, resize).
+        private func layoutMathOverlays() {
+            for view in mathOverlays { view.removeFromSuperview() }
+            mathOverlays.removeAll()
+            guard let textView, !pendingMath.isEmpty,
+                  let contentManager = textView.textLayoutManager.textContentManager
+            else { return }
+
+            for (range, equation, block) in pendingMath {
+                guard let textRange = NSTextRange(range, in: contentManager),
+                      let segment = textView.textLayoutManager.textSegmentFrame(
+                        in: textRange, type: .standard)
+                else { continue }
+                let image = equation.image
+                // Inline equations baseline-align: the image's internal baseline
+                // (from typst's layout) sits exactly on the text line's drawn
+                // baseline. Block equations own their whole line — they center
+                // in it (also the fallback when line metrics can't be read).
+                let y: CGFloat
+                if !block, let baseline = textBaselineY(at: textRange.location,
+                                                        near: segment, in: textView) {
+                    y = baseline - equation.baseline
+                } else {
+                    y = segment.minY + (segment.height - image.size.height) / 2
+                }
+                // Layout coordinates are content-view coordinates; the content
+                // view sits right of the gutter (its one offset from the view).
+                let gutterWidth = textView.gutterView?.frame.width ?? 0
+                let overlay = NSImageView(image: image)
+                overlay.frame = CGRect(
+                    origin: CGPoint(x: segment.minX + gutterWidth, y: y),
+                    size: image.size)
+                textView.addSubview(overlay)
+                mathOverlays.append(overlay)
+            }
+        }
+
+        /// The y of the *drawn* text baseline for the line containing `segment`,
+        /// in layout coordinates. The engine draws each line fragment shifted by
+        /// -(height × (lineHeightMultiple − 1) / 2) — text centered within the
+        /// multiplied line height — so the on-screen baseline is the fragment's
+        /// glyph origin plus that same correction.
+        private func textBaselineY(at location: NSTextLocation, near segment: CGRect,
+                                   in textView: STTextView) -> CGFloat? {
+            let multiple = max(lastStyle?.lineHeightMultiple ?? 1, 1)
+            var baseline: CGFloat?
+            textView.textLayoutManager.enumerateTextLayoutFragments(
+                from: location, options: []) { fragment in
+                for line in fragment.textLineFragments {
+                    let top = fragment.layoutFragmentFrame.minY
+                        + line.typographicBounds.minY
+                    guard segment.midY >= top,
+                          segment.midY <= top + line.typographicBounds.height
+                    else { continue }
+                    let centering = -(line.typographicBounds.height * (multiple - 1) / 2)
+                    baseline = top + centering + line.glyphOrigin.y
+                    return false
+                }
+                return false   // only the fragment containing the location
+            }
+            return baseline
         }
     }
 }
