@@ -133,6 +133,31 @@ public protocol EditorTokenizer: AnyObject {
     func tokens(in text: String) -> [(range: NSRange, kind: EditorTokenKind)]
 }
 
+/// One completion the editor can offer. `replaceRange` (UTF-16, against the
+/// text the provider was called with) is what inserting replaces; nil means
+/// "the identifier being typed", which the editor computes itself.
+public struct EditorCompletion: Sendable {
+    public let label: String
+    public let detail: String?
+    public let insertText: String
+    public let replaceRange: NSRange?
+
+    public init(label: String, detail: String? = nil,
+                insertText: String, replaceRange: NSRange? = nil) {
+        self.label = label
+        self.detail = detail
+        self.insertText = insertText
+        self.replaceRange = replaceRange
+    }
+}
+
+/// Supplies completions for the editor's built-in completion window (invoked
+/// with Escape/F5). Async and off-actor: implementations typically consult a
+/// language server. Return [] freely — an empty result just means no window.
+public protocol EditorCompletionProvider: AnyObject, Sendable {
+    func completions(in text: String, at offset: Int) async -> [EditorCompletion]
+}
+
 /// A rendered equation and where its typographic baseline sits (points from
 /// the image's top) — the editor aligns that to the text's own baseline.
 public struct RenderedEquation {
@@ -254,6 +279,7 @@ public struct MaximalEditor: NSViewRepresentable {
     private let initialCursorLine: Int?
     private let tokenizer: EditorTokenizer?
     private let mathRenderer: EditorMathRenderer?
+    private let completionProvider: EditorCompletionProvider?
     private let controller: EditorController?
 
     @Environment(\.colorScheme) private var colorScheme
@@ -265,11 +291,13 @@ public struct MaximalEditor: NSViewRepresentable {
     ///   - tokenizer: Custom highlighting, painted as rendering attributes.
     ///   - mathRenderer: When set (and the style renders markup), equations
     ///     display as rendered images off the caret's line.
+    ///   - completionProvider: Feeds the completion window (Escape/F5).
     public init(text: Binding<String>, fileURL: URL? = nil,
                 style: EditorStyle = .code(),
                 initialCursorLine: Int? = nil,
                 tokenizer: EditorTokenizer? = nil,
                 mathRenderer: EditorMathRenderer? = nil,
+                completionProvider: EditorCompletionProvider? = nil,
                 controller: EditorController? = nil) {
         self._text = text
         self.fileURL = fileURL
@@ -277,11 +305,13 @@ public struct MaximalEditor: NSViewRepresentable {
         self.initialCursorLine = initialCursorLine
         self.tokenizer = tokenizer
         self.mathRenderer = mathRenderer
+        self.completionProvider = completionProvider
         self.controller = controller
     }
 
     public func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, tokenizer: tokenizer, mathRenderer: mathRenderer)
+        Coordinator(text: $text, tokenizer: tokenizer, mathRenderer: mathRenderer,
+                    completionProvider: completionProvider)
     }
 
     public func makeNSView(context: Context) -> NSScrollView {
@@ -362,12 +392,14 @@ public struct MaximalEditor: NSViewRepresentable {
         private let text: Binding<String>
         private let tokenizer: EditorTokenizer?
         private let mathRenderer: EditorMathRenderer?
+        private let completionProvider: EditorCompletionProvider?
         weak var textView: STTextView?
         var isEditing = false
         var lastStyle: EditorStyle?
         var isDark = false
 
         private var highlightTask: Task<Void, Never>?
+        private var autoCompleteTask: Task<Void, Never>?
         private var lastHighlightedText: String?
         private var lastHighlightedDark: Bool?
         private var lastHighlightedRevealStart: Int?
@@ -397,10 +429,12 @@ public struct MaximalEditor: NSViewRepresentable {
         private nonisolated(unsafe) var observers: [NSObjectProtocol] = []
 
         init(text: Binding<String>, tokenizer: EditorTokenizer?,
-             mathRenderer: EditorMathRenderer?) {
+             mathRenderer: EditorMathRenderer?,
+             completionProvider: EditorCompletionProvider?) {
             self.text = text
             self.tokenizer = tokenizer
             self.mathRenderer = mathRenderer
+            self.completionProvider = completionProvider
         }
 
         deinit {
@@ -445,6 +479,44 @@ public struct MaximalEditor: NSViewRepresentable {
             // Debounced: a full-document repaint per keystroke stutters; colors
             // catching up ~100ms after typing pauses is imperceptible.
             scheduleHighlight()
+            scheduleAutoCompletion(in: textView)
+        }
+
+        /// Completions appear as you type — but only inside a `#…`/`@…` run
+        /// (typst calls and references). Bare prose must never pop a window per
+        /// word. Retriggers per keystroke (debounced) so the list live-filters;
+        /// leaving the run dismisses it.
+        private func scheduleAutoCompletion(in textView: STTextView) {
+            guard completionProvider != nil else { return }
+            autoCompleteTask?.cancel()
+            let ns = (textView.text ?? "") as NSString
+            let caret = min(textView.textSelection.location, ns.length)
+            guard textView.textSelection.length == 0,
+                  Self.isCompletableContext(at: caret, in: ns) else {
+                textView.cancelComplete(nil)   // no-op when nothing is showing
+                return
+            }
+            autoCompleteTask = Task { @MainActor [weak self, weak textView] in
+                try? await Task.sleep(for: .milliseconds(150))
+                guard !Task.isCancelled, self != nil, let textView else { return }
+                textView.complete(nil)
+            }
+        }
+
+        /// True when the caret sits in (or right after) a sigil-introduced run:
+        /// identifier characters (plus `.` for field access) preceded by `#`/`@`.
+        static func isCompletableContext(at offset: Int, in text: NSString) -> Bool {
+            var i = offset
+            while i > 0 {
+                guard let scalar = Unicode.Scalar(text.character(at: i - 1)) else { return false }
+                if CharacterSet.alphanumerics.contains(scalar)
+                    || scalar == "_" || scalar == "-" || scalar == "." {
+                    i -= 1
+                    continue
+                }
+                return scalar == "#" || scalar == "@"
+            }
+            return false
         }
 
         public func textViewDidChangeSelection(_ notification: Notification) {
@@ -756,6 +828,64 @@ public struct MaximalEditor: NSViewRepresentable {
             }
         }
 
+        // MARK: Completion
+
+        /// Feeds the engine's built-in completion window (Escape/F5). The sync
+        /// variant declines so the engine takes this async path.
+        public func textView(_ textView: STTextView,
+                             completionItemsAtLocation location: any NSTextLocation)
+            async -> [any STCompletionItem]? {
+            guard let completionProvider,
+                  let contentManager = textView.textLayoutManager.textContentManager
+            else { return nil }
+            let text = textView.text ?? ""
+            let offset = contentManager.offset(from: contentManager.documentRange.location,
+                                               to: location)
+            let completions = await completionProvider.completions(in: text, at: offset)
+
+            // Prefix-filter against what's typed so the retriggering window
+            // live-narrows even when the provider returns unfiltered lists —
+            // but trust the provider (fuzzy matching etc.) when filtering
+            // would leave nothing.
+            let ns = text as NSString
+            let typed = ns.substring(with: Self.identifierRange(endingAt: offset, in: ns))
+                .drop { $0 == "#" || $0 == "@" }
+                .lowercased()
+            let filtered = typed.isEmpty ? completions
+                : completions.filter { $0.label.lowercased().hasPrefix(typed) }
+            let final = filtered.isEmpty ? completions : filtered
+            return final.isEmpty ? nil : final.map(CompletionListItem.init)
+        }
+
+        public func textView(_ textView: STTextView,
+                             insertCompletionItem item: any STCompletionItem) {
+            guard let item = item as? CompletionListItem else { return }
+            let ns = (textView.text ?? "") as NSString
+            let caret = min(textView.textSelection.location, ns.length)
+            let range = item.completion.replaceRange
+                ?? Self.identifierRange(endingAt: caret, in: ns)
+            guard range.location + range.length <= ns.length else { return }
+            textView.replaceCharacters(in: range, with: item.completion.insertText)
+            let end = range.location + (item.completion.insertText as NSString).length
+            textView.textSelection = NSRange(location: end, length: 0)
+        }
+
+        /// The identifier being typed just before `offset` — what a completion
+        /// replaces when the provider didn't say (alphanumerics, `_`, `-`, and
+        /// the `#`/`@` that introduce typst calls and references).
+        static func identifierRange(endingAt offset: Int, in text: NSString) -> NSRange {
+            var start = offset
+            while start > 0 {
+                let char = text.character(at: start - 1)
+                guard let scalar = Unicode.Scalar(char),
+                      CharacterSet.alphanumerics.contains(scalar)
+                        || scalar == "_" || scalar == "-" || scalar == "#" || scalar == "@"
+                else { break }
+                start -= 1
+            }
+            return NSRange(location: start, length: offset - start)
+        }
+
         // MARK: Scroll anchoring
 
         /// Where the caret sits in the viewport right now — nil when it isn't
@@ -816,6 +946,43 @@ public struct MaximalEditor: NSViewRepresentable {
                 return false   // only the fragment containing the location
             }
             return baseline
+        }
+    }
+}
+
+// MARK: - Completion list items
+
+/// Adapts an `EditorCompletion` to the engine's completion window: a plain
+/// label row (mono) with the detail dimmed after it. The protocol is
+/// nonisolated but the engine only asks for `view` on the main actor.
+private final class CompletionListItem: STCompletionItem {
+    let completion: EditorCompletion
+    var id: String { completion.label + (completion.detail ?? "") }
+
+    init(_ completion: EditorCompletion) {
+        self.completion = completion
+    }
+
+    var view: NSView {
+        let completion = self.completion   // Sendable copy for the isolated hop
+        return MainActor.assumeIsolated {
+            let label = NSMutableAttributedString(
+                string: completion.label,
+                attributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                    .foregroundColor: NSColor.labelColor,
+                ])
+            if let detail = completion.detail {
+                label.append(NSAttributedString(
+                    string: "  \(detail)",
+                    attributes: [
+                        .font: NSFont.systemFont(ofSize: 11),
+                        .foregroundColor: NSColor.secondaryLabelColor,
+                    ]))
+            }
+            let field = NSTextField(labelWithAttributedString: label)
+            field.lineBreakMode = .byTruncatingTail
+            return field
         }
     }
 }

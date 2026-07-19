@@ -379,6 +379,7 @@ struct TypstCanvas: View {
                                   : .code(size: fontSize, wrapLines: true, indentSpaces: 2),
             tokenizer: tokenizer,
             mathRenderer: TypstMathRenderer.shared,
+            completionProvider: fileURL.map(TypstCompletionProvider.init),
             controller: editor
         )
         .id(nodeID)
@@ -688,6 +689,29 @@ final class TypstTokenizer: EditorTokenizer {
             runs.append((range, .colored(light: lightColor, dark: darkColor)))
         }
         return runs
+    }
+}
+
+// MARK: - Completions (tinymist)
+
+/// Bridges the editor's completion seam to tinymist, the typst language
+/// server. Instances are stateless — the shared client owns the server
+/// process; when tinymist isn't installed, completions are simply absent.
+final class TypstCompletionProvider: EditorCompletionProvider {
+    private let fileURL: URL
+
+    init(fileURL: URL) {
+        self.fileURL = fileURL
+    }
+
+    func completions(in text: String, at offset: Int) async -> [EditorCompletion] {
+        await TinymistClient.shared
+            .completions(fileURL: fileURL, text: text, offset: offset)
+            .map {
+                EditorCompletion(label: $0.label, detail: $0.detail,
+                                 insertText: $0.insertText,
+                                 replaceRange: $0.replaceRange)
+            }
     }
 }
 

@@ -452,6 +452,17 @@ but still give each document a per-document `.id(...)` so undo and scroll state
 reset. Highlighting is painted as *rendering attributes*: display-only, never
 touching the text storage or the undo stack.
 
+Completions ride the engine's built-in window (Escape/F5): pass an
+`EditorCompletionProvider` and return `EditorCompletion`s (label, detail, insert
+text, optional UTF-16 replace range — otherwise the identifier being typed is
+replaced). The typst plugin's provider speaks LSP to
+**[tinymist](https://github.com/Myriad-Dreamin/tinymist)** via a small JSON-RPC
+stdio client (`TypstLSP.swift`): the server is discovered like the typst CLI
+(Homebrew/cargo/nix paths), documents are synced lazily right before each request,
+and everything degrades to "no completions" when the binary is absent. Install
+tinymist (`brew install tinymist` / `nix profile install nixpkgs#tinymist`) and
+completions — plus the gated live tests — light up with no configuration.
+
 ### The mobile plan
 
 An iOS version is intended eventually. The editor is ready for it (same engine,
