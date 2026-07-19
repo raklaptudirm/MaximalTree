@@ -190,7 +190,7 @@ struct EditorToken {
     #[serde(skip_serializing_if = "Option::is_none")]
     n: Option<usize>,   // heading level
     #[serde(skip_serializing_if = "Option::is_none")]
-    a: Option<&'static str>, // alignment
+    a: Option<String>,  // alignment, or embedded-code language
 }
 
 /// Walks the real typst syntax tree, emitting editor tokens with UTF-16 ranges
@@ -217,11 +217,14 @@ impl<'a> EditorTokenizer<'a> {
     }
 
     fn emit(&mut self, start: usize, len: usize, kind: &'static str,
-            level: Option<usize>, alignment: Option<&'static str>) {
+            level: Option<usize>, alignment: Option<&str>) {
         let s = self.utf16[start.min(self.src.len())];
         let e = self.utf16[(start + len).min(self.src.len())];
         if e > s {
-            self.out.push(EditorToken { s, l: e - s, k: kind, n: level, a: alignment });
+            self.out.push(EditorToken {
+                s, l: e - s, k: kind, n: level,
+                a: alignment.map(String::from),
+            });
         }
     }
 
@@ -248,8 +251,17 @@ impl<'a> EditorTokenizer<'a> {
             }
             K::Strong => self.emit(offset, node.len(), "strong", None, None),
             K::Emph => self.emit(offset, node.len(), "emphasis", None, None),
-            K::Raw => self.emit(offset, node.len(), "raw", None, None),
-            K::Equation => self.emit(offset, node.len(), "math", None, None),
+            K::Raw => self.walk_raw(node, offset),
+            K::Equation => {
+                self.emit(offset, node.len(), "math", None, None);
+                let mut child_offset = offset;
+                for child in node.children() {
+                    if child.kind() == K::Dollar {
+                        self.emit(child_offset, child.len(), "punct", None, None);
+                    }
+                    child_offset += child.len();
+                }
+            }
             K::Label => self.emit(offset, node.len(), "tag", None, None),
             K::Ref => self.emit(offset, node.len(), "property", None, None),
             K::Link => self.emit(offset, node.len(), "link", None, None),
@@ -383,7 +395,7 @@ impl<'a> EditorTokenizer<'a> {
                 }
                 K::Raw => {
                     close_run(self, run_start, cursor);
-                    self.emit(cursor, child.len(), "raw", None, None);
+                    self.walk_raw(child, cursor);
                     run_start = cursor + child.len();
                 }
                 _ if child.children().len() > 0 => {
@@ -485,6 +497,58 @@ impl<'a> EditorTokenizer<'a> {
         }
         Some((body_kind, alignment, block_offset, block))
     }
+
+    /// Raw blocks/spans: fences and the language tag emit as concealable `punct`,
+    /// and the embedded code gets its own syntax highlighting — typst via a real
+    /// reparse, common languages via a small lexer (comments/strings/numbers/
+    /// keywords), unknown languages strings+numbers only.
+    fn walk_raw(&mut self, node: &typst::syntax::SyntaxNode, offset: usize) {
+        use typst::syntax::SyntaxKind as K;
+        self.emit(offset, node.len(), "raw", None, None);
+
+        let mut child_offset = offset;
+        let mut lang: Option<String> = None;
+        let mut inner_start: Option<usize> = None;
+        let mut inner_end = offset;
+        for child in node.children() {
+            match child.kind() {
+                K::RawDelim => self.emit(child_offset, child.len(), "punct", None, None),
+                K::RawLang => {
+                    lang = Some(self.slice(child_offset, child.len()).to_lowercase());
+                    self.emit(child_offset, child.len(), "punct", None, None);
+                }
+                _ => {
+                    if inner_start.is_none() {
+                        inner_start = Some(child_offset);
+                    }
+                    inner_end = child_offset + child.len();
+                }
+            }
+            child_offset += child.len();
+        }
+        if let (Some(start), Some(lang)) = (inner_start, lang) {
+            if inner_end > start {
+                self.highlight_embedded(&lang, start, inner_end - start);
+            }
+        }
+    }
+
+    fn highlight_embedded(&mut self, lang: &str, start: usize, len: usize) {
+        let src: &'a str = self.src;
+        let Some(inner) = src.get(start..start + len) else { return };
+        match lang {
+            // Typst code gets the real parser, like everything else here.
+            "typ" | "typst" => {
+                let root = typst::syntax::parse(inner);
+                self.walk(&root, start);
+            }
+            // Foreign languages aren't this crate's business: hand the region and
+            // its language to the editor, which highlights it with a real
+            // highlighting library.
+            _ => self.emit(start, len, "embed", None, Some(lang)),
+        }
+    }
+
 }
 
 /// Tokenize `source` for editor highlighting using the real typst parser.

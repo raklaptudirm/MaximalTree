@@ -16,6 +16,13 @@ packages:
     url: https://github.com/krzyzanowskim/STTextView
     from: "2.3.11"
 
+  # highlight.js via JavaScriptCore: syntax highlighting for foreign languages
+  # inside typst raw blocks (~190 languages, macOS + iOS). Typst code itself is
+  # highlighted by the real typst parser in Vendor/typst-ffi.
+  Highlightr:
+    url: https://github.com/raspu/Highlightr
+    from: "2.2.0"
+
 settings:
   base:
     SWIFT_VERSION: "6.0"            # Swift 6 language mode: complete data-race checking
@@ -104,6 +111,7 @@ targets:
         embed: false
       - target: MaximalEditorKit
         embed: false
+      - package: Highlightr
     preBuildScripts:
       - name: Build typst-ffi (cargo)
         # cargo caches; a no-change run is sub-second. PATH covers nix profiles,

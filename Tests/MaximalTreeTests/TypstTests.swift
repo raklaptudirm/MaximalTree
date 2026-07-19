@@ -331,6 +331,45 @@ import Foundation
         #expect(tokens.contains { $0.k == "item" })
     }
 
+    @Test func mathEmitsConcealableDollars() throws {
+        let source = "Euler: $e^(i pi) + 1 = 0$."
+        let tokens = try #require(TypstEngine.tokens(in: source))
+        let math = try #require(tokens.first { $0.k == "math" })
+        #expect((source as NSString).substring(with: math.range) == "$e^(i pi) + 1 = 0$")
+        let dollars = tokens.filter {
+            $0.k == "punct" && (source as NSString).substring(with: $0.range) == "$"
+        }
+        #expect(dollars.count == 2)
+    }
+
+    @Test func codeBlocksEmitEmbedRegionsForTheHighlighter() throws {
+        let source = "```rust\nlet x = 1; // one\n```"
+        let tokens = try #require(TypstEngine.tokens(in: source))
+        // Foreign code is handed to the editor's highlighting library as one
+        // region carrying its language — the FFI does no foreign lexing itself.
+        let embed = try #require(tokens.first { $0.k == "embed" })
+        #expect(embed.a == "rust")
+        #expect((source as NSString).substring(with: embed.range) == "\nlet x = 1; // one\n")
+        // Fences and the language tag are concealable punct.
+        let puncts = tokens.filter { $0.k == "punct" }
+            .map { (source as NSString).substring(with: $0.range) }
+        #expect(puncts.contains("rust"))
+        #expect(puncts.filter { $0 == "```" }.count == 2)
+    }
+
+    @Test func typstCodeBlocksUseTheRealParserNotTheHighlighter() throws {
+        let tokens = try #require(TypstEngine.tokens(in: "```typ\n= Heading\n*b*\n```"))
+        #expect(tokens.contains { $0.k == "heading" && $0.n == 1 })
+        #expect(tokens.contains { $0.k == "strong" })
+        #expect(!tokens.contains { $0.k == "embed" })
+    }
+
+    @Test func inlineRawWithoutLanguageHasNoEmbedRegion() throws {
+        let tokens = try #require(TypstEngine.tokens(in: "some `code` here"))
+        #expect(tokens.contains { $0.k == "raw" })
+        #expect(!tokens.contains { $0.k == "embed" })
+    }
+
     @Test func autolinksAreLinkTokens() throws {
         let source = "See https://typst.app for docs."
         let tokens = try #require(TypstEngine.tokens(in: source))

@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import PDFKit
+import Highlightr
 import MaximalEditorKit
 import MaximalTreeKit
 
@@ -572,43 +573,105 @@ struct TypstCanvas: View {
 // MARK: - Tokenizer
 
 /// Maps the real typst parser's tokens (via the FFI) to the editor's
-/// engine-neutral vocabulary.
+/// engine-neutral vocabulary. Foreign-language code inside raw blocks arrives
+/// as `embed` regions carrying their language; those are expanded with
+/// Highlightr (highlight.js — a real highlighting library, ~190 languages)
+/// into appearance-paired `.colored` tokens, cached per (language, code).
 final class TypstTokenizer: EditorTokenizer {
+    /// One highlighter per appearance, shared across canvases. Lazily built on
+    /// first use (a JS context + highlight.js load, ~100ms once per process).
+    private static let lightHighlighter: Highlightr? = {
+        let highlighter = Highlightr()
+        highlighter?.setTheme(to: "xcode")
+        return highlighter
+    }()
+    private static let darkHighlighter: Highlightr? = {
+        let highlighter = Highlightr()
+        highlighter?.setTheme(to: "atom-one-dark")
+        return highlighter
+    }()
+
+    /// Highlighted runs per (language, code), in code-relative coordinates.
+    private var embedCache: [String: [(NSRange, EditorTokenKind)]] = [:]
+
     func tokens(in text: String) -> [(range: NSRange, kind: EditorTokenKind)] {
         // The real parser (mode-aware, exact spans) — the only tokenizer.
-        if let parsed = TypstEngine.tokens(in: text) {
-            return parsed.compactMap { token in
-                let kind: EditorTokenKind
-                switch token.k {
-                case "comment":  kind = .comment
-                case "string":   kind = .string
-                case "math":     kind = .number
-                case "raw":      kind = .raw
-                case "heading":  kind = .heading(level: token.n ?? 1)
-                case "strong":   kind = .strong
-                case "emphasis": kind = .emphasis
-                case "function": kind = .function
-                case "tag":      kind = .tag
-                case "property": kind = .property
-                case "punct":    kind = .punctuation
-                case "link":     kind = .link
-                case "marker":   kind = .listMarker
-                case "item":     kind = .listItem
-                case "term":     kind = .term
-                case "struck":   kind = .struck
-                case "underlined": kind = .underlined
-                case "aligned":
-                    switch token.a {
-                    case "center":   kind = .aligned(.center)
-                    case "trailing": kind = .aligned(.trailing)
-                    default:         kind = .aligned(.leading)
-                    }
-                default: return nil
+        guard let parsed = TypstEngine.tokens(in: text) else { return [] }
+        let ns = text as NSString
+        var out: [(range: NSRange, kind: EditorTokenKind)] = []
+        for token in parsed {
+            let kind: EditorTokenKind
+            switch token.k {
+            case "comment":  kind = .comment
+            case "string":   kind = .string
+            case "math":     kind = .math
+            case "raw":      kind = .raw
+            case "heading":  kind = .heading(level: token.n ?? 1)
+            case "strong":   kind = .strong
+            case "emphasis": kind = .emphasis
+            case "function": kind = .function
+            case "tag":      kind = .tag
+            case "property": kind = .property
+            case "punct":    kind = .punctuation
+            case "link":     kind = .link
+            case "marker":   kind = .listMarker
+            case "item":     kind = .listItem
+            case "term":     kind = .term
+            case "struck":   kind = .struck
+            case "underlined": kind = .underlined
+            case "aligned":
+                switch token.a {
+                case "center":   kind = .aligned(.center)
+                case "trailing": kind = .aligned(.trailing)
+                default:         kind = .aligned(.leading)
                 }
-                return (token.range, kind)
+            case "embed":
+                guard let language = token.a,
+                      token.range.location + token.range.length <= ns.length
+                else { continue }
+                out += embeddedTokens(for: ns.substring(with: token.range),
+                                      language: language,
+                                      at: token.range.location)
+                continue
+            default: continue
             }
+            out.append((token.range, kind))
         }
-        return []   // parser unavailable: no highlighting
+        return out
+    }
+
+    private func embeddedTokens(for code: String, language: String,
+                                at offset: Int) -> [(range: NSRange, kind: EditorTokenKind)] {
+        let key = "\(language)\u{0}\(code)"
+        let relative: [(NSRange, EditorTokenKind)]
+        if let cached = embedCache[key] {
+            relative = cached
+        } else {
+            relative = Self.highlight(code, language: language)
+            if embedCache.count > 128 { embedCache.removeAll(keepingCapacity: true) }
+            embedCache[key] = relative
+        }
+        return relative.map {
+            (NSRange(location: $0.0.location + offset, length: $0.0.length), $0.1)
+        }
+    }
+
+    private static func highlight(_ code: String,
+                                  language: String) -> [(NSRange, EditorTokenKind)] {
+        guard let light = lightHighlighter?.highlight(code, as: language),
+              let dark = darkHighlighter?.highlight(code, as: language),
+              light.string == code, dark.length == light.length
+        else { return [] }   // unknown language, or output didn't round-trip
+
+        var runs: [(NSRange, EditorTokenKind)] = []
+        light.enumerateAttribute(.foregroundColor,
+                                 in: NSRange(location: 0, length: light.length)) { value, range, _ in
+            guard let lightColor = value as? NSColor else { return }
+            let darkColor = dark.attribute(.foregroundColor, at: range.location,
+                                           effectiveRange: nil) as? NSColor ?? lightColor
+            runs.append((range, .colored(light: lightColor, dark: darkColor)))
+        }
+        return runs
     }
 }
 

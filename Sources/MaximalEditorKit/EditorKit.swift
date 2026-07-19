@@ -92,6 +92,13 @@ public enum EditorTokenKind: Equatable {
     case comment, string, number, keyword, type, variable, function, tag, property
     case heading(level: Int)
     case strong, emphasis, raw
+    /// An equation (`$…$`): monospaced number-colored (rendered equations would
+    /// need layout participation the engine doesn't offer displays-only). The
+    /// delimiters arrive separately as `punctuation`, so they conceal.
+    case math
+    /// A token colored by an external highlighter (embedded foreign-language
+    /// code): the tokenizer supplies both appearances, paint-time picks one.
+    case colored(light: NSColor, dark: NSColor)
     case aligned(EditorAlignment)
     /// Structural delimiters (content brackets, decorator-call heads): dimmed mono
     /// in markup rendering — and *concealed* on lines not being edited — uncolored
@@ -117,7 +124,9 @@ public enum EditorAlignment: Equatable {
 
 /// A plugin-supplied lexer. Return every token in `text`; the framework paints
 /// them as display-only rendering attributes. Engine-neutral so tokenizers
-/// survive engine swaps (and stay Foundation-only and testable in plugin cores).
+/// survive engine swaps. Main-actor: it's only ever called from the paint path,
+/// and implementations may hold main-confined machinery (JS contexts, caches).
+@MainActor
 public protocol EditorTokenizer: AnyObject {
     func tokens(in text: String) -> [(range: NSRange, kind: EditorTokenKind)]
 }
@@ -132,7 +141,8 @@ private enum TokenPalette {
         case .comment:  return NSColor(hex: dark ? "7F8C98" : "267507")
         case .string, .raw:
             return NSColor(hex: dark ? "FF8170" : "C41A16")
-        case .number:   return NSColor(hex: dark ? "D9C97C" : "1C00CF")
+        case .number, .math:
+            return NSColor(hex: dark ? "D9C97C" : "1C00CF")
         case .keyword:  return NSColor(hex: dark ? "FF7AB2" : "9B2393")
         case .heading:  return NSColor(hex: dark ? "FF7AB2" : "9B2393")
         case .type, .strong:
@@ -143,6 +153,8 @@ private enum TokenPalette {
         case .tag:      return NSColor(hex: dark ? "CC9768" : "815F03")
         case .property: return NSColor(hex: dark ? "B281EB" : "6C36A9")
         case .link:     return .linkColor
+        case .colored(let light, let darkColor):
+            return dark ? darkColor : light
         case .aligned, .punctuation, .listMarker, .listItem, .term,
              .struck, .underlined:
             return nil
@@ -416,6 +428,7 @@ public struct MaximalEditor: NSViewRepresentable {
                 .foregroundColor: NSColor.labelColor,
             ], range: full)
             textView.removeRenderingAttribute(.foregroundColor, range: full)
+            textView.removeRenderingAttribute(.backgroundColor, range: full)
             textView.removeRenderingAttribute(.underlineStyle, range: full)
             textView.removeRenderingAttribute(.strikethroughStyle, range: full)
 
@@ -484,11 +497,14 @@ public struct MaximalEditor: NSViewRepresentable {
                                        range: token.range)
                 concealEnds(token.range, 1)
             case .raw:
+                // Fences and the language tag arrive as separate `punctuation`
+                // tokens (they conceal); embedded code arrives as normal
+                // comment/string/number/keyword tokens painted after this one.
                 textView.addAttributes(
                     [.font: fontVariant(of: style.font, scale: 0.9, monospaced: true)],
                     range: token.range)
-                let fence = ns.substring(with: token.range).hasPrefix("```") ? 3 : 1
-                if token.range.length > 2 * fence { concealEnds(token.range, fence) }
+                textView.addRenderingAttributes(
+                    [.backgroundColor: NSColor.quaternarySystemFill], range: token.range)
             case .aligned(let alignment):
                 let paragraph = (style.paragraphStyle.mutableCopy() as! NSMutableParagraphStyle)
                 paragraph.alignment = switch alignment {
