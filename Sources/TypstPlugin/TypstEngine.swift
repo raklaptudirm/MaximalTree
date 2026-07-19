@@ -1,10 +1,10 @@
 import Foundation
 import TypstFFI
 
-/// The in-process typst compiler (Rust, via C ABI — see Vendor/typst-ffi).
-/// Replaces the CLI for the hot path: no process spawn, structured diagnostics
-/// instead of stderr parsing, and it's the only compile path that can exist on
-/// iOS. The CLI remains as a fallback and for export formats not yet in the FFI.
+/// The in-process typst compiler (Rust, via C ABI — see Vendor/typst-ffi):
+/// compile, export (PDF/SVG/PNG), math rendering, tokens, and structure all run
+/// here — no process spawn, no CLI anywhere, and it's the only compile path
+/// that can exist on iOS.
 enum TypstEngine {
     private struct EngineDiagnostic: Decodable {
         let severity: String
@@ -14,9 +14,146 @@ enum TypstEngine {
     }
 
     /// Compile `source` as `<root>/main.typ`. Returns nil on *internal* engine
-    /// failure (caller falls back to the CLI); compile errors are a normal result.
-    static func compile(source: String, root: URL) -> TypstCompiler.Output? {
+    /// failure (callers surface it as a diagnostic); compile errors are a
+    /// normal result.
+    static func compile(source: String, root: URL) -> Output? {
         compile(source: source, root: root, packagesNamespaceDir: packagesRoot())
+    }
+
+    struct Output: Sendable {
+        let pdf: Data?
+        let diagnostics: [TypstDiagnostic]
+    }
+
+    /// Compile `source` as though it were the contents of `documentURL` —
+    /// the async facade canvases use for live preview. The engine is the only
+    /// compiler; an internal failure surfaces as a diagnostic, never a hang.
+    static func compile(source: String, documentURL: URL) async -> Output {
+        await Task.detached(priority: .userInitiated) {
+            let root = documentURL.deletingLastPathComponent()
+            return compile(source: source, root: root)
+                ?? Output(pdf: nil, diagnostics: [
+                    TypstDiagnostic(severity: .error, line: nil, column: nil,
+                                    message: "the typst engine failed internally"),
+                ])
+        }.value
+    }
+
+    // MARK: Export
+
+    enum ExportFormat: String, CaseIterable, Sendable {
+        case pdf, svg, png
+
+        var title: String { rawValue.uppercased() }
+    }
+
+    /// Compile `source` and write it to `destination` in the given format —
+    /// all through the in-process engine. PDF and SVG are single files (SVG
+    /// stacks pages); PNG rasterizes at 300 ppi, one file per page, numbered
+    /// `name-N.png` when the document has more than one. Returns diagnostics;
+    /// no errors among them means the export happened.
+    static func export(source: String, documentURL: URL,
+                       format: ExportFormat, to destination: URL) async -> [TypstDiagnostic] {
+        await Task.detached(priority: .userInitiated) {
+            exportSync(source: source, documentURL: documentURL,
+                       format: format, to: destination)
+        }.value
+    }
+
+    static func exportSync(source: String, documentURL: URL,
+                           format: ExportFormat, to destination: URL) -> [TypstDiagnostic] {
+        let root = documentURL.deletingLastPathComponent()
+        func failure(_ message: String) -> [TypstDiagnostic] {
+            [TypstDiagnostic(severity: .error, line: nil, column: nil, message: message)]
+        }
+
+        do {
+            switch format {
+            case .pdf:
+                guard let output = compile(source: source, root: root) else {
+                    return failure("the typst engine failed internally")
+                }
+                guard let pdf = output.pdf else { return output.diagnostics }
+                try pdf.write(to: destination)
+                return output.diagnostics
+
+            case .svg:
+                guard let svg = renderSVG(source: source, root: root) else {
+                    // Compile errors carry no location here; re-compile for them.
+                    return compile(source: source, root: root)?.diagnostics
+                        ?? failure("the typst engine failed internally")
+                }
+                try svg.write(to: destination)
+                return []
+
+            case .png:
+                let scale = 300.0 / 72.0
+                guard let first = renderPNG(source: source, root: root,
+                                            page: 0, pixelPerPt: scale) else {
+                    return compile(source: source, root: root)?.diagnostics
+                        ?? failure("the typst engine failed internally")
+                }
+                guard first.pages > 1 else {
+                    try first.png.write(to: destination)
+                    return []
+                }
+                let stem = destination.deletingPathExtension()
+                for page in 0..<first.pages {
+                    let render = page == 0 ? first
+                        : renderPNG(source: source, root: root,
+                                    page: page, pixelPerPt: scale)
+                    guard let render else { return failure("page \(page + 1) failed to render") }
+                    let url = URL(fileURLWithPath: stem.path + "-\(page + 1).png")
+                    try render.png.write(to: url)
+                }
+                return []
+            }
+        } catch {
+            return failure("couldn't write export: \(error.localizedDescription)")
+        }
+    }
+
+    /// The whole document as one SVG (pages stacked). Nil on compile failure.
+    static func renderSVG(source: String, root: URL) -> Data? {
+        var buffer = TypstBuffer()
+        let status = source.withCString { sourcePtr in
+            root.path.withCString { rootPtr in
+                packagesRoot().path.withCString { packagesPtr in
+                    typst_render_svg(sourcePtr, rootPtr, packagesPtr, &buffer)
+                }
+            }
+        }
+        defer { typst_buffer_free(buffer) }
+        guard status == 0, buffer.len > 0, let data = buffer.data else { return nil }
+        return Data(bytes: data, count: buffer.len)
+    }
+
+    /// One page as PNG, plus the document's page count. Nil on compile failure
+    /// or page out of range.
+    static func renderPNG(source: String, root: URL, page: Int,
+                          pixelPerPt: Double) -> (png: Data, pages: Int)? {
+        struct Info: Decodable { let pages: Int? }
+        var pngBuffer = TypstBuffer()
+        var infoBuffer = TypstBuffer()
+        let status = source.withCString { sourcePtr in
+            root.path.withCString { rootPtr in
+                packagesRoot().path.withCString { packagesPtr in
+                    typst_render_png(sourcePtr, rootPtr, packagesPtr,
+                                     pixelPerPt, Int32(page),
+                                     &pngBuffer, &infoBuffer)
+                }
+            }
+        }
+        defer {
+            typst_buffer_free(pngBuffer)
+            typst_buffer_free(infoBuffer)
+        }
+        guard status == 0, pngBuffer.len > 0, let pngData = pngBuffer.data,
+              infoBuffer.len > 0, let infoData = infoBuffer.data,
+              let info = try? JSONDecoder().decode(
+                Info.self, from: Data(bytes: infoData, count: infoBuffer.len))
+        else { return nil }
+        return (Data(bytes: pngData, count: pngBuffer.len), info.pages ?? 1)
     }
 
     /// A rendered equation: PNG pixels plus the metrics an editor needs to
@@ -67,7 +204,7 @@ enum TypstEngine {
         let status = source.withCString { sourcePtr in
             FileManager.default.temporaryDirectory.path.withCString { rootPtr in
                 packagesRoot().path.withCString { packagesPtr in
-                    typst_render_png(sourcePtr, rootPtr, packagesPtr, scale,
+                    typst_render_png(sourcePtr, rootPtr, packagesPtr, scale, 0,
                                      &pngBuffer, &infoBuffer)
                 }
             }
@@ -166,7 +303,7 @@ enum TypstEngine {
     }
 
     static func compile(source: String, root: URL,
-                        packagesNamespaceDir: URL) -> TypstCompiler.Output? {
+                        packagesNamespaceDir: URL) -> Output? {
         var pdfBuffer = TypstBuffer()
         var diagnosticsBuffer = TypstBuffer()
 
@@ -183,7 +320,7 @@ enum TypstEngine {
             typst_buffer_free(diagnosticsBuffer)
         }
 
-        guard status != 2 else { return nil }   // internal error → CLI fallback
+        guard status != 2 else { return nil }   // internal error
 
         var diagnostics: [TypstDiagnostic] = []
         if diagnosticsBuffer.len > 0, let data = diagnosticsBuffer.data {
@@ -202,6 +339,6 @@ enum TypstEngine {
         if status == 0, pdfBuffer.len > 0, let data = pdfBuffer.data {
             pdf = Data(bytes: data, count: pdfBuffer.len)
         }
-        return TypstCompiler.Output(pdf: pdf, diagnostics: diagnostics)
+        return Output(pdf: pdf, diagnostics: diagnostics)
     }
 }

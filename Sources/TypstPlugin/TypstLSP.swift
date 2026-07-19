@@ -15,13 +15,12 @@ struct LSPCompletion: Sendable, Equatable {
 /// highlighting comes from the bundled parser and diagnostics from the bundled
 /// compiler, so the server only supplies what those can't.
 ///
-/// Discovered on PATH-adjacent locations like the typst CLI; every entry point
+/// Discovered on PATH-adjacent install locations; every entry point
 /// degrades to "no results" when the binary is absent or the server misbehaves.
 actor TinymistClient {
     static let shared = TinymistClient()
 
-    /// Well-known install locations (Homebrew, cargo, nix), same spirit as the
-    /// CLI fallback's discovery.
+    /// Well-known install locations (Homebrew, cargo, nix).
     nonisolated static var binaryURL: URL? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let candidates = [

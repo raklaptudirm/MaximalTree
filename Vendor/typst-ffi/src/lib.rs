@@ -5,8 +5,8 @@
 //! packages against `<packages>/<ns>/<name>/<version>`. Returns PDF bytes and
 //! structured diagnostics (JSON) — no CLI, no stderr parsing, works on iOS.
 //!
-//! Diagnostic coordinates match what the Swift side already speaks (typst CLI
-//! `short` format): 1-based lines, 0-based columns.
+//! Diagnostic coordinates follow typst's conventions: 1-based lines,
+//! 0-based columns.
 
 use std::ffi::{c_char, CStr};
 use std::path::{Path, PathBuf};
@@ -971,6 +971,7 @@ pub unsafe extern "C" fn typst_render_png(
     root: *const c_char,
     packages: *const c_char,
     pixel_per_pt: f64,
+    page_index: i32,
     out_png: *mut TypstBuffer,
     out_info: *mut TypstBuffer,
 ) -> i32 {
@@ -993,7 +994,7 @@ pub unsafe extern "C" fn typst_render_png(
 
     let result = typst::compile::<PagedDocument>(&world);
     let Ok(document) = result.output else { return 1 };
-    let Some(page) = document.pages().first() else { return 1 };
+    let Some(page) = document.pages().get(page_index.max(0) as usize) else { return 1 };
 
     let options = typst_render::RenderOptions {
         pixel_per_pt: typst::utils::Scalar::new(pixel_per_pt),
@@ -1006,11 +1007,48 @@ pub unsafe extern "C" fn typst_render_png(
     let baseline = find_baseline(&page.frame, typst::layout::Abs::zero())
         .unwrap_or(size.y);
     let info = format!(
-        "{{\"w\":{},\"h\":{},\"b\":{}}}",
-        size.x.to_pt(), size.y.to_pt(), baseline.to_pt()
+        "{{\"w\":{},\"h\":{},\"b\":{},\"pages\":{}}}",
+        size.x.to_pt(), size.y.to_pt(), baseline.to_pt(), document.pages().len()
     );
 
     *out_png = TypstBuffer::from_vec(png);
     *out_info = TypstBuffer::from_vec(info.into_bytes());
+    0
+}
+
+/// Render the whole document to one SVG (pages stacked, small gap). Returns 0
+/// on success, 1 on compile errors, 2 on internal failure.
+///
+/// # Safety
+/// All strings must be valid NUL-terminated UTF-8; `out_svg` must be valid.
+#[no_mangle]
+pub unsafe extern "C" fn typst_render_svg(
+    source: *const c_char,
+    root: *const c_char,
+    packages: *const c_char,
+    out_svg: *mut TypstBuffer,
+) -> i32 {
+    *out_svg = TypstBuffer::empty();
+
+    let (Ok(source), Ok(root), Ok(packages)) = (
+        CStr::from_ptr(source).to_str(),
+        CStr::from_ptr(root).to_str(),
+        CStr::from_ptr(packages).to_str(),
+    ) else {
+        return 2;
+    };
+
+    let world = FfiWorld::new(
+        source.to_string(),
+        Path::new(root).to_path_buf(),
+        Path::new(packages).to_path_buf(),
+    );
+
+    let result = typst::compile::<PagedDocument>(&world);
+    let Ok(document) = result.output else { return 1 };
+
+    let svg = typst_svg::svg_merged(&document, &typst_svg::SvgOptions::default(),
+                                    typst::layout::Abs::pt(8.0));
+    *out_svg = TypstBuffer::from_vec(svg.into_bytes());
     0
 }

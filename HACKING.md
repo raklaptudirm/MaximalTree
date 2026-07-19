@@ -64,8 +64,8 @@ Sources/
   TextEditorPlugin/             # reference cross-plugin renderer (loadable bundle)
     TextEditor.swift            #   CodeEditSourceEditor canvas over filesystem files
   TypstPlugin/                  # reference compiler-backed canvas (loadable bundle)
-    TypstCore.swift             #   CLI wrapper, diagnostics, notes pkg, tokenizer,
-                                #   TypstRef URIs + structure parsing (all tested)
+    TypstCore.swift             #   diagnostics, notes pkg, TypstRef URIs,
+                                #   structure/edit helpers (all tested)
     TypstProvider.swift         #   section/task/agenda nodes, agenda canvas, toggles
     TypstPlugin.swift           #   Write/Typeset/Read modes, autosave, note actions
 Vendor/SwiftLintPlugin/         # stub overriding a dependency's build-tool plugin
@@ -364,9 +364,10 @@ engine's one-time system font scan). Work that only your view can do (loading it
 document) should still happen in an async `.task` with a placeholder — never
 synchronously on the main actor (`TextEditorPlugin.load()` is the reference). Providers should attach a UTI via `attributes["uti"]` so
 content-type matchers work (`TextEditorPlugin` is the reference for cross-plugin
-rendering; `TypstPlugin` is the reference for a compiler-backed canvas — it shells out
-to an external CLI, compiles the unsaved buffer via stdin on a debounce, and composes
-an editor, a PDFKit preview, and a diagnostics strip in one canvas).
+rendering; `TypstPlugin` is the reference for a compiler-backed canvas — it compiles
+the unsaved buffer through the bundled in-process engine (Vendor/typst-ffi) on a
+debounce and composes an editor, a PDFKit preview, and a diagnostics strip in one
+canvas — no external tools involved).
 
 ### 3. `Action`s (optional)
 
@@ -457,8 +458,8 @@ Completions ride the engine's built-in window (Escape/F5): pass an
 text, optional UTF-16 replace range — otherwise the identifier being typed is
 replaced). The typst plugin's provider speaks LSP to
 **[tinymist](https://github.com/Myriad-Dreamin/tinymist)** via a small JSON-RPC
-stdio client (`TypstLSP.swift`): the server is discovered like the typst CLI
-(Homebrew/cargo/nix paths), documents are synced lazily right before each request,
+stdio client (`TypstLSP.swift`): the server is discovered on well-known install
+paths (Homebrew/cargo/nix), documents are synced lazily right before each request,
 and everything degrades to "no completions" when the binary is absent. Install
 tinymist (`brew install tinymist` / `nix profile install nixpkgs#tinymist`) and
 completions — plus the gated live tests — light up with no configuration.

@@ -320,7 +320,7 @@ struct TypstCanvas: View {
 
     private var exportMenu: some View {
         Menu {
-            ForEach(TypstCompiler.ExportFormat.allCases, id: \.self) { format in
+            ForEach(TypstEngine.ExportFormat.allCases, id: \.self) { format in
                 Button(format.title) { export(format) }
             }
         } label: {
@@ -328,7 +328,6 @@ struct TypstCanvas: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .disabled(!TypstCompiler.isAvailable)
         .help("Export the document")
     }
 
@@ -422,13 +421,7 @@ struct TypstCanvas: View {
 
     @ViewBuilder
     private var previewColumn: some View {
-        if !TypstCompiler.isAvailable {
-            ContentUnavailableView {
-                Label("Typst Not Installed", systemImage: "doc.richtext")
-            } description: {
-                Text("Install the typst CLI (e.g. `brew install typst`) to enable live preview.")
-            }
-        } else if let preview {
+        if let preview {
             PDFPreview(document: preview)
         } else if hasErrors {
             ContentUnavailableView("Compile Failed", systemImage: "exclamationmark.triangle",
@@ -528,7 +521,7 @@ struct TypstCanvas: View {
 
     private func scheduleCompile(delay: Duration) {
         compileTask?.cancel()
-        guard TypstCompiler.isAvailable, let url = fileURL else { return }
+        guard let url = fileURL else { return }
         let source = text
         compileTask = Task {
             if delay > .zero {
@@ -536,7 +529,7 @@ struct TypstCanvas: View {
                 guard !Task.isCancelled else { return }
             }
             compiling = true
-            let output = await TypstCompiler.compile(source: source, documentURL: url)
+            let output = await TypstEngine.compile(source: source, documentURL: url)
             guard !Task.isCancelled else { compiling = false; return }
             compiling = false
             diagnostics = output.diagnostics
@@ -554,7 +547,7 @@ struct TypstCanvas: View {
         editor.moveCursor(toLine: line, column: (diagnostic.column ?? 0) + 1)
     }
 
-    private func export(_ format: TypstCompiler.ExportFormat) {
+    private func export(_ format: TypstEngine.ExportFormat) {
         guard let documentURL = fileURL else { return }
         let panel = NSSavePanel()
         switch format {
@@ -564,13 +557,13 @@ struct TypstCanvas: View {
         }
         let stem = (host.node(nodeID)?.label as NSString?)?.deletingPathExtension ?? "document"
         panel.nameFieldStringValue = "\(stem).\(format.rawValue)"
-        if format.isPaged {
-            panel.message = "Multi-page documents export one \(format.title) per page."
+        if format == .png {
+            panel.message = "Multi-page documents export one PNG per page."
         }
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         let source = text
         Task {
-            let exportDiagnostics = await TypstCompiler.export(
+            let exportDiagnostics = await TypstEngine.export(
                 source: source, documentURL: documentURL, format: format, to: destination)
             if exportDiagnostics.contains(where: { $0.severity == .error }) {
                 diagnostics = exportDiagnostics    // surface in the Typeset strip

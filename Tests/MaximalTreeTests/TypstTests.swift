@@ -3,37 +3,6 @@ import Foundation
 @testable import MaximalTreeKit
 @testable import MaximalTree
 
-@Suite struct TypstDiagnosticsTests {
-    @Test func parsesErrorWithLocation() {
-        let diags = TypstCompiler.parseDiagnostics(
-            "<stdin>:2:1: error: unknown variable: nonexistent\n")
-        #expect(diags == [TypstDiagnostic(severity: .error, line: 2, column: 1,
-                                          message: "unknown variable: nonexistent")])
-    }
-
-    @Test func parsesWarningWithFilePath() {
-        let diags = TypstCompiler.parseDiagnostics(
-            "chapters/intro.typ:14:8: warning: unknown font family: nosuchfont\n")
-        #expect(diags.count == 1)
-        #expect(diags[0].severity == .warning)
-        #expect(diags[0].line == 14)
-        #expect(diags[0].column == 8)
-    }
-
-    @Test func parsesLocationlessError() {
-        let diags = TypstCompiler.parseDiagnostics("error: input file not found\n")
-        #expect(diags == [TypstDiagnostic(severity: .error, line: nil, column: nil,
-                                          message: "input file not found")])
-    }
-
-    @Test func skipsNonDiagnosticNoise() {
-        let diags = TypstCompiler.parseDiagnostics(
-            "compiling...\n<stdin>:1:0: error: boom\nsome trailing output\n")
-        #expect(diags.count == 1)
-        #expect(diags[0].message == "boom")
-    }
-}
-
 @Suite struct TypstNotesTests {
     private func tempDir() throws -> URL {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -574,11 +543,10 @@ struct TinymistLiveTests {
     }
 }
 
-/// Integration tests against the real typst CLI; skipped on machines without it.
-@Suite(.enabled(if: TypstCompiler.isAvailable))
-struct TypstCompilerTests {
-    /// The document's directory must exist — it becomes the compiler's --root and
-    /// working directory.
+/// The engine's canvas-facing facade (compile-by-document-URL and exports).
+/// Hermetic: everything runs through the in-process engine — there is no CLI.
+@Suite struct TypstExportTests {
+    /// The document's directory must exist — it becomes the compile root.
     private func tempDocURL() throws -> URL {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("typst-test-\(UUID().uuidString)", isDirectory: true)
@@ -586,39 +554,70 @@ struct TypstCompilerTests {
         return dir.appendingPathComponent("doc.typ")
     }
 
-    @Test func compilesValidDocument() async throws {
-        let output = await TypstCompiler.compile(source: "= Hello\nWorld.",
-                                                 documentURL: try tempDocURL())
+    @Test func compileFacadeResolvesRootFromDocumentURL() async throws {
+        let doc = try tempDocURL()
+        try "world".write(to: doc.deletingLastPathComponent()
+            .appendingPathComponent("data.txt"), atomically: true, encoding: .utf8)
+        let output = await TypstEngine.compile(source: "#read(\"data.txt\")",
+                                               documentURL: doc)
         #expect(output.pdf != nil)
         #expect(output.diagnostics.isEmpty)
     }
 
-    @Test func reportsErrorsWithLocationAndNoPDF() async throws {
-        let output = await TypstCompiler.compile(source: "= Bad\n#nonexistent()",
-                                                 documentURL: try tempDocURL())
-        #expect(output.pdf == nil)
-        #expect(output.diagnostics.contains { $0.severity == .error && $0.line == 2 })
+    @Test func exportsPDF() async throws {
+        let doc = try tempDocURL()
+        let dest = doc.deletingLastPathComponent().appendingPathComponent("out.pdf")
+        let diagnostics = await TypstEngine.export(
+            source: "= Hello", documentURL: doc, format: .pdf, to: dest)
+        #expect(diagnostics.filter { $0.severity == .error }.isEmpty)
+        let data = try Data(contentsOf: dest)
+        #expect(data.starts(with: Array("%PDF".utf8)))
     }
 
-    @Test func warningsStillProduceAPDF() async throws {
-        let output = await TypstCompiler.compile(
-            source: "#set text(font: \"NoSuchFont\")\nhi",
-            documentURL: try tempDocURL())
-        #expect(output.pdf != nil)
-        #expect(output.diagnostics.contains { $0.severity == .warning })
-    }
-
-    @Test func exportsSVGPerPage() async throws {
+    @Test func exportsWholeDocumentAsOneSVG() async throws {
         let doc = try tempDocURL()
         let dest = doc.deletingLastPathComponent().appendingPathComponent("out.svg")
-        let diagnostics = await TypstCompiler.export(
+        let diagnostics = await TypstEngine.export(
             source: "= Page One\n#pagebreak()\n= Page Two",
             documentURL: doc, format: .svg, to: dest)
-
         #expect(diagnostics.filter { $0.severity == .error }.isEmpty)
-        let dir = dest.deletingLastPathComponent()
-        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("out-1.svg").path))
-        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("out-2.svg").path))
+        let svg = try String(contentsOf: dest, encoding: .utf8)
+        #expect(svg.contains("<svg"))   // both pages, stacked in one file
+    }
+
+    @Test func exportsPNGPerPageWhenMultiPage() async throws {
+        let doc = try tempDocURL()
+        let dir = doc.deletingLastPathComponent()
+        let dest = dir.appendingPathComponent("out.png")
+        let diagnostics = await TypstEngine.export(
+            source: "one\n#pagebreak()\ntwo", documentURL: doc, format: .png, to: dest)
+        #expect(diagnostics.filter { $0.severity == .error }.isEmpty)
+        let magic: [UInt8] = [0x89, 0x50, 0x4E, 0x47]
+        for page in 1...2 {
+            let url = dir.appendingPathComponent("out-\(page).png")
+            let data = try Data(contentsOf: url)
+            #expect(data.starts(with: magic))
+        }
+        #expect(!FileManager.default.fileExists(atPath: dest.path),
+                "multi-page PNG never writes the un-numbered name")
+    }
+
+    @Test func singlePagePNGUsesThePlainName() async throws {
+        let doc = try tempDocURL()
+        let dest = doc.deletingLastPathComponent().appendingPathComponent("one.png")
+        let diagnostics = await TypstEngine.export(
+            source: "just one page", documentURL: doc, format: .png, to: dest)
+        #expect(diagnostics.filter { $0.severity == .error }.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: dest.path))
+    }
+
+    @Test func exportSurfacesCompileErrorsAndWritesNothing() async throws {
+        let doc = try tempDocURL()
+        let dest = doc.deletingLastPathComponent().appendingPathComponent("bad.svg")
+        let diagnostics = await TypstEngine.export(
+            source: "#nonexistent()", documentURL: doc, format: .svg, to: dest)
+        #expect(diagnostics.contains { $0.severity == .error && $0.line == 1 })
+        #expect(!FileManager.default.fileExists(atPath: dest.path))
     }
 
     /// The whole notes convention hinges on this: the bundled package installs into
@@ -632,8 +631,8 @@ struct TypstCompilerTests {
         #task[Buy milk]
         #task(done: true, due: "2026-07-20", tags: ("errands",))[Post letter]
         """
-        let output = await TypstCompiler.compile(source: source,
-                                                 documentURL: try tempDocURL())
+        let output = await TypstEngine.compile(source: source,
+                                               documentURL: try tempDocURL())
         #expect(output.diagnostics.filter { $0.severity == .error }.isEmpty)
         #expect(output.pdf != nil)
     }

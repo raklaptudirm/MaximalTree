@@ -13,6 +13,7 @@ typst = "0.15"
 typst-pdf = "0.15"
 typst-layout = "0.15"
 typst-render = "0.15"
+typst-svg = "0.15"
 # fonts + embedded fallbacks only — no package downloads, no networking, no openssl.
 # (@local packages are resolved by our World from the data directory.)
 typst-kit = { version = "0.15", default-features = false, features = ["scan-fonts", "embedded-fonts"] }
