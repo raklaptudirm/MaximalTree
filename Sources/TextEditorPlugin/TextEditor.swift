@@ -48,8 +48,17 @@ struct TextEditorCanvas: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
+            if !host.isZenMode {
+                header
+                Divider()
+            } else {
+                // The header's Save button carries the shortcut — keep ⌘S
+                // alive while the header is hidden.
+                Button("", action: save)
+                    .keyboardShortcut("s", modifiers: .command)
+                    .frame(width: 0, height: 0)
+                    .opacity(0)
+            }
 
             if loadedNode != nodeID {
                 ProgressView()

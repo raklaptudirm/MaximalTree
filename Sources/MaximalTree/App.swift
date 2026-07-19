@@ -11,7 +11,15 @@ struct MaximalTreeApp: App {
             ContentView()
                 .environment(model.host)
                 .environment(model)
-                .task { model.start() }
+                .task {
+                    model.start()
+                    // Debug hook: MAXIMALTREE_ZEN=1 boots straight into zen so
+                    // window-chrome issues can be inspected from the CLI.
+                    if ProcessInfo.processInfo.environment["MAXIMALTREE_ZEN"] == "1" {
+                        try? await Task.sleep(for: .seconds(1))
+                        model.toggleZenMode()
+                    }
+                }
         }
         .commands { AppCommands(model: model) }
     }
@@ -30,6 +38,8 @@ final class AppModel {
 
     /// Whether the command palette overlay is showing.
     var paletteVisible = false
+    /// Canvas-only view; see `HostContext.isZenMode` for the canvas contract.
+    var isZenMode: Bool { host.isZenMode }
     /// Prompt state for the workspace name alerts, settable from any surface
     /// (toolbar menu, menu bar); ContentView presents the alerts.
     var showingCreateWorkspace = false
@@ -83,6 +93,8 @@ final class AppModel {
     func selectTab(_ i: Int) { store?.selectTab(i) }
 
     // Canvas splits. "Right" = side by side, "down" = stacked.
+    func toggleZenMode() { host._setZenMode(!host.isZenMode) }
+
     func splitPaneRight() { store?.splitActivePane(horizontal: true) }
     func splitPaneDown() { store?.splitActivePane(horizontal: false) }
     func closeActivePane() { store?.closeActivePane() }

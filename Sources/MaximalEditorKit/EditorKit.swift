@@ -327,6 +327,11 @@ public struct MaximalEditor: NSViewRepresentable {
 
         textView.highlightSelectedLine = true
         textView.allowsUndo = true
+        // The shell owns editor placement (it never sits under window chrome in
+        // normal mode, and zen deliberately extends it to the top edge) — don't
+        // let AppKit re-inset it against the title bar, which would recreate
+        // zen's dead strip inside the scroll view.
+        scrollView.automaticallyAdjustsContentInsets = false
         apply(style: style, to: textView)
         context.coordinator.installObservers(for: textView, in: scrollView)
 

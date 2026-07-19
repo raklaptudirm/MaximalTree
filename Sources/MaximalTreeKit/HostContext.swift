@@ -24,6 +24,10 @@ public final class HostContext {
     /// Canvases observe this (`.onChange`) and act when `target` is their node.
     /// The nonce makes repeat jumps to the same fragment observable.
     public internal(set) var activeFragment: NodeFragment?
+    /// Zen mode: the host is showing the canvas alone — no sidebar, inspector,
+    /// tab strip, or toolbar. Canvases should shed their own chrome too
+    /// (headers, status rows, anything that isn't the content).
+    public internal(set) var isZenMode = false
 
     // Observable caches, filled by the backend.
     internal var nodes: [NodeID: Node] = [:]
@@ -111,6 +115,7 @@ public final class HostContext {
     public func _setFocus(_ id: NodeID?) { focusedNode = id }
     public func _setSelection(_ ids: [NodeID]) { selection = ids }
     public func _postFragment(_ fragment: NodeFragment?) { activeFragment = fragment }
+    public func _setZenMode(_ zen: Bool) { isZenMode = zen }
 
     /// Rewrite every cached reference to `old` as `new` after a rename. Note this is
     /// shallow: for a directory rename, descendant URIs also change, so the caller

@@ -66,6 +66,18 @@ import Foundation
 }
 
 @MainActor
+@Suite struct ZenModeTests {
+    @Test func zenFlagRoundTrips() {
+        let host = HostContext()
+        #expect(!host.isZenMode)
+        host._setZenMode(true)
+        #expect(host.isZenMode)
+        host._setZenMode(false)
+        #expect(!host.isZenMode)
+    }
+}
+
+@MainActor
 @Suite struct WorkspaceStoreTests {
     /// Fresh directory per test so libraries and legacy files can't collide.
     private func tempLibraryURL() throws -> URL {

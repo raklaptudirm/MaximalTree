@@ -10,13 +10,18 @@ struct ContentView: View {
     @Environment(HostContext.self) private var host
     @State private var inspectorVisible = true
     @State private var workspaceNameDraft = ""
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    /// The inspector state to restore when zen mode ends.
+    @State private var inspectorVisibleBeforeZen = true
+    /// The hosting window, for zen title-bar styling.
+    @State private var window: NSWindow?
 
     var body: some View {
         @Bindable var model = model
         // Two columns + a real trailing inspector. (A three-column split view makes
         // the *detail* column the flexible one, which handed the inspector all the
         // slack; `.inspector` keeps the canvas flexible and the inspector sized.)
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             ExplorerSidebar()
                 .navigationSplitViewColumnWidth(min: 180, ideal: 240)
                 .toolbar {
@@ -39,10 +44,15 @@ struct ContentView: View {
                 }
         } detail: {
             VStack(spacing: 0) {
-                TabStrip()
-                Divider()
+                if !host.isZenMode {
+                    TabStrip()
+                    Divider()
+                }
                 CanvasPane()
             }
+            // Zen: without this the hidden title bar leaves a 52pt dead strip —
+            // SwiftUI keeps laying the canvas out below the top safe area.
+            .ignoresSafeArea(.container, edges: host.isZenMode ? .top : [])
             .inspector(isPresented: $inspectorVisible) {
                 InspectorPane()
                     .inspectorColumnWidth(min: 200, ideal: 260, max: 420)
@@ -60,6 +70,32 @@ struct ContentView: View {
         // subtitle. Plugin canvases must not set navigationTitle (see HACKING.md).
         .navigationTitle(model.activeWorkspaceName)
         .navigationSubtitle(host.focusedNode.flatMap { host.node($0)?.label } ?? "")
+        // Zen: the canvas, alone. Collapse both side panes and the toolbar;
+        // restore the inspector to how the user had it on the way out.
+        .toolbar(host.isZenMode ? .hidden : .automatic, for: .windowToolbar)
+        .background(WindowAccessor { window = $0 })
+        .onChange(of: host.isZenMode) { _, zen in
+            if zen {
+                inspectorVisibleBeforeZen = inspectorVisible
+                inspectorVisible = false
+                columnVisibility = .detailOnly
+            } else {
+                inspectorVisible = inspectorVisibleBeforeZen
+                columnVisibility = .all
+            }
+            // The empty title bar would linger as a dead strip. Extending
+            // content beneath it invites this OS's scroll-edge glass instead
+            // (a blurred band) — so don't: keep content below, and make the
+            // title-bar area *blend* — transparent, no separator, no toolbar,
+            // window background matching the canvas. It reads as padding.
+            if let window {
+                window.titleVisibility = zen ? .hidden : .visible
+                window.titlebarAppearsTransparent = zen
+                window.titlebarSeparatorStyle = zen ? .none : .automatic
+                window.toolbar?.isVisible = !zen
+                window.backgroundColor = zen ? .textBackgroundColor : .windowBackgroundColor
+            }
+        }
         .alert("New Workspace", isPresented: $model.showingCreateWorkspace) {
             TextField("Name", text: $workspaceNameDraft)
             Button("Create") { model.createWorkspace(named: workspaceNameDraft) }
@@ -179,6 +215,22 @@ struct ExplorerSidebar: View {
             }
         }
     }
+}
+
+/// Hands the hosting `NSWindow` to SwiftUI once it exists — for window-level
+/// styling SwiftUI doesn't expose (zen's title-bar dissolve).
+private struct WindowAccessor: NSViewRepresentable {
+    let onWindow: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { [weak view] in
+            if let window = view?.window { onWindow(window) }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
 /// The genuine macOS sidebar vibrancy. `.listStyle(.sidebar)` supplies this for free

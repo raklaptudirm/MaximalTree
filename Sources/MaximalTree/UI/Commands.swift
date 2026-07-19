@@ -10,6 +10,11 @@ struct AppCommands: Commands {
         // Pane commands live in the system View menu, next to its layout controls.
         CommandGroup(after: .sidebar) {
             Divider()
+            Button(model.isZenMode ? "Exit Zen Mode" : "Enter Zen Mode") {
+                model.toggleZenMode()
+            }
+            .keyboardShortcut("z", modifiers: [.command, .control])
+            Divider()
             Button("Split Right") { model.splitPaneRight() }
                 .keyboardShortcut("d", modifiers: .command)
             Button("Split Down") { model.splitPaneDown() }

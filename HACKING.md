@@ -354,6 +354,12 @@ registry.registerInspector(forType: "myscheme.thing") { id, host in
 views write ordinary strongly-typed SwiftUI. Pass `HostContext` into the environment so
 your views can observe it.
 
+**Zen mode**: `HostContext.isZenMode` is true while the host shows the canvas alone
+(no sidebar, inspector, tab strip, or toolbar — toggled from the View menu, ⌃⌘Z).
+Canvases should observe it and shed their own chrome too: headers, status rows,
+anything that isn't the content. If a hidden control carried a keyboard shortcut,
+keep the shortcut alive with a zero-sized stand-in (see the typst canvas's ⌘S).
+
 **`make` must be cheap.** It runs on the main actor during view updates — construct
 views, never do I/O or heavy computation there. Slow, movable work (engine warmup,
 first-use caches, big file reads) goes in the contribution's optional `prepare`
