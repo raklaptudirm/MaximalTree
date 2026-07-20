@@ -95,13 +95,17 @@ public struct Attributes: Hashable, Sendable {
 /// A node's icon, supplied by the plugin that owns it. The host never guesses an
 /// icon from a node's type — presentation is the provider's business.
 public struct NodeIcon: Hashable, Sendable {
-    /// An SF Symbol name.
+    /// An SF Symbol name — the fallback when `imageData` is absent or invalid.
     public let systemName: String
     public let tint: NodeTint?
+    /// A raster icon (favicons, thumbnails). Keep it tiny — it rides in the
+    /// node record through the sidebar. Rendered in place of the symbol.
+    public let imageData: Data?
 
-    public init(_ systemName: String, tint: NodeTint? = nil) {
+    public init(_ systemName: String, tint: NodeTint? = nil, imageData: Data? = nil) {
         self.systemName = systemName
         self.tint = tint
+        self.imageData = imageData
     }
 }
 

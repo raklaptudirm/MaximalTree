@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 public extension NodeTint {
     /// The SwiftUI color for this tint. Lives in the SDK so the host and every
@@ -33,7 +34,17 @@ public struct NodeIconView: View {
     }
 
     public var body: some View {
-        Image(systemName: icon?.systemName ?? "circle")
-            .foregroundStyle(overrideTint ?? icon?.tint?.color ?? Color.secondary)
+        if let data = icon?.imageData, let image = NSImage(data: data) {
+            // Raster icon (a favicon, say) — sized to sit like a symbol glyph.
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.medium)
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 14, height: 14)
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+        } else {
+            Image(systemName: icon?.systemName ?? "circle")
+                .foregroundStyle(overrideTint ?? icon?.tint?.color ?? Color.secondary)
+        }
     }
 }

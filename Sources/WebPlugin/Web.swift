@@ -4,47 +4,6 @@ import AppKit
 import WebKit
 import MaximalTreeKit
 
-// MARK: - Provider
-
-/// Serves `http(s)` pages as nodes. A web node's identity *is* its URL — no custom
-/// scheme, since a URL already canonicalizes into a `NodeID` (lowercased scheme,
-/// one trailing slash). Pages are leaves: links are followed inside the live view,
-/// not modeled as children.
-struct WebProvider: NodeProvider {
-    let schemes: Set<String> = ["http", "https"]
-
-    func resolve(_ uri: String) -> NodeID? { NodeID(WebProvider.normalize(uri)) }
-
-    func node(for id: NodeID) async -> Node? {
-        guard let url = URL(string: id.uri) else { return nil }
-        return Node(id: id, type: TypeID("web.page"),
-                    label: WebProvider.label(for: url),
-                    icon: NodeIcon("globe", tint: .blue))
-    }
-
-    func children(of id: NodeID, page cursor: Cursor?) async -> Page<Node> { Page(items: []) }
-
-    /// The start page a fresh browser node opens at.
-    static let homepage = "https://duckduckgo.com"
-
-    /// Turn address-bar input into a loadable URL: a bare domain gains `https://`,
-    /// anything word-like becomes a DuckDuckGo search — the same forgiveness a
-    /// real address bar offers.
-    static func normalize(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.contains("://") { return trimmed }
-        if trimmed.contains(".") && !trimmed.contains(" ") { return "https://" + trimmed }
-        let query = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? trimmed
-        return "https://duckduckgo.com/?q=\(query)"
-    }
-
-    /// A short label for the sidebar/subtitle: the host, dropping a leading `www.`.
-    static func label(for url: URL) -> String {
-        guard let host = url.host else { return url.absoluteString }
-        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
-    }
-}
-
 // MARK: - Session store
 
 /// One live browsing session per web node — the channel that lets the inspector
@@ -61,6 +20,9 @@ final class WebSessionStore {
     private var order: [NodeID] = []
     private let limit = 8
 
+    /// Favicon PNGs by host, fetched once per host per run.
+    @ObservationIgnored private var favicons: [String: Data?] = [:]
+
     /// The session for `id`, created (and pointed at `id`'s URL) on first use.
     func session(for id: NodeID) -> WebSession {
         if let existing = sessions[id] {
@@ -75,13 +37,31 @@ final class WebSessionStore {
         }
         return session
     }
+
+    /// The favicon for `host`, fetching `https://host/favicon.ico` on first ask.
+    /// Nil (cached) when the host has none — the globe fallback stays.
+    func favicon(for host: String) async -> Data? {
+        if let cached = favicons[host] { return cached }
+        favicons[host] = .some(nil)   // one fetch per host, even on failure
+        guard let url = URL(string: "https://\(host)/favicon.ico") else { return nil }
+        guard let (data, response) = try? await URLSession.shared.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              NSImage(data: data) != nil   // must actually decode
+        else { return nil }
+        favicons[host] = data
+        return data
+    }
 }
+
+// MARK: - Session
 
 /// Wraps a `WKWebView` and mirrors its navigation state into observable
 /// properties (KVO under the hood) so SwiftUI surfaces update as pages load.
+/// Also the web view's delegates: popups open in place, and load failures
+/// surface as an observable message instead of a silently blank view.
 @MainActor
 @Observable
-final class WebSession {
+final class WebSession: NSObject {
     let webView: WKWebView
 
     var url: URL?
@@ -90,11 +70,17 @@ final class WebSession {
     var isLoading = false
     var canGoBack = false
     var canGoForward = false
+    /// The last navigation failure, cleared when a new load starts.
+    var loadError: String?
 
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
 
     init(homeURL: URL?) {
         webView = WKWebView(frame: .zero)
+        super.init()
+        webView.navigationDelegate = self
+        webView.uiDelegate = self
+        webView.allowsBackForwardNavigationGestures = true
         observe()
         if let homeURL { webView.load(URLRequest(url: homeURL)) }
     }
@@ -134,6 +120,55 @@ final class WebSession {
     }
 }
 
+extension WebSession: WKNavigationDelegate {
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        loadError = nil
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
+                 withError error: Error) {
+        report(error)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        report(error)
+    }
+
+    private func report(_ error: Error) {
+        let nsError = error as NSError
+        // Cancellations (a new load superseding, a policy handoff) aren't failures.
+        guard !(nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled),
+              !(nsError.domain == "WebKitErrorDomain" && nsError.code == 102)
+        else { return }
+        loadError = nsError.localizedDescription
+    }
+}
+
+extension WebSession: WKUIDelegate {
+    /// Pages that target new windows (popups, `target="_blank"`) load in place —
+    /// one node, one view. Returning nil tells WebKit we handled it.
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction,
+                 windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if navigationAction.targetFrame == nil {
+            webView.load(navigationAction.request)
+        }
+        return nil
+    }
+}
+
+// MARK: - UI state
+
+/// The channel for controls that live outside the canvas (the Open Location
+/// action) to reach it.
+@MainActor
+@Observable
+final class WebUIState {
+    static let shared = WebUIState()
+    /// Set by "Open Location…" — the canvas for this node presents its prompt.
+    var locationPromptTarget: NodeID?
+}
+
 // MARK: - Plugin
 
 @objc(WebPlugin)
@@ -148,25 +183,85 @@ final class WebPlugin: NSObject, Plugin {
             matches: { $0.type == TypeID("web.page") },
             make: { id, host in AnyView(WebCanvas(nodeID: id).environment(host)) }
         ))
+        registry.register(canvas: CanvasContribution(
+            priority: 0,
+            matches: { $0.type == TypeID("web.bookmarks") },
+            make: { id, host in AnyView(BookmarksCanvas(nodeID: id).environment(host)) }
+        ))
         registry.register(inspector: InspectorContribution(
             matches: { $0.type == TypeID("web.page") },
             make: { id, host in AnyView(WebInspector(nodeID: id).environment(host)) }
         ))
 
         // Opening a page is a mount: the start page joins the sidebar as a root,
-        // and the address bar takes it anywhere from there.
+        // and the address bar / ⌘L take it anywhere from there.
         registry.register(action: Action(
             id: "web.newPage",
             title: "New Web Page",
             systemImage: "globe",
             shortcut: KeyboardShortcut("n", modifiers: [.command, .shift]),
-            handler: { ctx in ctx.host.mount(WebProvider.homepage) }
+            handler: { ctx in
+                ctx.host.mount(WebProvider.homepage)
+                ctx.host.openURI(WebProvider.homepage)
+            }
+        ))
+
+        registry.register(action: Action(
+            id: "web.openLocation",
+            title: "Open Location…",
+            systemImage: "link",
+            appliesTo: .type(TypeID("web.page")),
+            shortcut: KeyboardShortcut("l", modifiers: .command),
+            handler: { ctx in
+                guard let id = ctx.selection.first ?? ctx.focused else { return }
+                WebUIState.shared.locationPromptTarget = id
+            }
+        ))
+
+        // Bookmarks: real nodes under web://bookmarks, persisted across runs.
+        registry.register(action: Action(
+            id: "web.bookmark",
+            title: "Bookmark This Page",
+            systemImage: "star",
+            appliesTo: .type(TypeID("web.page")),
+            shortcut: KeyboardShortcut("d", modifiers: .command),
+            handler: { ctx in
+                guard let session = Self.session(in: ctx),
+                      let url = session.url else { return }
+                let title = session.title.isEmpty
+                    ? WebProvider.label(for: url) : session.title
+                BookmarkStore.shared.add(url: url.absoluteString, title: title)
+                ctx.host.notify([.modified(WebProvider.bookmarksID),
+                                 .childrenChanged(WebProvider.bookmarksID)])
+            }
+        ))
+        registry.register(action: Action(
+            id: "web.unbookmark",
+            title: "Remove Bookmark",
+            systemImage: "star.slash",
+            appliesTo: .custom { ctx in
+                guard let id = ctx.targets.first else { return false }
+                return BookmarkStore.shared.contains(id.uri)
+            },
+            handler: { ctx in
+                for id in ctx.targets { BookmarkStore.shared.remove(url: id.uri) }
+                ctx.host.notify([.modified(WebProvider.bookmarksID),
+                                 .childrenChanged(WebProvider.bookmarksID)])
+            }
+        ))
+        registry.register(action: Action(
+            id: "web.showBookmarks",
+            title: "Show Bookmarks",
+            systemImage: "star.fill",
+            handler: { ctx in
+                ctx.host.mount(WebProvider.bookmarksURI)
+                ctx.host.openURI(WebProvider.bookmarksURI)
+            }
         ))
 
         // Navigation acts on the live session, so — like the typst buffer ops —
-        // it can't be a pure data action; it reaches the session through the
-        // shared store. Reload carries a shortcut; back/forward stay unshortcut
-        // to avoid colliding with the host's history navigation (⌘[ / ⌘]).
+        // it reaches the session through the shared store. Back/forward stay
+        // unshortcut to avoid colliding with the host's history nav (⌘[ / ⌘]).
         registry.register(action: Action(
             id: "web.back",
             title: "Web: Back",
@@ -203,7 +298,7 @@ final class WebPlugin: NSObject, Plugin {
     }
 
     /// The live session for the web node an action targets (selection first,
-    /// then focus).
+    /// then focus). Never *creates* a session for a page that isn't open.
     @MainActor
     private static func session(in ctx: ActionContext) -> WebSession? {
         guard let id = ctx.selection.first ?? ctx.focused,

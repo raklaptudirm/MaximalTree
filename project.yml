@@ -232,6 +232,7 @@ targets:
       - path: Sources/TypstPlugin/TypstCore.swift
       - path: Sources/TypstPlugin/TypstEngine.swift
       - path: Sources/TypstPlugin/TypstLSP.swift
+      - path: Sources/WebPlugin/WebCore.swift
     dependencies:
       - target: MaximalTree          # hosts the tests; wires TEST_HOST/BUNDLE_LOADER
       - target: MaximalEditorKit

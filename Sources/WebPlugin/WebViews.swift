@@ -5,14 +5,24 @@ import MaximalTreeKit
 // MARK: - Canvas
 
 /// The page itself, and nothing else — the address bar and controls live in the
-/// inspector and Actions (per the canvas-is-content rule). The one concession is
-/// a thin top progress sliver while a page loads, the web equivalent of a status
-/// dot.
+/// inspector and Actions (per the canvas-is-content rule). The concessions are
+/// status, not controls: a thin top progress sliver while loading, and a load-
+/// failure banner. ⌘L presents the location prompt here (the canvas is where
+/// the keyboard lives).
 struct WebCanvas: View {
     let nodeID: NodeID
     @Environment(HostContext.self) private var host
+    @State private var locationDraft = ""
+    private let uiState = WebUIState.shared
 
     private var session: WebSession { WebSessionStore.shared.session(for: nodeID) }
+
+    private var showingLocationPrompt: Binding<Bool> {
+        Binding(
+            get: { uiState.locationPromptTarget == nodeID },
+            set: { if !$0 { uiState.locationPromptTarget = nil } }
+        )
+    }
 
     var body: some View {
         WebViewContainer(webView: session.webView)
@@ -23,21 +33,54 @@ struct WebCanvas: View {
                         .tint(.accentColor)
                 }
             }
-            // Keep the window subtitle honest as the user follows links: the node
-            // is fixed, but the live title/URL isn't.
-            .onChange(of: session.title) { _, _ in syncLabel() }
-            .onChange(of: session.url) { _, _ in syncLabel() }
+            .overlay(alignment: .bottom) {
+                if let error = session.loadError {
+                    HStack(spacing: 8) {
+                        Image(systemName: "wifi.exclamationmark")
+                        Text(error).lineLimit(2)
+                        Spacer()
+                        Button("Retry") { session.reload() }
+                    }
+                    .font(.callout)
+                    .padding(10)
+                    .background(.thinMaterial)
+                }
+            }
+            .alert("Open Location", isPresented: showingLocationPrompt) {
+                TextField("Search or enter address", text: $locationDraft)
+                Button("Go") { session.load(locationDraft) }
+                Button("Cancel", role: .cancel) {}
+            }
+            .onChange(of: uiState.locationPromptTarget) { _, target in
+                if target == nodeID {
+                    locationDraft = session.url?.absoluteString ?? ""
+                }
+            }
+            // Keep the node record honest as the user follows links: the node is
+            // fixed, but the live title/URL/site aren't.
+            .onChange(of: session.title) { _, _ in syncNodeRecord() }
+            .onChange(of: session.url) { _, _ in syncNodeRecord() }
     }
 
-    /// Reflect the live page into the node record so the tab and subtitle track it.
-    private func syncLabel() {
+    /// Reflect the live page into the node record — label from the title, icon
+    /// from the site's favicon — so the sidebar, tab, and subtitle track it.
+    private func syncNodeRecord() {
         guard var node = host.node(nodeID) else { return }
         let live = session.title.isEmpty
             ? session.url.map(WebProvider.label(for:)) ?? node.label
             : session.title
-        guard live != node.label else { return }
-        node.label = live
-        host._ingest(node)
+        if live != node.label {
+            node.label = live
+            host._ingest(node)
+        }
+        guard let webHost = session.url?.host else { return }
+        Task { @MainActor in
+            guard let favicon = await WebSessionStore.shared.favicon(for: webHost),
+                  var node = host.node(nodeID),
+                  node.icon?.imageData != favicon else { return }
+            node.icon = NodeIcon("globe", tint: .blue, imageData: favicon)
+            host._ingest(node)
+        }
     }
 }
 
@@ -68,6 +111,59 @@ private struct WebViewContainer: NSViewRepresentable {
             webView.topAnchor.constraint(equalTo: container.topAnchor),
             webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
+    }
+}
+
+// MARK: - Bookmarks canvas
+
+/// The bookmarks root: a plain list of saved pages. Rows come from the host's
+/// child cache (the provider serves them), so bookmark/unbookmark actions
+/// refresh it through the ordinary `notify` path.
+struct BookmarksCanvas: View {
+    let nodeID: NodeID
+    @Environment(HostContext.self) private var host
+
+    var body: some View {
+        let children = host.children(of: nodeID)
+        Group {
+            if children.isEmpty {
+                ContentUnavailableView("No Bookmarks", systemImage: "star",
+                                       description: Text("Bookmark a page with ⌘D."))
+            } else {
+                List(children, id: \.self) { child in
+                    row(child)
+                }
+                .listStyle(.inset)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func row(_ id: NodeID) -> some View {
+        let node = host.node(id)
+        HStack(spacing: 8) {
+            NodeIconView(node?.icon)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(node?.label ?? id.uri).lineLimit(1)
+                Text(id.uri)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+            Button {
+                BookmarkStore.shared.remove(url: id.uri)
+                host.notify([.modified(WebProvider.bookmarksID),
+                             .childrenChanged(WebProvider.bookmarksID)])
+            } label: {
+                Image(systemName: "star.slash")
+            }
+            .buttonStyle(.borderless)
+            .help("Remove bookmark")
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { host.open(id) }
     }
 }
 
@@ -107,6 +203,7 @@ struct WebInspector: View {
                             .help("Reload")
                     }
                     Spacer()
+                    bookmarkToggle
                     Button { session.load(address) } label: { Image(systemName: "arrow.right.circle") }
                         .help("Go")
                 }
@@ -135,5 +232,30 @@ struct WebInspector: View {
         .onChange(of: session.url) { _, newValue in
             if !addressFocused { address = newValue?.absoluteString ?? "" }
         }
+    }
+
+    /// Star state reflects the *live* URL, mirroring the ⌘D / Remove actions.
+    @ViewBuilder
+    private var bookmarkToggle: some View {
+        let current = session.url?.absoluteString
+        let bookmarked = current.map(BookmarkStore.shared.contains) ?? false
+        Button {
+            guard let current else { return }
+            if bookmarked {
+                BookmarkStore.shared.remove(url: current)
+            } else {
+                let title = session.title.isEmpty
+                    ? session.url.map(WebProvider.label(for:)) ?? current
+                    : session.title
+                BookmarkStore.shared.add(url: current, title: title)
+            }
+            host.notify([.modified(WebProvider.bookmarksID),
+                         .childrenChanged(WebProvider.bookmarksID)])
+        } label: {
+            Image(systemName: bookmarked ? "star.fill" : "star")
+                .foregroundStyle(bookmarked ? .yellow : .secondary)
+        }
+        .disabled(current == nil)
+        .help(bookmarked ? "Remove bookmark" : "Bookmark this page")
     }
 }

@@ -81,10 +81,11 @@ Sources/
     Git.swift                   #   git:// URI model, git CLI, provider, branch anchors
     GitViews.swift              #   commit / list canvases + inspector
   WebPlugin/                    # reference AppKit-view canvas (loadable bundle)
-    Web.swift                   #   http(s) provider, WKWebView session store, actions
-    WebViews.swift              #   web-view canvas + address-bar inspector
+    WebCore.swift               #   http(s)+web:// provider, bookmark store (tested)
+    Web.swift                   #   WKWebView sessions (delegates, favicons), actions
+    WebViews.swift              #   page/bookmarks canvases + address-bar inspector
 Vendor/typst-ffi/               # Rust staticlib: typst compiler/parser/renderers (C ABI)
-Tests/MaximalTreeTests/         # swift-testing suite (140 tests)
+Tests/MaximalTreeTests/         # swift-testing suite (147 tests)
 ```
 
 The generated `MaximalTree.xcodeproj` is **not** committed — regenerate it (below).
