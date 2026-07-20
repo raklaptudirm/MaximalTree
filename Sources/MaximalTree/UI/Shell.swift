@@ -254,6 +254,7 @@ struct NodeRow: View {
     @Environment(HostContext.self) private var host
     @Environment(AppModel.self) private var model
     @State private var expanded = false
+    @State private var dropTargeted = false
 
     var body: some View {
         let node = host.node(nodeID)
@@ -304,6 +305,51 @@ struct NodeRow: View {
             NodeIconView(node?.icon)
             Text(node?.label ?? nodeID.uri)
                 .lineLimit(1)
+        }
+        // Tree drag-and-drop → the generic `.move` mutation. Dragging a row in
+        // the current multi-selection drags the whole selection (newline-joined
+        // URIs); container-ish rows (hasChildren — the host's only generic
+        // containment signal) accept drops, and the owning provider validates
+        // the actual move via `canApply`.
+        .draggable(dragPayload)
+        .background(dropTargeted ? Color.accentColor.opacity(0.25) : .clear,
+                    in: RoundedRectangle(cornerRadius: 4))
+        .modifier(DropTargetModifier(
+            enabled: node?.hasChildren == true,
+            isTargeted: $dropTargeted,
+            perform: { uris in
+                let ids = uris
+                    .flatMap { $0.split(separator: "\n") }
+                    .compactMap { NodeID(String($0)) }
+                let mutation = GraphMutation.move(ids, into: nodeID)
+                guard !ids.isEmpty, host.canApply(mutation) else { return false }
+                host.apply(mutation)
+                return true
+            }))
+    }
+
+    private var dragPayload: String {
+        let selection = host.selection
+        let ids = selection.contains(nodeID) && selection.count > 1 ? selection : [nodeID]
+        return ids.map(\.uri).joined(separator: "\n")
+    }
+}
+
+/// Attaches a String drop target only when `enabled` — files shouldn't light up
+/// as drop zones, and SwiftUI has no conditional-modifier form of
+/// `dropDestination` short of this.
+private struct DropTargetModifier: ViewModifier {
+    let enabled: Bool
+    @Binding var isTargeted: Bool
+    let perform: ([String]) -> Bool
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.dropDestination(for: String.self) { items, _ in
+                perform(items)
+            } isTargeted: { isTargeted = $0 }
+        } else {
+            content
         }
     }
 }

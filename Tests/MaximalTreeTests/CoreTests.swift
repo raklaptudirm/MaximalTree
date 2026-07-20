@@ -81,6 +81,57 @@ import Foundation
         #expect(page.items.first { $0.label == "a.txt" }?.anchor == nil)
     }
 
+    @Test func moveReparentsAndReportsRenames() throws {
+        let base = try makeTempTree()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let file = try #require(NodeID(fileURL: base.appendingPathComponent("a.txt")))
+        let sub = try #require(NodeID(fileURL: base.appendingPathComponent("sub")))
+
+        let provider = FileSystemProvider()
+        #expect(provider.supports(.move([file], into: sub)))
+
+        let changes = try FileSystemProvider.perform(.move([file], into: sub))
+        let moved = base.appendingPathComponent("sub/a.txt")
+        #expect(FileManager.default.fileExists(atPath: moved.path))
+        #expect(changes.contains(.renamed(from: file, to: NodeID(fileURL: moved)!)),
+                "a move is a rename — the host remaps open state from it")
+        #expect(changes.contains(.childrenChanged(NodeID(fileURL: base)!)))
+        #expect(changes.contains(.childrenChanged(sub)))
+    }
+
+    @Test func degenerateMovesAreRefused() throws {
+        let base = try makeTempTree()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let root = try #require(NodeID(fileURL: base))
+        let sub = try #require(NodeID(fileURL: base.appendingPathComponent("sub")))
+        let file = try #require(NodeID(fileURL: base.appendingPathComponent("a.txt")))
+
+        let provider = FileSystemProvider()
+        #expect(!provider.supports(.move([sub], into: sub)), "into itself")
+        #expect(!provider.supports(.move([root], into: sub)), "into own descendant")
+        #expect(!provider.supports(.move([file], into: root)), "no-op: already there")
+        #expect(!provider.supports(.move([file], into: file)), "destination not a directory")
+    }
+
+    @Test func createMakesUniquedFilesAndFolders() throws {
+        let base = try makeTempTree()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let root = try #require(NodeID(fileURL: base))
+
+        _ = try FileSystemProvider.perform(.create(in: root, name: "notes", asContainer: true))
+        var isDir: ObjCBool = false
+        #expect(FileManager.default.fileExists(
+            atPath: base.appendingPathComponent("notes").path, isDirectory: &isDir))
+        #expect(isDir.boolValue)
+
+        // Colliding names unique Finder-style, extension preserved.
+        let changes = try FileSystemProvider.perform(.create(in: root, name: "a.txt",
+                                                             asContainer: false))
+        #expect(changes == [.childrenChanged(root)])
+        #expect(FileManager.default.fileExists(
+            atPath: base.appendingPathComponent("a 2.txt").path))
+    }
+
     @Test func fileEventsMapToConservativeChanges() throws {
         let base = try makeTempTree()
         defer { try? FileManager.default.removeItem(at: base) }

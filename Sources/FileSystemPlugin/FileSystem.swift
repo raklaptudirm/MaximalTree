@@ -139,6 +139,23 @@ extension FileSystemProvider: MutatingNodeProvider {
         switch mutation {
         case .rename(let id, _): return id.fileURL != nil
         case .delete(let ids): return !ids.isEmpty && ids.allSatisfy { $0.fileURL != nil }
+        case .move(let ids, let dest):
+            guard !ids.isEmpty, ids.allSatisfy({ $0.fileURL != nil }),
+                  let destURL = dest.fileURL else { return false }
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: destURL.path, isDirectory: &isDir),
+                  isDir.boolValue else { return false }
+            // No moves into yourself or your own descendant, and no no-op moves
+            // to the current parent.
+            return ids.allSatisfy { id in
+                guard let url = id.fileURL else { return false }
+                let source = url.standardizedFileURL.path
+                let target = destURL.standardizedFileURL.path
+                return target != source
+                    && !(target + "/").hasPrefix(source + "/")
+                    && url.deletingLastPathComponent().standardizedFileURL.path != target
+            }
+        case .create(let parent, _, _): return parent.fileURL != nil
         @unknown default: return false
         }
     }
@@ -185,8 +202,61 @@ extension FileSystemProvider: MutatingNodeProvider {
             if changes.isEmpty, let firstError { throw firstError }
             return changes
 
+        case .move(let ids, let dest):
+            guard let destURL = dest.fileURL else { throw FileSystemError.badDestination }
+            var changes: [NodeChange] = []
+            var touchedParents = Set<NodeID>()
+            for id in ids {
+                guard let url = id.fileURL else { continue }
+                let target = destURL.appendingPathComponent(url.lastPathComponent)
+                try fm.moveItem(at: url, to: target)
+                guard let newID = NodeID(fileURL: target) else { throw FileSystemError.badDestination }
+                // Identity is location: a move is a rename, and the host remaps
+                // tabs/history/selection from the reported pair.
+                changes.append(.renamed(from: id, to: newID))
+                if let parent = NodeID(fileURL: url.deletingLastPathComponent()) {
+                    touchedParents.insert(parent)
+                }
+            }
+            touchedParents.insert(dest)
+            changes += touchedParents.map { .childrenChanged($0) }
+            return changes
+
+        case .create(let parent, let name, let asContainer):
+            guard let base = parent.fileURL else { throw FileSystemError.badDestination }
+            let url = base.appendingPathComponent(uniqueName(name, in: base))
+            if asContainer {
+                try fm.createDirectory(at: url, withIntermediateDirectories: false)
+            } else {
+                guard fm.createFile(atPath: url.path, contents: Data()) else {
+                    throw FileSystemError.badDestination
+                }
+            }
+            return [.childrenChanged(parent)]
+
         @unknown default:
             return []
+        }
+    }
+
+    /// Finder-style collision handling: "name", "name 2", "name 3", … (the
+    /// extension, when present, stays at the end).
+    static func uniqueName(_ name: String, in directory: URL) -> String {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: directory.appendingPathComponent(name).path) else {
+            return name
+        }
+        let ns = name as NSString
+        let ext = ns.pathExtension
+        let stem = ns.deletingPathExtension
+        var counter = 2
+        while true {
+            let candidate = ext.isEmpty ? "\(stem) \(counter)"
+                                        : "\(stem) \(counter).\(ext)"
+            if !fm.fileExists(atPath: directory.appendingPathComponent(candidate).path) {
+                return candidate
+            }
+            counter += 1
         }
     }
 }
@@ -254,21 +324,8 @@ final class FileSystemPlugin: NSObject, Plugin {
                 ctx.selectedNodes.count == 1 && ctx.selectedNodes[0].type == directoryType
             },
             handler: { ctx in
-                guard let dir = ctx.selection.first, let base = dir.fileURL else { return }
-                let fm = FileManager.default
-                var name = "untitled folder"
-                var counter = 2
-                while fm.fileExists(atPath: base.appendingPathComponent(name).path) {
-                    name = "untitled folder \(counter)"
-                    counter += 1
-                }
-                do {
-                    try fm.createDirectory(at: base.appendingPathComponent(name),
-                                           withIntermediateDirectories: false)
-                    ctx.host.notify([.childrenChanged(dir)])
-                } catch {
-                    NSLog("[FileSystemPlugin] new folder failed: \(error.localizedDescription)")
-                }
+                guard let dir = ctx.selection.first else { return }
+                ctx.host.apply(.create(in: dir, name: "untitled folder", asContainer: true))
             }
         ))
 

@@ -242,6 +242,8 @@ final class GraphStore: GraphBackend {
         switch mutation {
         case .rename(let id, _): anchor = id
         case .delete(let ids): anchor = ids.first
+        case .move(let ids, _): anchor = ids.first
+        case .create(let parent, _, _): anchor = parent
         @unknown default: anchor = nil
         }
         guard let anchor else { return nil }

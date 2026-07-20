@@ -84,7 +84,7 @@ Sources/
     Web.swift                   #   http(s) provider, WKWebView session store, actions
     WebViews.swift              #   web-view canvas + address-bar inspector
 Vendor/typst-ffi/               # Rust staticlib: typst compiler/parser/renderers (C ABI)
-Tests/MaximalTreeTests/         # swift-testing suite (137 tests)
+Tests/MaximalTreeTests/         # swift-testing suite (140 tests)
 ```
 
 The generated `MaximalTree.xcodeproj` is **not** committed — regenerate it (below).
@@ -235,8 +235,12 @@ its *own* scheme, so navigating into them uses their real owner.
 ### Writes
 
 Structural edits go through a small, host-defined vocabulary — `GraphMutation`
-(`.rename`, `.delete`; more later) — that providers opt into by conforming to
-`MutatingNodeProvider`. `apply(_:)` **returns the `NodeChange`s it caused**
+(`.rename`, `.delete`, `.move`, `.create`) — that providers opt into by conforming
+to `MutatingNodeProvider`. A `.move` IS a rename (identity is location): report
+`.renamed(from:to:)` per item and the host remaps open state. `.create` makes an
+empty child, uniquing names Finder-style; content-bearing creation stays an
+Action. The sidebar's drag-and-drop drives `.move` — rows drag their selection,
+container rows accept drops, `canApply` validates. `apply(_:)` **returns the `NodeChange`s it caused**
 (`.renamed(from:to:)`, `.removed`, `.childrenChanged`), and the host applies those to
 its caches and remaps navigation history/selection — crucial because a rename changes a
 node's `NodeID`. Call `HostContext.apply(_:)` to trigger one, `canApply(_:)` to gate UI.
@@ -546,8 +550,6 @@ nodes, zen mode, structural writes (rename + delete-to-Trash), and the full typs
 stack (in-process compile/preview/export, parser-backed highlighting and outline,
 rendered math, tinymist completions). Known gaps, roughly in order:
 
-- **More mutations** — `.move` (needs tree drag-and-drop) and `.create` as
-  first-class vocabulary (creation currently works via actions + `notify`).
 - **Dynamic plugins** — loading is launch-time from the bundled `PlugIns/`. No
   external user plugin directory, enable/disable, or revocable registrations yet.
 - **Typst follow-ups** — tinymist hover/go-to-definition, snippet tab-stops, and

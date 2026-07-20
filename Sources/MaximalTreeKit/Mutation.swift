@@ -6,6 +6,14 @@ import Foundation
 public enum GraphMutation: Sendable {
     case rename(NodeID, to: String)
     case delete([NodeID])
+    /// Reparent nodes under a new container (the tree's drag-and-drop). Identity
+    /// is location, so a move IS a rename: the provider reports
+    /// `.renamed(from:to:)` per item and the host remaps open state.
+    case move([NodeID], into: NodeID)
+    /// Create an empty child (a container — directory-like — or a leaf) under a
+    /// parent. Providers should unique the name Finder-style rather than fail
+    /// on collision. Content-bearing creation (templated notes) stays an Action.
+    case create(in: NodeID, name: String, asContainer: Bool)
 }
 
 /// What a mutation actually changed, returned by `apply` so the host can update its
