@@ -95,6 +95,72 @@ private struct PagingProvider: NodeProvider {
     }
 }
 
+/// A streaming provider whose stream the test drives by hand, plus a flag
+/// proving the host terminated it on unmount.
+private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider,
+                                           @unchecked Sendable {
+    let schemes: Set<String> = ["stub"]
+    let continuationBox = Box()
+
+    final class Box: @unchecked Sendable {
+        var continuation: AsyncStream<[NodeChange]>.Continuation?
+        var terminated = false
+    }
+
+    func resolve(_ uri: String) -> NodeID? { NodeID(uri) }
+    func node(for id: NodeID) async -> Node? { Node(id: id, type: "stub.item") }
+    func children(of id: NodeID, page cursor: Cursor?) async -> Page<Node> { Page(items: []) }
+
+    func changes(under root: NodeID) -> AsyncStream<[NodeChange]>? {
+        AsyncStream { continuation in
+            continuationBox.continuation = continuation
+            continuation.onTermination = { [box = continuationBox] _ in
+                box.terminated = true
+            }
+        }
+    }
+}
+
+@MainActor
+@Suite struct ChangeStreamTests {
+    private func waitUntil(_ condition: () -> Bool) async throws {
+        for _ in 0..<200 where !condition() {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(condition())
+    }
+
+    @Test func externalChangesFlowIntoTheFunnelAndStopOnUnmount() async throws {
+        let context = HostContext()
+        let registry = Registry()
+        let provider = StreamingStubProvider()
+        registry.register(provider: provider)
+        let store = GraphStore(context: context, registry: registry, nav: NavigationModel())
+
+        store.mount("stub://root")
+        let root = try #require(NodeID("stub://root"))
+        try await waitUntil { provider.continuationBox.continuation != nil }
+
+        // An external batch invalidates the cache like a plugin notify would.
+        context._setChildren([], of: root)
+        provider.continuationBox.continuation?.yield([.childrenChanged(root)])
+        try await waitUntil { context.cachedChildren(of: root) == nil }
+
+        // Unmounting cancels the consuming task, which terminates the stream.
+        store.unmount(root)
+        try await waitUntil { provider.continuationBox.terminated }
+    }
+
+    @Test func nonStreamingRootsAreSimplyNotWatched() throws {
+        let context = HostContext()
+        let registry = Registry()
+        registry.register(provider: PagingProvider())   // not a streaming provider
+        let store = GraphStore(context: context, registry: registry, nav: NavigationModel())
+        store.mount("stub://root")   // must not crash or leak a task
+        #expect(context.roots.count == 1)
+    }
+}
+
 @MainActor
 @Suite struct PhonyNodeTests {
     private func makeStore() -> (GraphStore, HostContext, NavigationModel) {

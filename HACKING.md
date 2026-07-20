@@ -84,7 +84,7 @@ Sources/
     Web.swift                   #   http(s) provider, WKWebView session store, actions
     WebViews.swift              #   web-view canvas + address-bar inspector
 Vendor/typst-ffi/               # Rust staticlib: typst compiler/parser/renderers (C ABI)
-Tests/MaximalTreeTests/         # swift-testing suite (131 tests)
+Tests/MaximalTreeTests/         # swift-testing suite (137 tests)
 ```
 
 The generated `MaximalTree.xcodeproj` is **not** committed — regenerate it (below).
@@ -250,6 +250,16 @@ bytes) must be reported with `HostContext.notify(_ changes: [NodeChange])` so th
 caches stay truthful — same funnel, plugin-initiated. `.childrenChanged` refetches a
 child list, `.modified` refetches one node record in place. The FileSystem plugin's
 "New Folder" action and the TextEditor's save are the reference uses.
+
+**External changes** (another app editing files) flow through the same funnel via
+`ChangeStreamingProvider`: return an `AsyncStream<[NodeChange]>` from
+`changes(under:)` and the host consumes one stream per mounted root you own,
+starting and stopping them as roots mount, unmount, and switch. Disk-backed
+providers wrap the SDK's `FileTreeWatcher` (recursive FSEvents, latency-coalesced).
+Be conservative: emit `.childrenChanged`/`.modified`, never `.removed`/`.renamed`
+from external events — event APIs can't pair renames, and a wrong removal tears
+down open tabs. References: the FileSystem provider (event→change mapping, hidden
+dot-directory churn filtered) and the typst agenda (any `.typ` change re-scans).
 
 ### Pagination
 
@@ -536,10 +546,6 @@ nodes, zen mode, structural writes (rename + delete-to-Trash), and the full typs
 stack (in-process compile/preview/export, parser-backed highlighting and outline,
 rendered math, tinymist completions). Known gaps, roughly in order:
 
-- **External change feed** — plugins report their *own* side effects via `notify`,
-  but nothing watches for edits by other apps yet. A provider change-stream
-  (FSEvents/`DispatchSource`) would feed the same `NodeChange` funnel — the typst
-  agenda's manual Refresh action is the visible symptom.
 - **More mutations** — `.move` (needs tree drag-and-drop) and `.create` as
   first-class vocabulary (creation currently works via actions + `notify`).
 - **Dynamic plugins** — loading is launch-time from the bundled `PlugIns/`. No

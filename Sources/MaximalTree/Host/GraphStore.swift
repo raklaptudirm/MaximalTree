@@ -36,6 +36,10 @@ final class GraphStore: GraphBackend {
     private var childrenInFlight: Set<NodeID> = []
     private var relatedInFlight: Set<NodeID> = []
 
+    /// One consuming task per mounted root whose provider streams external
+    /// changes. Synced against the root set at every mount/unmount/switch.
+    private var changeStreams: [NodeID: Task<Void, Never>] = [:]
+
     /// Fired after the root set changes (mount/unmount) so the owner can persist the
     /// workspace. Lives here because mounting isn't only a UI affordance — plugins
     /// mount too (e.g. "Open as Git Repository"), and those must persist as well.
@@ -163,6 +167,7 @@ final class GraphStore: GraphBackend {
         roots.append(id)
         context._setRoots(roots)
         ingestNode(id)
+        syncChangeStreams()
         onRootsChanged?()
     }
 
@@ -173,6 +178,7 @@ final class GraphStore: GraphBackend {
         guard roots.contains(id) else { return }
         roots.removeAll { $0 == id }
         context._setRoots(roots)
+        syncChangeStreams()
         onRootsChanged?()
     }
 
@@ -203,9 +209,9 @@ final class GraphStore: GraphBackend {
     /// funnel as mutation results — one code path keeps the cache truthful.
     func notify(_ changes: [NodeChange]) { process(changes) }
 
-    /// Apply reported changes to caches + navigation, then re-sync focus to whatever
-    /// the active tab now points at. This is the single funnel that future external
-    /// change-feed events will also flow through.
+    /// Apply reported changes to caches + navigation, then re-sync focus to
+    /// whatever the active tab now points at. The single funnel: mutation
+    /// results, plugin `notify`s, and external change streams all land here.
     private func process(_ changes: [NodeChange]) {
         for change in changes {
             switch change {
@@ -245,6 +251,7 @@ final class GraphStore: GraphBackend {
     func setRoots(_ ids: [NodeID]) {
         context._setRoots(ids)
         for id in ids { ingestNode(id) }
+        syncChangeStreams()
     }
 
     /// Swap the whole root set for a workspace switch: tabs, history, focus, and
@@ -255,6 +262,29 @@ final class GraphStore: GraphBackend {
         nav.reset()
         setRoots(ids)
         didNavigate()
+    }
+
+    // MARK: External change streams
+
+    /// Start watching newly mounted roots and stop watching unmounted ones.
+    /// External batches flow into `process` — the same funnel as `notify`, so
+    /// an edit by another app refreshes the app exactly like our own writes.
+    private func syncChangeStreams() {
+        let desired = Set(context.roots)
+        for (root, task) in changeStreams where !desired.contains(root) {
+            task.cancel()
+            changeStreams[root] = nil
+        }
+        for root in desired where changeStreams[root] == nil {
+            guard let provider = provider(for: root) as? ChangeStreamingProvider,
+                  let stream = provider.changes(under: root) else { continue }
+            changeStreams[root] = Task { @MainActor [weak self] in
+                for await changes in stream {
+                    guard !Task.isCancelled else { break }
+                    self?.process(changes)
+                }
+            }
+        }
     }
 
     // MARK: Async loads

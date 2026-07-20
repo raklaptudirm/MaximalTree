@@ -81,6 +81,79 @@ import Foundation
         #expect(page.items.first { $0.label == "a.txt" }?.anchor == nil)
     }
 
+    @Test func fileEventsMapToConservativeChanges() throws {
+        let base = try makeTempTree()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let existing = base.appendingPathComponent("a.txt").path
+        let vanished = base.appendingPathComponent("gone.txt").path
+
+        let changes = FileSystemProvider.nodeChanges(
+            for: [.init(path: existing, mustRescanSubtree: false),
+                  .init(path: vanished, mustRescanSubtree: false)],
+            rootPath: base.path)
+
+        let parent = NodeID(fileURL: base)
+        // One deduped childrenChanged for the shared parent…
+        #expect(changes.filter {
+            if case .childrenChanged(let id) = $0 { return id == parent } else { return false }
+        }.count == 1)
+        // …modified only for the path that still exists (never .removed).
+        #expect(changes.contains {
+            if case .modified(let id) = $0 { return id == NodeID(fileURL: URL(fileURLWithPath: existing)) }
+            return false
+        })
+        #expect(!changes.contains { if case .removed = $0 { return true } else { return false } })
+    }
+
+    @Test func hiddenDirectoryChurnIsFiltered() throws {
+        let base = try makeTempTree()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let gitChurn = base.appendingPathComponent(".git/objects/ab/cdef").path
+        #expect(FileSystemProvider.nodeChanges(
+            for: [.init(path: gitChurn, mustRescanSubtree: false)],
+            rootPath: base.path).isEmpty)
+    }
+
+    @Test func rescanEventsInvalidateTheDirectoryItself() throws {
+        let base = try makeTempTree()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let changes = FileSystemProvider.nodeChanges(
+            for: [.init(path: base.path, mustRescanSubtree: true)],
+            rootPath: base.path)
+        #expect(changes == [.childrenChanged(NodeID(fileURL: base)!)])
+    }
+
+    @Test func liveWatcherReportsExternalWrites() async throws {
+        let base = try makeTempTree()
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let hit = expectationBox()
+        let watcher = try #require(FileTreeWatcher(path: base.path, latency: 0.1) { events in
+            if events.contains(where: { $0.path.hasSuffix("external.txt") }) {
+                hit.fulfill()
+            }
+        })
+        defer { watcher.stop() }
+
+        // Let the stream settle, then simulate another app writing a file.
+        try await Task.sleep(nanoseconds: 300_000_000)
+        try "outside edit".write(to: base.appendingPathComponent("external.txt"),
+                                 atomically: true, encoding: .utf8)
+
+        for _ in 0..<100 where !hit.isFulfilled {   // FSEvents latency: allow ~5s
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        #expect(hit.isFulfilled, "expected an FSEvents callback for the written file")
+    }
+
+    private final class ExpectationBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var fulfilled = false
+        func fulfill() { lock.lock(); fulfilled = true; lock.unlock() }
+        var isFulfilled: Bool { lock.lock(); defer { lock.unlock() }; return fulfilled }
+    }
+    private func expectationBox() -> ExpectationBox { ExpectationBox() }
+
     @Test func nodesCarryProviderSuppliedIcons() async throws {
         let base = try makeTempTree()
         defer { try? FileManager.default.removeItem(at: base) }

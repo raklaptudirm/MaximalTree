@@ -283,3 +283,67 @@ final class FileSystemPlugin: NSObject, Plugin {
         ))
     }
 }
+
+// MARK: - External change stream (FSEvents)
+
+/// Watch mounted directory roots for edits made by *other* apps (Finder,
+/// terminals, editors) and feed them into the host's change funnel — the same
+/// path our own saves take, so external edits refresh listings, outlines
+/// (contributed children re-fetch), and inspector stats automatically.
+extension FileSystemProvider: ChangeStreamingProvider {
+    func changes(under root: NodeID) -> AsyncStream<[NodeChange]>? {
+        guard root.scheme == "file", let rootURL = root.fileURL else { return nil }
+        let rootPath = rootURL.path
+        return AsyncStream { continuation in
+            let watcher = FileTreeWatcher(path: rootPath) { events in
+                let changes = FileSystemProvider.nodeChanges(for: events, rootPath: rootPath)
+                if !changes.isEmpty { continuation.yield(changes) }
+            }
+            guard let watcher else {
+                continuation.finish()
+                return
+            }
+            continuation.onTermination = { _ in watcher.stop() }
+        }
+    }
+
+    /// Map raw file events to the conservative change vocabulary: the parent's
+    /// listing changed, and — when the path still exists — the node itself was
+    /// modified. Never `.removed`/`.renamed`: FSEvents can't pair renames
+    /// reliably, and a wrong removal tears down open tabs.
+    static func nodeChanges(for events: [FileTreeWatcher.Event],
+                            rootPath: String) -> [NodeChange] {
+        var changes: [NodeChange] = []
+        var parents = Set<NodeID>()
+        var modified = Set<NodeID>()
+        for event in events {
+            guard !isInsideHiddenDirectory(event.path, underRoot: rootPath) else { continue }
+            let url = URL(fileURLWithPath: event.path)
+            if event.mustRescanSubtree {
+                // The kernel coalesced — refetch this whole directory's listing.
+                if let id = NodeID(fileURL: url), parents.insert(id).inserted {
+                    changes.append(.childrenChanged(id))
+                }
+                continue
+            }
+            if let parentID = NodeID(fileURL: url.deletingLastPathComponent()),
+               parents.insert(parentID).inserted {
+                changes.append(.childrenChanged(parentID))
+            }
+            if FileManager.default.fileExists(atPath: event.path),
+               let id = NodeID(fileURL: url), modified.insert(id).inserted {
+                changes.append(.modified(id))
+            }
+        }
+        return changes
+    }
+
+    /// Listings skip hidden files, so churn inside dot-directories (`.git` is
+    /// the loud one) is invisible anyway — don't let it thrash the caches.
+    static func isInsideHiddenDirectory(_ path: String, underRoot rootPath: String) -> Bool {
+        guard path.hasPrefix(rootPath) else { return false }
+        return path.dropFirst(rootPath.count)
+            .split(separator: "/")
+            .contains { $0.hasPrefix(".") }
+    }
+}

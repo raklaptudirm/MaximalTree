@@ -294,3 +294,30 @@ struct TaskInspector: View {
         .formStyle(.grouped)
     }
 }
+
+// MARK: - External change stream (agenda auto-refresh)
+
+/// Watch a mounted agenda's folder: any `.typ` change re-scans the agenda —
+/// the sidebar's task list through the host's funnel, and the live canvas
+/// through the same nonce the Refresh action bumps. The manual action stays
+/// as a force-refresh.
+extension TypstProvider: ChangeStreamingProvider {
+    func changes(under root: NodeID) -> AsyncStream<[NodeChange]>? {
+        guard let ref = TypstRef(uri: root.uri), ref.kind == .agenda else { return nil }
+        return AsyncStream { continuation in
+            let watcher = FileTreeWatcher(path: ref.fileURL.path) { events in
+                let relevant = events.contains {
+                    $0.mustRescanSubtree || $0.path.lowercased().hasSuffix(".typ")
+                }
+                guard relevant else { return }
+                continuation.yield([.childrenChanged(root)])
+                Task { @MainActor in TypstUIState.shared.agendaRefresh += 1 }
+            }
+            guard let watcher else {
+                continuation.finish()
+                return
+            }
+            continuation.onTermination = { _ in watcher.stop() }
+        }
+    }
+}

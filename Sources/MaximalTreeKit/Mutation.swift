@@ -12,7 +12,7 @@ public enum GraphMutation: Sendable {
 /// cache and remap navigation/selection without guessing. (Renames change identity,
 /// so only the provider can report the resulting `NodeID`.) The same event type will
 /// carry external-change notifications when a provider change-feed is added later.
-public enum NodeChange: Sendable {
+public enum NodeChange: Sendable, Equatable {
     /// A node's identity changed (rename/move). Host remaps open state old → new.
     case renamed(from: NodeID, to: NodeID)
     /// A node no longer exists. Host drops it from caches and open state.
