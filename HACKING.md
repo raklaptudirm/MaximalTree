@@ -48,6 +48,7 @@ Sources/
                                 #   (markup rendering, concealment, math overlays,
                                 #   completion triggering, scroll anchoring)
     EditorHighlighting.swift    #   token vocabulary, palette, Highlightr tokenizer
+    EditorLanguage.swift        #   file/tag → highlight.js language (130 languages)
     EditorCompletion.swift      #   completion seam onto the engine's window
     EditorMath.swift            #   rendered-math seam (baseline-annotated images)
   MaximalTreeKit/               # the plugin SDK (dynamic framework)
@@ -65,6 +66,7 @@ Sources/
     UI/                         #   Shell (3 panes + tabs + zen) + Commands (menu/palette)
   FileSystemPlugin/             # reference provider plugin (loadable bundle)
     FileSystem.swift            #   provider, mutations, symlink anchors, actions
+    FileIcons.swift             #   per-language icons (symbol = kind, tint = language)
     FileViews.swift             #   canvas (Quick Look) + inspector (editable)
   TextEditorPlugin/             # reference cross-plugin renderer (loadable bundle)
     TextEditor.swift            #   Highlightr-highlighted editor over filesystem files
@@ -85,7 +87,7 @@ Sources/
     Web.swift                   #   WKWebView sessions (delegates, favicons), actions
     WebViews.swift              #   page/bookmarks canvases + address-bar inspector
 Vendor/typst-ffi/               # Rust staticlib: typst compiler/parser/renderers (C ABI)
-Tests/MaximalTreeTests/         # swift-testing suite (147 tests)
+Tests/MaximalTreeTests/         # swift-testing suite (175 tests)
 ```
 
 The generated `MaximalTree.xcodeproj` is **not** committed — regenerate it (below).
@@ -286,6 +288,25 @@ persists into the active workspace automatically, no matter who initiated it (UI
 plugin action). Providers are entirely workspace-unaware.
 
 Seeding is **first-launch-only**: an empty workspace the user made stays empty.
+
+**Root folders** organize the sidebar within a workspace. A workspace's `RootLayout`
+— an ordered *tree* of `RootEntry`s (a root uri, or a `RootFolder` that itself holds
+entries, so folders nest) — is the source of truth for what the sidebar draws; the
+flat root set the graph core consumes (`context.roots`) is *derived* from it (a
+recursive flatten), so folders never leak below the host UI and providers stay
+unaware. `WorkspaceStore.reconcileRoots(_:placingNewInto:)` keeps the layout in step
+with the live root set on every mount/unmount: vanished roots are pruned at any depth
+(empty folders are kept — they're intentional), and newly mounted roots join the
+folder of the *current node's root* (so "New X" lands beside what you're looking at)
+or go loose. Deleting a folder spills its contents out where it sat — nothing is lost
+with its container.
+
+Reorganizing is `moveEntries(_ refs:toFolder:at:)` (roots and folders, by `EntryRef`),
+which pulls entries out of wherever they sit and reinserts them at an index, refusing
+to move a folder into its own subtree. The sidebar drives it by flattening the tree to
+a `RootSlot` list with an insertion `gap` before/after every row: gaps are the
+position-aware drop targets (insert at index), folder rows are the nesting drop
+targets (drop *onto* to move inside), and both roots and folders are draggable.
 
 ### Canvas splits
 

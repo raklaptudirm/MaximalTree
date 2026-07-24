@@ -73,3 +73,99 @@ import SwiftUI
         #expect(sections.map(\.priority) == [10, 5]) // sorted most-specific first
     }
 }
+
+/// Which files the text editor claims from Quick Look.
+///
+/// Regression: the matcher used to test *only* UTI conformance to `public.text`,
+/// but macOS registers no UTI for most source and config files — Rust, Nix,
+/// Elixir, Kotlin, `.conf` and friends resolve to `dyn.…` types that conform to
+/// nothing, and extensionless files (Makefile, Dockerfile) have no type at all.
+/// Those all fell through to Quick Look and couldn't be edited or highlighted.
+@Suite struct TextEditorMatchingTests {
+    private func node(_ path: String, uti: String? = nil,
+                      type: TypeID = "file.file") -> Node {
+        var attrs = Attributes()
+        if let uti { attrs["uti"] = .string(uti) }
+        return Node(id: NodeID(fileURL: URL(fileURLWithPath: path))!,
+                    type: type, attributes: attrs)
+    }
+
+    @Test func claimsSourceFilesMacOSHasNoUTIFor() {
+        // No UTI at all (the realistic case for these extensions).
+        #expect(TextEditorPlugin.handlesAsText(node("/p/main.rs")))
+        #expect(TextEditorPlugin.handlesAsText(node("/p/flake.nix")))
+        #expect(TextEditorPlugin.handlesAsText(node("/p/app.ex")))
+        #expect(TextEditorPlugin.handlesAsText(node("/p/Main.kt")))
+        #expect(TextEditorPlugin.handlesAsText(node("/p/server.conf")))
+        // A dynamic UTI conforms to nothing — must not disqualify the file.
+        #expect(TextEditorPlugin.handlesAsText(
+            node("/p/main.rs", uti: "dyn.ah62d4rv4ge81e62")))
+    }
+
+    @Test func claimsExtensionlessBuildFilesAndPlainText() {
+        #expect(TextEditorPlugin.handlesAsText(node("/p/Makefile")))
+        #expect(TextEditorPlugin.handlesAsText(node("/p/Dockerfile")))
+        #expect(TextEditorPlugin.handlesAsText(node("/p/LICENSE")))
+        #expect(TextEditorPlugin.handlesAsText(node("/p/.gitignore")))
+    }
+
+    @Test func stillClaimsAnythingTypedAsText() {
+        // The original path: a registered text UTI we have no grammar for.
+        #expect(TextEditorPlugin.handlesAsText(
+            node("/p/notes.weird", uti: "public.plain-text")))
+    }
+
+    @Test func leavesBinariesAndDirectoriesAlone() {
+        #expect(!TextEditorPlugin.handlesAsText(node("/p/photo.jpeg", uti: "public.jpeg")))
+        #expect(!TextEditorPlugin.handlesAsText(node("/p/archive.zip")))
+        // A directory named like a D source file is still a directory.
+        #expect(!TextEditorPlugin.handlesAsText(node("/p/src.d", type: "file.directory")))
+    }
+}
+
+/// End-to-end canvas resolution for source files, through the *real* plugin
+/// registrations: a node built by the FileSystem provider must resolve to the
+/// text editor's canvas (priority 100), not Quick Look (0).
+@MainActor
+@Suite struct SourceFileCanvasResolutionTests {
+    private func store() -> GraphStore {
+        let registry = Registry()
+        FileSystemPlugin().register(with: registry)   // Quick Look canvas, priority 0
+        TextEditorPlugin().register(with: registry)   // editor canvas, priority 100
+        return GraphStore(context: HostContext(), registry: registry, nav: NavigationModel())
+    }
+
+    private func tempDir() throws -> URL {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("canvas-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    @Test func sourceFilesResolveToTheEditorNotQuickLook() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = store()
+
+        // Files whose UTI is dynamic (or absent) — the ones that regressed.
+        for name in ["main.rs", "flake.nix", "app.ex", "Main.kt", "Dockerfile",
+                     "Makefile", "server.conf", "build.gradle", ".gitignore"] {
+            let url = dir.appendingPathComponent(name)
+            try "x = 1\n".write(to: url, atomically: true, encoding: .utf8)
+            let id = try #require(NodeID(fileURL: url))
+            let node = try #require(FileSystemProvider.makeNode(url: url, id: id))
+            #expect(store.canvas(for: node)?.priority == 100,
+                    "\(name) should open in the editor")
+        }
+    }
+
+    @Test func binariesStillFallThroughToQuickLook() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("image.jpeg")
+        try Data([0xFF, 0xD8, 0xFF]).write(to: url)
+        let id = try #require(NodeID(fileURL: url))
+        let node = try #require(FileSystemProvider.makeNode(url: url, id: id))
+        #expect(store().canvas(for: node)?.priority == 0)
+    }
+}

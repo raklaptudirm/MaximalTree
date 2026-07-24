@@ -10,6 +10,7 @@ struct ContentView: View {
     @Environment(HostContext.self) private var host
     @State private var inspectorVisible = true
     @State private var workspaceNameDraft = ""
+    @State private var folderNameDraft = ""
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     /// The inspector state to restore when zen mode ends.
     @State private var inspectorVisibleBeforeZen = true
@@ -34,12 +35,21 @@ struct ContentView: View {
                         .help("Switch workspace")
                     }
                     ToolbarItem {
-                        Button {
-                            model.addFolder()
+                        Menu {
+                            Button {
+                                model.addFolder()
+                            } label: {
+                                Label("Add Root…", systemImage: "externaldrive.badge.plus")
+                            }
+                            Button {
+                                model.beginCreateFolder()
+                            } label: {
+                                Label("New Folder", systemImage: "folder.badge.plus")
+                            }
                         } label: {
-                            Label("Add Folder", systemImage: "plus")
+                            Label("Add", systemImage: "plus")
                         }
-                        .help("Mount a folder as a root")
+                        .help("Mount a root, or add an organizing folder")
                     }
                 }
         } detail: {
@@ -106,6 +116,17 @@ struct ContentView: View {
             Button("Rename") { model.renameActiveWorkspace(to: workspaceNameDraft) }
             Button("Cancel", role: .cancel) {}
         }
+        .alert(model.pendingFolderRename == nil ? "New Folder" : "Rename Folder",
+               isPresented: $model.showingFolderPrompt) {
+            TextField("Name", text: $folderNameDraft)
+            Button(model.pendingFolderRename == nil ? "Create" : "Rename") {
+                model.commitFolderPrompt(name: folderNameDraft)
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .onChange(of: model.showingFolderPrompt) { _, showing in
+            if showing { folderNameDraft = model.pendingFolderRename?.name ?? "" }
+        }
         .onChange(of: model.showingCreateWorkspace) { _, showing in
             if showing { workspaceNameDraft = "" }
         }
@@ -138,9 +159,15 @@ struct ExplorerSidebar: View {
         // real macOS look, full-row hit testing, keyboard arrow navigation, and
         // multi-select (which the Action predicates already support).
         List(selection: $selection) {
-            ForEach(host.roots, id: \.self) { root in
-                NodeRow(nodeID: root)
+            // Native disclosure nesting (auto-indent, dense rows); each row carries
+            // a thin top-edge insertion strip for position-aware drops, and folder
+            // rows accept drops to nest.
+            ForEach(Array(model.rootLayout.entries.enumerated()), id: \.element.id) { index, entry in
+                RootEntryRow(entry: entry, container: nil, index: index)
             }
+            // The one insertion point the strips can't express: the very end of
+            // the top level.
+            InsertionStrip(container: nil, index: model.rootLayout.entries.count, minHeight: 8)
         }
         // .sidebar enforces roomy source-list row metrics that neither
         // defaultMinListRowHeight (only a floor) nor row insets can shrink — the row
@@ -164,12 +191,17 @@ struct ExplorerSidebar: View {
             let targets = Array(items)
             if targets.count == 1 {
                 Button("Open in New Tab") { model.openInNewTab(targets[0]) }
-                if host.roots.contains(targets[0]) {
-                    // Inverse of mounting — removes the sidebar entry, not the node.
-                    Button("Remove from Sidebar") { model.removeRoot(targets[0]) }
-                }
-                Divider()
             }
+            // Roots can be organized into folders. (Only whole roots — a folder
+            // groups roots, not their descendants.)
+            let rootTargets = targets.filter(host.roots.contains)
+            if !rootTargets.isEmpty {
+                moveToFolderMenu(for: rootTargets)
+                if rootTargets.count == 1 {
+                    Button("Remove from Sidebar") { model.removeRoot(rootTargets[0]) }
+                }
+            }
+            Divider()
             let actions = model.applicableActions(for: targets)
             if actions.isEmpty {
                 Button("No Actions") {}.disabled(true)
@@ -211,9 +243,124 @@ struct ExplorerSidebar: View {
         .overlay {
             if host.roots.isEmpty {
                 ContentUnavailableView("No Roots", systemImage: "tray",
-                                       description: Text("Add a folder to get started."))
+                                       description: Text("Add a root to get started."))
             }
         }
+    }
+
+    /// "Move to Folder ▸ {nested folders} / Top Level / New Folder…" for roots.
+    @ViewBuilder
+    private func moveToFolderMenu(for roots: [NodeID]) -> some View {
+        let refs = roots.map { EntryRef.root($0.uri) }
+        Menu("Move to Folder") {
+            ForEach(RootLayout.folderList(model.rootLayout.entries), id: \.folder.id) { item in
+                Button(String(repeating: "   ", count: item.depth) + item.folder.name) {
+                    model.moveEntries(refs, toFolder: item.folder.id)
+                }
+            }
+            Divider()
+            Button("Top Level") { model.moveEntries(refs, toFolder: nil) }
+            Button("New Folder…") { model.beginCreateFolder(movingIn: roots.map(\.uri)) }
+        }
+    }
+}
+
+// MARK: - Root organization rows
+
+/// One entry in the sidebar's folder tree: a root (a `NodeRow`) or a folder
+/// (a nesting `DisclosureGroup`). `container`/`index` locate it for the
+/// insertion strip that overlays its top edge — dropping there reorders.
+private struct RootEntryRow: View {
+    let entry: RootEntry
+    let container: UUID?
+    let index: Int
+
+    var body: some View {
+        switch entry {
+        case .root(let uri):
+            if let id = NodeID(uri) {
+                NodeRow(nodeID: id)
+                    .overlay(alignment: .top) { InsertionStrip(container: container, index: index) }
+            }
+        case .folder(let folder):
+            RootFolderRow(folder: folder, container: container, index: index)
+        }
+    }
+}
+
+/// A folder as a native `DisclosureGroup` (auto-indent, matches node rows).
+/// Draggable (to nest/reorder) and a drop target — dropping *onto* the label
+/// nests the payload inside. Host-side organization; no node, no provider.
+struct RootFolderRow: View {
+    let folder: RootFolder
+    let container: UUID?
+    let index: Int
+    @Environment(HostContext.self) private var host
+    @Environment(AppModel.self) private var model
+    @State private var dropTargeted = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: Binding(
+            get: { folder.isExpanded },
+            set: { model.setRootFolderExpanded(folder.id, $0) }
+        )) {
+            ForEach(Array(folder.entries.enumerated()), id: \.element.id) { childIndex, child in
+                RootEntryRow(entry: child, container: folder.id, index: childIndex)
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "folder.fill").foregroundStyle(.tint)
+                Text(folder.name).lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .background(dropTargeted ? Color.accentColor.opacity(0.25) : .clear,
+                        in: RoundedRectangle(cornerRadius: 4))
+            .overlay(alignment: .top) { InsertionStrip(container: container, index: index) }
+            .draggable(EntryRef.folder(folder.id).token)
+            .contextMenu {
+                Button("Rename Folder…") { model.beginRenameFolder(folder) }
+                Button("New Folder Inside") { model.beginCreateFolder(in: folder.id) }
+                Button("Delete Folder", role: .destructive) { model.deleteRootFolder(folder.id) }
+            }
+            // Dropping onto the label nests the payload inside (at the end).
+            .dropDestination(for: String.self) { items, _ in
+                let refs = model.entryRefs(from: items, roots: host.roots)
+                guard !refs.isEmpty else { return false }
+                model.moveEntries(refs, toFolder: folder.id, at: nil)
+                return true
+            } isTargeted: { dropTargeted = $0 }
+        }
+        .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
+        .listRowSeparator(.hidden)
+    }
+}
+
+/// A thin drop strip along a row's top edge: dropping here inserts the dragged
+/// entries *before* that row (position-aware reorder). Invisible until hovered;
+/// overlaid so it wins the top few points without adding a row.
+private struct InsertionStrip: View {
+    let container: UUID?
+    let index: Int
+    var minHeight: CGFloat = 4
+    @Environment(AppModel.self) private var model
+    @Environment(HostContext.self) private var host
+    @State private var targeted = false
+
+    var body: some View {
+        Rectangle()
+            .fill(targeted ? Color.accentColor : Color.clear)
+            .frame(height: targeted ? max(minHeight, 3) : minHeight)
+            .dropDestination(for: String.self) { items, _ in
+                let refs = model.entryRefs(from: items, roots: host.roots)
+                guard !refs.isEmpty else { return false }
+                model.moveEntries(refs, toFolder: container, at: index)
+                return true
+            } isTargeted: { targeted = $0 }
+            // No-ops when overlaid; matter when the strip is a standalone row
+            // (the top-level trailing drop zone).
+            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
+            .listRowSeparator(.hidden)
     }
 }
 

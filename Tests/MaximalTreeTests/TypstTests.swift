@@ -4,20 +4,88 @@ import Foundation
 @testable import MaximalTree
 @testable import MaximalEditorKit
 
-/// The editor framework's stock Highlightr tokenizer — language-name mapping
-/// and a live highlight through the real JS engine.
-@MainActor
-@Suite struct HighlightrTokenizerTests {
-    @Test func displayNamesMapToHljsIdentifiers() {
-        #expect(HighlightrTokenizer.hljsName(for: "objective-c") == "objectivec")
-        #expect(HighlightrTokenizer.hljsName(for: "c++") == "cpp")
-        #expect(HighlightrTokenizer.hljsName(for: "html") == "xml")
-        #expect(HighlightrTokenizer.hljsName(for: "shell") == "bash")
-        #expect(HighlightrTokenizer.hljsName(for: "swift") == "swift")
+/// File/tag → highlighter language detection: the mapping tables themselves.
+@Suite struct EditorLanguageTests {
+    private func id(_ path: String) -> String? {
+        EditorLanguage.id(for: URL(fileURLWithPath: path))
     }
 
+    /// **The** invariant: every id we can produce must be a language the bundled
+    /// highlight.js actually knows. An unknown name doesn't fail loudly — it
+    /// silently triggers auto-detection, which paints wrong colors confidently.
+    @MainActor
+    @Test func everyMappedLanguageIsSupportedByTheHighlighter() {
+        let ids = Set(EditorLanguage.idsByExtension.values)
+            .union(EditorLanguage.idsByFileName.values)
+            .union(EditorLanguage.aliases.values)
+        for id in ids.sorted() {
+            #expect(HighlightrTokenizer.isSupported(id), "unsupported language id: \(id)")
+        }
+        // The table is meant to be broad, not a token gesture.
+        #expect(ids.count > 100, "expected wide language coverage, got \(ids.count)")
+    }
+
+    @Test func detectsLanguagesByExtension() {
+        #expect(id("/a/b.swift") == "swift")
+        #expect(id("/a/b.rs") == "rust")
+        #expect(id("/a/b.py") == "python")
+        #expect(id("/a/b.tsx") == "typescript")
+        #expect(id("/a/b.hpp") == "cpp")
+        #expect(id("/a/b.ex") == "elixir")
+        #expect(id("/a/b.tf") == nil, "terraform has no grammar here — stay plain")
+    }
+
+    @Test func mapsFormatsOntoTheGrammarsThatModelThem() {
+        #expect(id("/a/b.toml") == "ini")        // hljs models TOML as INI
+        #expect(id("/a/index.html") == "xml")
+        #expect(id("/a/b.sh") == "bash")
+        #expect(id("/a/b.yml") == "yaml")
+        #expect(id("/a/b.plist") == "xml")
+    }
+
+    @Test func detectsExtensionlessBuildFilesAndDotfiles() {
+        #expect(id("/p/Makefile") == "makefile")
+        #expect(id("/p/Dockerfile") == "dockerfile")
+        #expect(id("/p/Podfile") == "ruby")
+        #expect(id("/p/.zshrc") == "bash")
+        #expect(id("/p/.gitconfig") == "ini")
+        // Whole-name matches beat the extension: this is CMake, not plain text.
+        #expect(id("/p/CMakeLists.txt") == "cmake")
+        #expect(id("/p/README.txt") == "plaintext")
+    }
+
+    /// Grammar-less text files still resolve — to `plaintext`, which is what
+    /// makes them *editable* (the text canvas claims what it can name) without
+    /// inventing syntax for them.
+    @Test func grammarlessTextFilesResolveToPlaintext() {
+        #expect(id("/p/LICENSE") == "plaintext")
+        #expect(id("/p/.gitignore") == "plaintext")
+        #expect(id("/p/build.log") == "plaintext")
+        #expect(id("/p/notes.bin") == nil, "unknown binary stays unclaimed")
+    }
+
+    @Test func normalizesRawBlockTags() {
+        #expect(EditorLanguage.id(forTag: "yml") == "yaml")
+        #expect(EditorLanguage.id(forTag: "C++") == "cpp")
+        #expect(EditorLanguage.id(forTag: " Rust ") == "rust")
+        #expect(EditorLanguage.id(forTag: "objective-c") == "objectivec")
+        #expect(EditorLanguage.id(forTag: "") == nil)
+    }
+
+    @Test func displayNamesReadLikeLanguages() {
+        #expect(editorLanguageName(for: URL(fileURLWithPath: "/a/b.cpp")) == "C++")
+        #expect(editorLanguageName(for: URL(fileURLWithPath: "/a/b.m")) == "Objective-C")
+        #expect(editorLanguageName(for: URL(fileURLWithPath: "/a/b.swift")) == "Swift")
+        #expect(editorLanguageName(for: URL(fileURLWithPath: "/a/b.zzz")) == nil)
+    }
+}
+
+/// The stock tokenizer driving the real highlight.js engine.
+@MainActor
+@Suite struct HighlightrTokenizerTests {
     @Test func fileURLInitFollowsLanguageDetection() {
         #expect(HighlightrTokenizer(fileURL: URL(fileURLWithPath: "/a/b.swift")) != nil)
+        #expect(HighlightrTokenizer(fileURL: URL(fileURLWithPath: "/p/Dockerfile")) != nil)
         #expect(HighlightrTokenizer(fileURL: URL(fileURLWithPath: "/a/b.xyzunknown")) == nil)
     }
 
@@ -28,6 +96,36 @@ import Foundation
         #expect(tokens.allSatisfy {
             if case .colored = $0.kind { return true } else { return false }
         })
+    }
+
+    @Test func unknownLanguagesYieldNothingRatherThanGuesses() {
+        // No auto-detection fallback: a language we can't name paints nothing.
+        #expect(HighlightrTokenizer.highlight("let x = 1", language: "notalanguage").isEmpty)
+    }
+
+    @Test func highlightsAcrossTheBreadthOfTheTable() {
+        // A spread of grammars, each producing colored runs for real snippets.
+        let samples: [(String, String)] = [
+            ("python", "def f(x):\n    return x  # ok"),
+            ("ruby", "def f(x)\n  x # ok\nend"),
+            ("go", "func main() { /* hi */ }"),
+            ("rust", "fn main() { let x = 1; }"),
+            ("java", "class A { int x = 1; }"),
+            ("bash", "echo \"hi\" # comment"),
+            ("yaml", "key: value # comment"),
+            ("json", "{\"a\": 1}"),
+            ("ini", "[section]\nkey = 1"),
+            ("dockerfile", "FROM alpine\nRUN echo hi"),
+            ("makefile", "all:\n\techo hi"),
+            ("sql", "SELECT * FROM t WHERE x = 1"),
+            ("xml", "<a href=\"b\">c</a>"),
+            ("haskell", "main = putStrLn \"hi\""),
+            ("lua", "local x = 1 -- comment"),
+        ]
+        for (language, code) in samples {
+            #expect(!HighlightrTokenizer.highlight(code, language: language).isEmpty,
+                    "no highlighting for \(language)")
+        }
     }
 }
 

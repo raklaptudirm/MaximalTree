@@ -137,8 +137,8 @@ public final class HighlightrTokenizer: EditorTokenizer {
 
     /// Nil when the file's language is unknown — pass no tokenizer, plain text.
     public convenience init?(fileURL: URL) {
-        guard let name = editorLanguageName(for: fileURL) else { return nil }
-        self.init(language: Self.hljsName(for: name))
+        guard let id = EditorLanguage.id(for: fileURL) else { return nil }
+        self.init(language: id)
     }
 
     /// Pay the JS-context + highlight.js load behind a loading indicator
@@ -146,6 +146,17 @@ public final class HighlightrTokenizer: EditorTokenizer {
     public static func warmUp() {
         _ = lightHighlighter
         _ = darkHighlighter
+    }
+
+    /// Languages the bundled highlight.js actually knows.
+    private static let supported: Set<String> =
+        Set(lightHighlighter?.supportedLanguages() ?? [])
+
+    /// Whether `language` can be highlighted. Worth checking before every call:
+    /// handed an unknown name, highlight.js silently falls back to *auto
+    /// detection*, which paints confident but wrong colors.
+    public static func isSupported(_ language: String) -> Bool {
+        supported.contains(language)
     }
 
     public func tokens(in text: String) -> [(range: NSRange, kind: EditorTokenKind)] {
@@ -157,7 +168,7 @@ public final class HighlightrTokenizer: EditorTokenizer {
     /// embedded regions (typst raw blocks) at an offset the caller applies.
     public static func highlight(_ code: String,
                                  language: String) -> [(NSRange, EditorTokenKind)] {
-        guard code.utf8.count <= sizeLimit else { return [] }
+        guard code.utf8.count <= sizeLimit, isSupported(language) else { return [] }
         let key = "\(language)\u{0}\(code)"
         if let cached = cache[key] { return cached }
 
@@ -177,36 +188,6 @@ public final class HighlightrTokenizer: EditorTokenizer {
         cache[key] = runs
         return runs
     }
-
-    /// `editorLanguageName` speaks display names; highlight.js has its own ids.
-    static func hljsName(for languageName: String) -> String {
-        switch languageName {
-        case "objective-c": return "objectivec"
-        case "c++": return "cpp"
-        case "html": return "xml"
-        case "shell": return "bash"
-        default: return languageName
-        }
-    }
-}
-
-// MARK: - Language names
-
-/// A display name for a file's language ("swift", "markdown", …), nil for plain
-/// or unknown types. For header badges.
-public func editorLanguageName(for url: URL) -> String? {
-    let names: [String: String] = [
-        "swift": "swift", "m": "objective-c", "mm": "objective-c",
-        "c": "c", "h": "c", "cpp": "c++", "cc": "c++", "hpp": "c++",
-        "rs": "rust", "py": "python", "rb": "ruby", "go": "go",
-        "js": "javascript", "jsx": "javascript", "ts": "typescript",
-        "tsx": "typescript", "java": "java", "kt": "kotlin",
-        "md": "markdown", "json": "json", "yaml": "yaml", "yml": "yaml",
-        "toml": "toml", "html": "html", "css": "css", "sh": "shell",
-        "bash": "shell", "zsh": "shell", "sql": "sql", "lua": "lua",
-        "hs": "haskell", "typ": "typst",
-    ]
-    return names[url.pathExtension.lowercased()]
 }
 
 // MARK: - Helpers

@@ -82,7 +82,8 @@ struct FileSystemProvider: NodeProvider {
         return Node(id: id,
                     type: isDir ? directoryType : fileType,
                     label: name,
-                    icon: isDir ? NodeIcon("folder.fill", tint: .blue) : icon(for: contentType),
+                    icon: isDir ? NodeIcon("folder.fill", tint: .blue)
+                                : (languageIcon(for: url) ?? icon(for: contentType)),
                     attributes: attrs,
                     hasChildren: isDir,
                     anchor: anchor)

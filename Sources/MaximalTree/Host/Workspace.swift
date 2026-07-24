@@ -1,17 +1,321 @@
 import Foundation
 import MaximalTreeKit
 
+/// One item in the sidebar's organization: a root, or a folder that holds more
+/// entries (folders nest). Pure host-side display; providers and the graph core
+/// never see it.
+enum RootEntry: Equatable, Identifiable {
+    case root(String)          // a root's canonical uri
+    case folder(RootFolder)
+
+    var rootURIs: [String] {
+        switch self {
+        case .root(let uri): return [uri]
+        case .folder(let folder): return folder.rootURIs
+        }
+    }
+
+    /// Stable across reorders, so ForEach animates rather than rebuilds.
+    var id: String {
+        switch self {
+        case .root(let uri): return "r:\(uri)"
+        case .folder(let folder): return "f:\(folder.id.uuidString)"
+        }
+    }
+}
+
+/// A named, nestable group of entries in the sidebar.
+struct RootFolder: Codable, Identifiable, Equatable {
+    var id: UUID = UUID()
+    var name: String
+    var entries: [RootEntry] = []
+    var isExpanded: Bool = true
+
+    var rootURIs: [String] { entries.flatMap(\.rootURIs) }
+}
+
+/// A lightweight reference to an entry, for drag-and-drop and moves: a root by
+/// its uri, a folder by its id.
+enum EntryRef: Hashable {
+    case root(String)
+    case folder(UUID)
+
+    /// A stable drag token, `root:<uri>` / `folder:<uuid>`.
+    var token: String {
+        switch self {
+        case .root(let uri): return "root:\(uri)"
+        case .folder(let id): return "folder:\(id.uuidString)"
+        }
+    }
+
+    init?(token: String) {
+        if let uri = token.dropPrefix("root:") { self = .root(uri) }
+        else if let raw = token.dropPrefix("folder:"), let id = UUID(uuidString: raw) {
+            self = .folder(id)
+        } else { return nil }
+    }
+
+    func matches(_ entry: RootEntry) -> Bool {
+        switch (self, entry) {
+        case (.root(let a), .root(let b)): return a == b
+        case (.folder(let a), .folder(let b)): return a == b.id
+        default: return false
+        }
+    }
+}
+
+private extension String {
+    func dropPrefix(_ prefix: String) -> String? {
+        hasPrefix(prefix) ? String(dropFirst(prefix.count)) : nil
+    }
+}
+
+/// How a workspace's roots are grouped for display: an ordered tree of entries.
+/// This is the source of truth for the sidebar; the flat root set the graph core
+/// consumes (`context.roots`) is *derived* from it, so folders never leak below
+/// the host UI.
+struct RootLayout: Codable, Equatable {
+    var entries: [RootEntry] = []
+
+    /// Every root uri, in display order (a folder's roots inline where it sits).
+    var rootURIs: [String] { entries.flatMap(\.rootURIs) }
+
+    /// A flat layout with every root loose — the shape a pre-folders workspace
+    /// migrates into.
+    init(looseRoots uris: [String] = []) {
+        entries = uris.map(RootEntry.root)
+    }
+
+    // MARK: Recursive tree operations (pure, testable)
+
+    /// Drop root entries whose uri isn't in `keeping`, at any depth. Folders are
+    /// kept even when they empty out — they're intentional containers.
+    static func prune(_ entries: inout [RootEntry], keeping: Set<String>) {
+        entries = entries.compactMap { entry in
+            switch entry {
+            case .root(let uri):
+                return keeping.contains(uri) ? entry : nil
+            case .folder(var folder):
+                prune(&folder.entries, keeping: keeping)
+                return .folder(folder)
+            }
+        }
+    }
+
+    /// Insert `items` into `folder` (nil = this level) at `index` (nil = end).
+    /// Returns whether the destination folder was found.
+    @discardableResult
+    static func insert(_ items: [RootEntry], into entries: inout [RootEntry],
+                       folder folderID: UUID?, at index: Int?) -> Bool {
+        guard let folderID else {
+            let at = min(index ?? entries.count, entries.count)
+            entries.insert(contentsOf: items, at: max(0, at))
+            return true
+        }
+        for i in entries.indices {
+            if case .folder(var folder) = entries[i] {
+                if folder.id == folderID {
+                    let at = min(index ?? folder.entries.count, folder.entries.count)
+                    folder.entries.insert(contentsOf: items, at: max(0, at))
+                    entries[i] = .folder(folder)
+                    return true
+                }
+                if insert(items, into: &folder.entries, folder: folderID, at: index) {
+                    entries[i] = .folder(folder)
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    /// Remove every entry matching `refs` at any depth; return them (for reinsert).
+    static func remove(_ refs: Set<EntryRef>, from entries: inout [RootEntry]) -> [RootEntry] {
+        var removed: [RootEntry] = []
+        entries = entries.compactMap { entry in
+            if refs.contains(where: { $0.matches(entry) }) {
+                removed.append(entry)
+                return nil
+            }
+            if case .folder(var folder) = entry {
+                removed.append(contentsOf: remove(refs, from: &folder.entries))
+                return .folder(folder)
+            }
+            return entry
+        }
+        return removed
+    }
+
+    /// Replace the folder `id` with its own entries, wherever it sits.
+    static func deleteFolder(_ id: UUID, in entries: inout [RootEntry]) {
+        var result: [RootEntry] = []
+        for entry in entries {
+            if case .folder(var folder) = entry {
+                if folder.id == id {
+                    result.append(contentsOf: folder.entries)   // spill contents in place
+                    continue
+                }
+                deleteFolder(id, in: &folder.entries)
+                result.append(.folder(folder))
+            } else {
+                result.append(entry)
+            }
+        }
+        entries = result
+    }
+
+    static func mutateFolder(_ id: UUID, in entries: inout [RootEntry],
+                             _ change: (inout RootFolder) -> Void) {
+        for i in entries.indices {
+            if case .folder(var folder) = entries[i] {
+                if folder.id == id {
+                    change(&folder)
+                    entries[i] = .folder(folder)
+                    return
+                }
+                mutateFolder(id, in: &folder.entries, change)
+                entries[i] = .folder(folder)
+            }
+        }
+    }
+
+    static func folderID(containing uri: String, in entries: [RootEntry]) -> UUID? {
+        for case .folder(let folder) in entries {
+            if folder.entries.contains(where: {
+                if case .root(let u) = $0 { return u == uri } else { return false }
+            }) { return folder.id }
+            if let nested = folderID(containing: uri, in: folder.entries) { return nested }
+        }
+        return nil
+    }
+
+    /// Whether `folderID`'s subtree contains `target` (a descendant folder) —
+    /// the cycle check for moves.
+    static func folder(_ folderID: UUID, contains target: UUID,
+                       in entries: [RootEntry]) -> Bool {
+        for case .folder(let folder) in entries {
+            if folder.id == folderID {
+                return descendantFolderIDs(of: folder).contains(target)
+            }
+            if self.folder(folderID, contains: target, in: folder.entries) { return true }
+        }
+        return false
+    }
+
+    private static func descendantFolderIDs(of folder: RootFolder) -> Set<UUID> {
+        var ids: Set<UUID> = []
+        for case .folder(let child) in folder.entries {
+            ids.insert(child.id)
+            ids.formUnion(descendantFolderIDs(of: child))
+        }
+        return ids
+    }
+
+    /// Every folder in the tree, depth-tagged — for the "Move to Folder" menu.
+    static func folderList(_ entries: [RootEntry], depth: Int = 0)
+        -> [(folder: RootFolder, depth: Int)] {
+        var result: [(RootFolder, Int)] = []
+        for case .folder(let folder) in entries {
+            result.append((folder, depth))
+            result += folderList(folder.entries, depth: depth + 1)
+        }
+        return result
+    }
+}
+
 /// One named set of root nodes — the unit the user switches between. Host-owned and
 /// persisted; providers are entirely unaware of workspaces.
 struct Workspace: Codable, Identifiable, Equatable {
     var id: UUID
     var name: String
-    var rootURIs: [String]
+    var layout: RootLayout
 
-    init(id: UUID = UUID(), name: String, rootURIs: [String] = []) {
+    /// Convenience for the flat root set (what older code and `resolvedRoots` want).
+    var rootURIs: [String] { layout.rootURIs }
+
+    init(id: UUID = UUID(), name: String, layout: RootLayout = RootLayout()) {
         self.id = id
         self.name = name
-        self.rootURIs = rootURIs
+        self.layout = layout
+    }
+
+    init(id: UUID = UUID(), name: String, rootURIs: [String]) {
+        self.init(id: id, name: name, layout: RootLayout(looseRoots: rootURIs))
+    }
+
+    // Decodes the current shape (`layout`) or a pre-folders workspace (`rootURIs`),
+    // so an existing library keeps loading — everything becomes loose roots.
+    private enum CodingKeys: String, CodingKey { case id, name, layout, rootURIs }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        if let layout = try container.decodeIfPresent(RootLayout.self, forKey: .layout) {
+            self.layout = layout
+        } else {
+            let uris = try container.decodeIfPresent([String].self, forKey: .rootURIs) ?? []
+            self.layout = RootLayout(looseRoots: uris)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(layout, forKey: .layout)
+    }
+}
+
+extension RootEntry: Codable {
+    // Explicit, stable JSON: {"type":"root","uri":…} / {"type":"folder","folder":…}.
+    private enum CodingKeys: String, CodingKey { case type, uri, folder }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(String.self, forKey: .type) {
+        case "folder": self = .folder(try container.decode(RootFolder.self, forKey: .folder))
+        default:       self = .root(try container.decode(String.self, forKey: .uri))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .root(let uri):
+            try container.encode("root", forKey: .type)
+            try container.encode(uri, forKey: .uri)
+        case .folder(let folder):
+            try container.encode("folder", forKey: .type)
+            try container.encode(folder, forKey: .folder)
+        }
+    }
+}
+
+extension RootFolder {
+    // Decode the current shape (`entries`) or a pre-nesting folder (`rootURIs`),
+    // so a library written before folders nested keeps loading.
+    private enum CodingKeys: String, CodingKey { case id, name, entries, rootURIs, isExpanded }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        isExpanded = try container.decodeIfPresent(Bool.self, forKey: .isExpanded) ?? true
+        if let entries = try container.decodeIfPresent([RootEntry].self, forKey: .entries) {
+            self.entries = entries
+        } else {
+            let uris = try container.decodeIfPresent([String].self, forKey: .rootURIs) ?? []
+            self.entries = uris.map(RootEntry.root)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(entries, forKey: .entries)
+        try container.encode(isExpanded, forKey: .isExpanded)
     }
 }
 
@@ -83,9 +387,86 @@ final class WorkspaceStore {
         }
     }
 
-    /// Record the active workspace's roots (called on every mount/unmount).
-    func saveRoots(_ roots: [NodeID]) {
-        mutateActive { $0.rootURIs = roots.map(\.uri) }
+    /// Reconcile the active workspace's layout with the live root set (called on
+    /// every mount/unmount). Existing organization is preserved: entries whose
+    /// root vanished are pruned (empty folders kept — they're intentional), and
+    /// roots not yet placed are appended — into `folderID` when given (the
+    /// current node's folder, so a new root lands beside its siblings), else
+    /// loose at the end.
+    func reconcileRoots(_ roots: [NodeID], placingNewInto folderID: UUID? = nil) {
+        let desired = roots.map(\.uri)
+        let desiredSet = Set(desired)
+        mutateActive { workspace in
+            RootLayout.prune(&workspace.layout.entries, keeping: desiredSet)
+            let placed = Set(workspace.layout.rootURIs)
+            let additions = desired.filter { !placed.contains($0) }.map(RootEntry.root)
+            guard !additions.isEmpty else { return }
+            _ = RootLayout.insert(additions, into: &workspace.layout.entries,
+                                  folder: folderID, at: nil)
+        }
+    }
+
+    // MARK: Folder management (active workspace)
+
+    @discardableResult
+    func createFolder(named name: String, in parent: UUID? = nil) -> UUID {
+        let folder = RootFolder(name: name)
+        mutateActive {
+            _ = RootLayout.insert([.folder(folder)], into: &$0.layout.entries,
+                                  folder: parent, at: nil)
+        }
+        return folder.id
+    }
+
+    func renameFolder(_ id: UUID, to name: String) {
+        mutateActive { RootLayout.mutateFolder(id, in: &$0.layout.entries) { $0.name = name } }
+    }
+
+    func setFolderExpanded(_ id: UUID, _ expanded: Bool) {
+        mutateActive { RootLayout.mutateFolder(id, in: &$0.layout.entries) { $0.isExpanded = expanded } }
+    }
+
+    /// Delete a folder but keep its contents — they spill out where the folder
+    /// sat (nested folders included), so nothing is lost with its container.
+    func deleteFolder(_ id: UUID) {
+        mutateActive { RootLayout.deleteFolder(id, in: &$0.layout.entries) }
+    }
+
+    /// Move roots (by uri) into `folderID` (nil = top level) at the end.
+    func moveRoots(_ uris: [String], toFolder folderID: UUID?) {
+        moveEntries(uris.map(EntryRef.root), toFolder: folderID, at: nil)
+    }
+
+    /// Reparent/reorder entries: pull `refs` out of wherever they sit and drop
+    /// them into `folderID` (nil = top level) at `index` (nil = end), preserving
+    /// `refs` order. Refuses to move a folder into itself or its own descendant.
+    func moveEntries(_ refs: [EntryRef], toFolder folderID: UUID?, at index: Int?) {
+        guard !refs.isEmpty else { return }
+        mutateActive { workspace in
+            // Cycle guard: a folder can't land inside itself or its subtree.
+            let movedFolderIDs = refs.compactMap { ref -> UUID? in
+                if case .folder(let id) = ref { return id } else { return nil }
+            }
+            if let folderID {
+                for movedID in movedFolderIDs {
+                    if movedID == folderID
+                        || RootLayout.folder(movedID, contains: folderID,
+                                             in: workspace.layout.entries) {
+                        return
+                    }
+                }
+            }
+            let removed = RootLayout.remove(Set(refs), from: &workspace.layout.entries)
+            // Reorder the removed entries to match the requested ref order.
+            let ordered = refs.compactMap { ref in removed.first { ref.matches($0) } }
+            _ = RootLayout.insert(ordered, into: &workspace.layout.entries,
+                                  folder: folderID, at: index)
+        }
+    }
+
+    /// The folder currently holding `uri`, if any (searches nested folders).
+    func folderID(containing uri: String) -> UUID? {
+        RootLayout.folderID(containing: uri, in: active.layout.entries)
     }
 
     // MARK: Library management

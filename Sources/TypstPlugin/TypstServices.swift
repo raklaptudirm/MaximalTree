@@ -62,7 +62,10 @@ final class TypstTokenizer: EditorTokenizer {
 
     private func embeddedTokens(for code: String, language: String,
                                 at offset: Int) -> [(range: NSRange, kind: EditorTokenKind)] {
-        HighlightrTokenizer.highlight(code, language: language).map {
+        // Raw-block tags are whatever the author typed (`yml`, `sh`, `C++`) —
+        // normalize to a canonical highlighter language first.
+        guard let id = EditorLanguage.id(forTag: language) else { return [] }
+        return HighlightrTokenizer.highlight(code, language: id).map {
             (NSRange(location: $0.0.location + offset, length: $0.0.length), $0.1)
         }
     }

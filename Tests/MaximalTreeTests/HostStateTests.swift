@@ -92,7 +92,7 @@ import Foundation
         defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
         let root = try #require(NodeID(fileURL: FileManager.default.temporaryDirectory))
 
-        WorkspaceStore(fileURL: file).saveRoots([root])
+        WorkspaceStore(fileURL: file).reconcileRoots([root])
 
         let restored = WorkspaceStore(fileURL: file)
             .resolvedRoots(using: [FileSystemProvider()])
@@ -104,7 +104,7 @@ import Foundation
         defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
         let gone = try #require(NodeID("file:///does/not/exist/zzz-\(UUID())"))
 
-        WorkspaceStore(fileURL: file).saveRoots([gone])
+        WorkspaceStore(fileURL: file).reconcileRoots([gone])
 
         // The stale root is dropped; no silent reseeding — an emptied workspace
         // stays empty (seeding is first-launch-only, gated by wasFreshlyCreated).
@@ -126,10 +126,10 @@ import Foundation
         let rootA = try #require(NodeID(fileURL: FileManager.default.temporaryDirectory))
 
         let store = WorkspaceStore(fileURL: file)
-        store.saveRoots([rootA])                       // into "Main"
+        store.reconcileRoots([rootA])                       // into "Main"
         let b = store.create(named: "B")
         store.setActive(b.id)
-        store.saveRoots([])                            // B is empty
+        store.reconcileRoots([])                            // B is empty
 
         // Relaunch: B is still active and empty; switching back to Main restores A.
         let relaunched = WorkspaceStore(fileURL: file)
@@ -172,7 +172,151 @@ import Foundation
 
         let store = WorkspaceStore(fileURL: file)
         #expect(!store.wasFreshlyCreated, "migration is not a fresh start — don't reseed")
-        #expect(store.active.rootURIs == ["file:///tmp"])
+        #expect(store.active.rootURIs == ["file:///tmp"])   // becomes loose roots
         #expect(store.active.name == "Main")           // legacy placeholder upgraded
+    }
+
+    @Test func preFoldersLibraryDecodesAsLooseRoots() throws {
+        let file = try tempLibraryURL()
+        let dir = file.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        // A workspaces.json written before folders existed (rootURIs, no layout).
+        let id = UUID().uuidString
+        let json = """
+        {"activeID":"\(id)","workspaces":[{"id":"\(id)","name":"Main",
+        "rootURIs":["file:///a","file:///b"]}]}
+        """
+        try json.write(to: file, atomically: true, encoding: .utf8)
+
+        let store = WorkspaceStore(fileURL: file)
+        #expect(store.active.rootURIs == ["file:///a", "file:///b"])
+        #expect(store.active.layout.entries.allSatisfy {
+            if case .root = $0 { return true } else { return false }
+        })
+    }
+}
+
+@MainActor
+@Suite struct RootFolderTests {
+    private func store() throws -> WorkspaceStore {
+        let file = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("wsf-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("workspaces.json")
+        try FileManager.default.createDirectory(
+            at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        return WorkspaceStore(fileURL: file)
+    }
+
+    private func ids(_ uris: String...) -> [NodeID] { uris.compactMap(NodeID.init) }
+
+    @Test func reconcilePlacesNewRootsIntoTheTargetFolder() throws {
+        let store = try store()
+        store.reconcileRoots(ids("file:///a"))
+        let folder = store.createFolder(named: "Work")
+
+        store.reconcileRoots(ids("file:///a", "file:///b"), placingNewInto: folder)
+        #expect(store.folderID(containing: "file:///b") == folder)
+        #expect(store.folderID(containing: "file:///a") == nil, "existing roots aren't moved")
+    }
+
+    @Test func deletingAFolderKeepsItsRootsAsLoose() throws {
+        let store = try store()
+        store.reconcileRoots(ids("file:///a"))
+        let folder = store.createFolder(named: "Work")
+        store.moveRoots(["file:///a"], toFolder: folder)
+        #expect(store.folderID(containing: "file:///a") == folder)
+
+        store.deleteFolder(folder)
+        #expect(store.folderID(containing: "file:///a") == nil)
+        #expect(store.active.rootURIs.contains("file:///a"), "the root survives its folder")
+    }
+
+    @Test func reconcilePrunesVanishedRootsFromFoldersButKeepsTheFolder() throws {
+        let store = try store()
+        store.reconcileRoots(ids("file:///a", "file:///b"))
+        let folder = store.createFolder(named: "Work")
+        store.moveRoots(["file:///a", "file:///b"], toFolder: folder)
+
+        store.reconcileRoots(ids("file:///a"))   // b unmounted
+        #expect(store.folderID(containing: "file:///a") == folder)
+        #expect(store.active.rootURIs == ["file:///a"])
+        // Empty or not, the folder is intentional — it stays.
+        #expect(store.active.layout.entries.contains {
+            if case .folder(let f) = $0 { return f.id == folder } else { return false }
+        })
+    }
+
+    @Test func foldersNestAndMoveByIndex() throws {
+        let store = try store()
+        store.reconcileRoots(ids("file:///a", "file:///b", "file:///c"))
+        let outer = store.createFolder(named: "Outer")
+        let inner = store.createFolder(named: "Inner", in: outer)
+
+        // Nesting: Inner sits inside Outer.
+        #expect(RootLayout.folder(outer, contains: inner, in: store.active.layout.entries))
+
+        // Position: put c first at the top level.
+        store.moveEntries([.root("file:///c")], toFolder: nil, at: 0)
+        #expect(store.active.layout.rootURIs.first == "file:///c")
+
+        // Move a root into the nested Inner folder.
+        store.moveEntries([.root("file:///a")], toFolder: inner, at: nil)
+        #expect(store.folderID(containing: "file:///a") == inner)
+    }
+
+    @Test func aFolderCannotBeMovedIntoItsOwnDescendant() throws {
+        let store = try store()
+        let outer = store.createFolder(named: "Outer")
+        let inner = store.createFolder(named: "Inner", in: outer)
+
+        // Refused: Outer into Inner would make a cycle. Layout is unchanged.
+        let before = store.active.layout
+        store.moveEntries([.folder(outer)], toFolder: inner, at: nil)
+        #expect(store.active.layout == before)
+        #expect(RootLayout.folder(outer, contains: inner, in: store.active.layout.entries))
+    }
+
+    @Test func deletingANestedFolderSpillsItsContentsInPlace() throws {
+        let store = try store()
+        store.reconcileRoots(ids("file:///a"))
+        let outer = store.createFolder(named: "Outer")
+        let inner = store.createFolder(named: "Inner", in: outer)
+        store.moveEntries([.root("file:///a")], toFolder: inner, at: nil)
+
+        store.deleteFolder(inner)
+        // a survives, now directly inside Outer (Inner's old home).
+        #expect(store.folderID(containing: "file:///a") == outer)
+        #expect(store.active.rootURIs == ["file:///a"])
+    }
+
+    @Test func entryRefTokensRoundTrip() {
+        let id = UUID()
+        #expect(EntryRef(token: EntryRef.root("file:///x").token) == .root("file:///x"))
+        #expect(EntryRef(token: EntryRef.folder(id).token) == .folder(id))
+        #expect(EntryRef(token: "garbage") == nil)
+    }
+
+    @Test func foldersAndMembershipPersist() throws {
+        let file = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("wsf-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("workspaces.json")
+        try FileManager.default.createDirectory(
+            at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+
+        let store = WorkspaceStore(fileURL: file)
+        store.reconcileRoots([NodeID("file:///a")!])
+        let folder = store.createFolder(named: "Work")
+        store.moveRoots(["file:///a"], toFolder: folder)
+
+        let reloaded = WorkspaceStore(fileURL: file)
+        #expect(reloaded.folderID(containing: "file:///a") == folder)
+        if case .folder(let f)? = reloaded.active.layout.entries.first(where: {
+            if case .folder = $0 { return true } else { return false }
+        }) {
+            #expect(f.name == "Work")
+        } else {
+            Issue.record("folder did not persist")
+        }
     }
 }

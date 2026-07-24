@@ -44,6 +44,10 @@ final class AppModel {
     /// (toolbar menu, menu bar); ContentView presents the alerts.
     var showingCreateWorkspace = false
     var showingRenameWorkspace = false
+    /// Folder-name prompt state. Creating: `pendingFolderRename == nil`.
+    /// Renaming: it carries the folder being renamed.
+    var showingFolderPrompt = false
+    var pendingFolderRename: RootFolder?
 
     init(host: HostContext) { self.host = host }
 
@@ -81,6 +85,110 @@ final class AppModel {
     private func reloadActiveWorkspaceRoots() {
         let roots = workspaceStore.resolvedRoots(using: pluginHost.registry.providers)
         store?.switchRoots(roots)
+    }
+
+    // MARK: Root folders
+
+    /// The sidebar's organization for the active workspace.
+    var rootLayout: RootLayout { workspaceStore.active.layout }
+
+    func createRootFolder(named name: String, in parent: UUID? = nil,
+                          movingInto uris: [String] = []) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let id = workspaceStore.createFolder(named: trimmed.isEmpty ? "New Folder" : trimmed,
+                                             in: parent)
+        if !uris.isEmpty { workspaceStore.moveRoots(uris, toFolder: id) }
+    }
+
+    /// Reparent/reorder sidebar entries (roots and folders) — the drag-and-drop
+    /// backing. `at` is the insertion index within the destination (nil = end).
+    func moveEntries(_ refs: [EntryRef], toFolder id: UUID?, at index: Int? = nil) {
+        workspaceStore.moveEntries(refs, toFolder: id, at: index)
+    }
+
+    /// Parse dropped drag payloads into entry refs. Folder rows drag a
+    /// `folder:<id>` token; node rows drag raw node URIs (the same payload the
+    /// filesystem `.move` uses) — only those that are actually roots become
+    /// `.root` refs, so dragging a mere descendant into a sidebar folder is a
+    /// no-op.
+    func entryRefs(from payloads: [String], roots: [NodeID]) -> [EntryRef] {
+        let rootURIs = Set(roots.map(\.uri))
+        return payloads
+            .flatMap { $0.split(separator: "\n").map(String.init) }
+            .compactMap { token in
+                if let ref = EntryRef(token: token), case .folder = ref { return ref }
+                return rootURIs.contains(token) ? .root(token) : nil
+            }
+    }
+
+    func renameRootFolder(_ id: UUID, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        workspaceStore.renameFolder(id, to: trimmed)
+    }
+
+    func deleteRootFolder(_ id: UUID) { workspaceStore.deleteFolder(id) }
+
+    /// Roots to drop into a folder created via the prompt (empty for a bare
+    /// "New Folder…"), and the parent folder to create it inside (nil = top).
+    private(set) var pendingFolderRoots: [String] = []
+    private(set) var pendingFolderParent: UUID?
+
+    func beginCreateFolder(in parent: UUID? = nil, movingIn uris: [String] = []) {
+        pendingFolderRename = nil
+        pendingFolderRoots = uris
+        pendingFolderParent = parent
+        showingFolderPrompt = true
+    }
+
+    func beginRenameFolder(_ folder: RootFolder) {
+        pendingFolderRename = folder
+        pendingFolderRoots = []
+        pendingFolderParent = nil
+        showingFolderPrompt = true
+    }
+
+    /// Commit the folder-name prompt — create (optionally inside a parent /
+    /// moving roots in) or rename, depending on `pendingFolderRename`.
+    func commitFolderPrompt(name: String) {
+        if let folder = pendingFolderRename {
+            renameRootFolder(folder.id, to: name)
+        } else {
+            createRootFolder(named: name, in: pendingFolderParent, movingInto: pendingFolderRoots)
+        }
+        pendingFolderRename = nil
+        pendingFolderRoots = []
+        pendingFolderParent = nil
+    }
+
+    func moveRoots(_ uris: [String], toFolder id: UUID?) {
+        workspaceStore.moveRoots(uris, toFolder: id)
+    }
+
+    func setRootFolderExpanded(_ id: UUID, _ expanded: Bool) {
+        workspaceStore.setFolderExpanded(id, expanded)
+    }
+
+    /// The folder a newly mounted root should join: the one holding the current
+    /// node's root (so "New X" lands beside what you were looking at). Nil when
+    /// the focused node isn't under any folder-held root.
+    private func folderForNewRoot() -> UUID? {
+        guard let focused = host.focusedNode,
+              let root = rootContaining(focused) else { return nil }
+        return workspaceStore.folderID(containing: root.uri)
+    }
+
+    /// The mounted root that contains `node`: the node itself if it's a root,
+    /// else the longest root whose URI is a path-prefix of the node's. Best
+    /// effort — a miss just places a new root loose.
+    private func rootContaining(_ node: NodeID) -> NodeID? {
+        let roots = host.roots
+        if roots.contains(node) { return node }
+        return roots
+            .filter { root in
+                node.uri == root.uri || node.uri.hasPrefix(root.uri + "/")
+            }
+            .max { $0.uri.count < $1.uri.count }
     }
 
     // Navigation commands surfaced to the toolbar, tab strip, and menu bar.
@@ -124,9 +232,12 @@ final class AppModel {
         let store = GraphStore(context: host, registry: pluginHost.registry, nav: navigation)
         self.store = store
         // Persist on every root-set change, no matter who mounted (UI or plugin).
+        // New roots join the folder of the current node's root — creating a node
+        // respects where you already are.
         store.onRootsChanged = { [weak self] in
             guard let self else { return }
-            self.workspaceStore.saveRoots(self.host.roots)
+            self.workspaceStore.reconcileRoots(self.host.roots,
+                                               placingNewInto: self.folderForNewRoot())
         }
 
         let providers = pluginHost.registry.providers
@@ -135,8 +246,10 @@ final class AppModel {
         // a workspace the user deliberately emptied stays empty.
         if roots.isEmpty && workspaceStore.wasFreshlyCreated {
             roots = providers.flatMap { $0.roots() }
-            workspaceStore.saveRoots(roots)
         }
+        // Reconcile once at launch so any layout entry whose root no longer
+        // resolves is pruned, and freshly seeded defaults are recorded.
+        workspaceStore.reconcileRoots(roots)
         store.setRoots(roots)
     }
 

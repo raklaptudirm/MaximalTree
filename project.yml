@@ -229,6 +229,7 @@ targets:
       - Tests/MaximalTreeTests
       - Sources/FileSystemPlugin
       - Sources/GitPlugin
+      - Sources/TextEditorPlugin
       - path: Sources/TypstPlugin/TypstCore.swift
       - path: Sources/TypstPlugin/TypstEngine.swift
       - path: Sources/TypstPlugin/TypstLSP.swift

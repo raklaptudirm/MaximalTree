@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import AppKit
 @testable import MaximalTreeKit
 // FileSystemProvider + NodeID(fileURL:) are compiled into this test target directly
 // (see project.yml), so no app import is needed for them.
@@ -267,5 +268,70 @@ import Foundation
 
         #expect(!FileManager.default.fileExists(atPath: target.path))
         #expect(changes.contains { if case .removed(let r) = $0 { return r == id } else { return false } })
+    }
+}
+
+/// Icons for source and config files.
+///
+/// These can't come from content types: macOS registers no UTI for most source
+/// files, so they'd all share the generic document icon.
+@Suite struct FileIconTests {
+    private func icon(_ path: String) -> NodeIcon? {
+        FileSystemProvider.languageIcon(for: URL(fileURLWithPath: path))
+    }
+
+    /// A missing SF Symbol renders as nothing — validate every name we ship.
+    @MainActor
+    @Test func everySymbolExists() {
+        let icons = Array(FileSystemProvider.iconsByExtension.values)
+            + Array(FileSystemProvider.iconsByFileName.values)
+        for name in Set(icons.map(\.systemName)).sorted() {
+            #expect(NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil,
+                    "unknown SF Symbol: \(name)")
+        }
+    }
+
+    @Test func sourceFilesGetLanguageIcons() {
+        // The ones content types can't see (dynamic/absent UTIs).
+        #expect(icon("/p/main.rs") != nil)
+        #expect(icon("/p/flake.nix") != nil)
+        #expect(icon("/p/app.ex") != nil)
+        #expect(icon("/p/Main.kt") != nil)
+        // Distinct languages read as distinct: same symbol family, own colour.
+        #expect(icon("/p/a.rs")?.tint != icon("/p/a.go")?.tint)
+        #expect(icon("/p/a.py")?.tint != icon("/p/a.rb")?.tint)
+    }
+
+    @Test func kindShowsInTheSymbol() {
+        #expect(icon("/p/run.sh")?.systemName == "terminal")
+        #expect(icon("/p/data.json")?.systemName == "curlybraces")
+        #expect(icon("/p/schema.sql")?.systemName == "cylinder")
+        #expect(icon("/p/style.css")?.systemName == "paintbrush")
+        #expect(icon("/p/Dockerfile")?.systemName == "cube")
+        #expect(icon("/p/Makefile")?.systemName == "hammer")
+        #expect(icon("/p/LICENSE")?.systemName == "checkmark.seal")
+        #expect(icon("/p/.gitignore")?.systemName == "arrow.triangle.branch")
+        #expect(icon("/p/main.swift")?.systemName == "swift")
+    }
+
+    @Test func unknownFilesDeferToContentTypes() {
+        // nil means "fall back to the UTI rules" — images, media, archives.
+        #expect(icon("/p/photo.jpeg") == nil)
+        #expect(icon("/p/mystery.zzz") == nil)
+        #expect(icon("/p/noextension") == nil)
+    }
+
+    @Test func nodesCarryTheLanguageIconEndToEnd() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("icons-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("main.rs")
+        try "fn main() {}".write(to: url, atomically: true, encoding: .utf8)
+
+        let id = try #require(NodeID(fileURL: url))
+        let node = try #require(FileSystemProvider.makeNode(url: url, id: id))
+        #expect(node.icon?.systemName == "chevron.left.forwardslash.chevron.right")
+        #expect(node.icon?.tint != nil, "a Rust file should not use the generic doc icon")
     }
 }

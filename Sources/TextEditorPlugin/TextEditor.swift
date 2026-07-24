@@ -18,15 +18,33 @@ final class TextEditorPlugin: NSObject, Plugin {
     func register(with registry: PluginRegistry) {
         registry.register(canvas: CanvasContribution(
             priority: 100,                       // beats FileSystem's Quick Look (0)
-            matches: { node in
-                guard let uti = node.uti, let type = UTType(uti) else { return false }
-                return type.conforms(to: .text)  // plain text, source code, …
-            },
+            matches: Self.handlesAsText(_:),
             // First open pays the highlighter's JS load behind the host's
             // loading indicator, not inside the first paint.
             prepare: { _ in await HighlightrTokenizer.warmUp() },
             make: { id, host in AnyView(TextEditorCanvas(nodeID: id).environment(host)) }
         ))
+    }
+
+    /// Whether this node should open in the text editor rather than fall through
+    /// to Quick Look.
+    ///
+    /// Content type alone isn't enough: macOS has **no registered UTI for most
+    /// source and config files** — Rust, Nix, Elixir, Lua, Kotlin, Scala,
+    /// `.conf`, `.gradle` all resolve to `dyn.…` types that conform to nothing,
+    /// and extensionless files (Makefile, Dockerfile) have no type at all. So we
+    /// also claim anything the editor has a grammar for: if we can highlight it,
+    /// we can edit it.
+    static func handlesAsText(_ node: Node) -> Bool {
+        // Directories are containers, never documents — and a directory named
+        // `foo.d` would otherwise look like a D source file.
+        guard node.id.scheme == "file", node.type != TypeID("file.directory")
+        else { return false }
+        if let uti = node.uti, let type = UTType(uti), type.conforms(to: .text) {
+            return true
+        }
+        guard let url = URL(string: node.id.uri) else { return false }
+        return EditorLanguage.id(for: url) != nil
     }
 }
 
