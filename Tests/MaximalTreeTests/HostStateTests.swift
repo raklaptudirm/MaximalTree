@@ -289,6 +289,64 @@ import Foundation
         #expect(store.active.rootURIs == ["file:///a"])
     }
 
+    /// Regression: restoring must *rewrite* a root whose canonical spelling
+    /// differs, not treat it as "old one vanished, new one appeared". Providers
+    /// build ids with `NodeID(canonical:)` but resolve through the normalizing
+    /// initializer, so the two can disagree — and the old prune-and-append lost
+    /// the root's folder and position, which reads as the root disappearing.
+    @Test func resolvingRewritesRootsInPlaceInsideTheirFolder() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("restore-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // Same directory, different spelling (a dot segment the provider folds away).
+        let canonical = try #require(NodeID(fileURL: dir)).uri
+        let stored = canonical.replacingOccurrences(
+            of: dir.lastPathComponent, with: "./\(dir.lastPathComponent)")
+        #expect(stored != canonical)
+
+        var entries: [RootEntry] = [
+            .folder(RootFolder(name: "Work", entries: [.root(stored)])),
+        ]
+        var ids: [NodeID] = []
+        RootLayout.resolveInPlace(&entries, using: [FileSystemProvider()], into: &ids)
+
+        #expect(ids.map(\.uri) == [canonical], "resolves to the live root")
+        #expect(entries.count == 1, "no duplicate re-appended at the top level")
+        guard case .folder(let folder) = entries[0] else {
+            Issue.record("the folder vanished"); return
+        }
+        #expect(folder.entries == [.root(canonical)],
+                "rewritten in place — still in its folder")
+    }
+
+    @Test func restorePreservesFolderMembershipAcrossLaunches() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("restore2-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = try store()
+        let root = try #require(NodeID(fileURL: dir))
+        store.reconcileRoots([root])
+        let folder = store.createFolder(named: "Work")
+        store.moveRoots([root.uri], toFolder: folder)
+
+        let restored = store.restoreRoots(using: [FileSystemProvider()])
+        #expect(restored == [root])
+        #expect(store.folderID(containing: root.uri) == folder)
+    }
+
+    /// A root whose provider isn't loaded (plugin missing this launch) must not
+    /// be silently deleted — it can't be judged, so it's kept.
+    @Test func rootsWithNoProviderSurviveRestore() throws {
+        let store = try store()
+        store.reconcileRoots([NodeID("stub://thing")!])
+        _ = store.restoreRoots(using: [FileSystemProvider()])   // no stub provider
+        #expect(store.active.rootURIs == ["stub://thing"])
+    }
+
     @Test func entryRefTokensRoundTrip() {
         let id = UUID()
         #expect(EntryRef(token: EntryRef.root("file:///x").token) == .root("file:///x"))

@@ -87,7 +87,7 @@ Sources/
     Web.swift                   #   WKWebView sessions (delegates, favicons), actions
     WebViews.swift              #   page/bookmarks canvases + address-bar inspector
 Vendor/typst-ffi/               # Rust staticlib: typst compiler/parser/renderers (C ABI)
-Tests/MaximalTreeTests/         # swift-testing suite (175 tests)
+Tests/MaximalTreeTests/         # swift-testing suite (178 tests)
 ```
 
 The generated `MaximalTree.xcodeproj` is **not** committed — regenerate it (below).

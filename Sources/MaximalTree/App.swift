@@ -83,7 +83,7 @@ final class AppModel {
     }
 
     private func reloadActiveWorkspaceRoots() {
-        let roots = workspaceStore.resolvedRoots(using: pluginHost.registry.providers)
+        let roots = workspaceStore.restoreRoots(using: pluginHost.registry.providers)
         store?.switchRoots(roots)
     }
 
@@ -241,15 +241,15 @@ final class AppModel {
         }
 
         let providers = pluginHost.registry.providers
-        var roots = workspaceStore.resolvedRoots(using: providers)
+        // Restore rewrites the layout in place (see `restoreRoots`) — roots keep
+        // their position and folder across launches.
+        var roots = workspaceStore.restoreRoots(using: providers)
         // Seed provider defaults (home directory) only on the very first launch —
         // a workspace the user deliberately emptied stays empty.
         if roots.isEmpty && workspaceStore.wasFreshlyCreated {
             roots = providers.flatMap { $0.roots() }
+            workspaceStore.reconcileRoots(roots)
         }
-        // Reconcile once at launch so any layout entry whose root no longer
-        // resolves is pruned, and freshly seeded defaults are recorded.
-        workspaceStore.reconcileRoots(roots)
         store.setRoots(roots)
     }
 

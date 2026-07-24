@@ -211,6 +211,37 @@ struct RootLayout: Codable, Equatable {
         return ids
     }
 
+    /// Resolve every root through its owning provider, rewriting entries whose
+    /// canonical spelling changed and collecting the live ids in display order.
+    ///
+    /// Dropped: roots the owning provider says are gone, and malformed uris.
+    /// **Kept**: roots whose scheme has no provider — a plugin that isn't loaded
+    /// right now can't testify that its roots are gone, and silently deleting a
+    /// user's sidebar entry is far worse than showing one that's briefly inert.
+    static func resolveInPlace(_ entries: inout [RootEntry],
+                               using providers: [NodeProvider],
+                               into ids: inout [NodeID]) {
+        var result: [RootEntry] = []
+        for entry in entries {
+            switch entry {
+            case .root(let uri):
+                guard let scheme = NodeID(uri)?.scheme else { continue }
+                guard let provider = providers.first(where: { $0.schemes.contains(scheme) })
+                else {
+                    result.append(entry)
+                    continue
+                }
+                guard let resolved = provider.resolve(uri) else { continue }
+                result.append(.root(resolved.uri))
+                ids.append(resolved)
+            case .folder(var folder):
+                resolveInPlace(&folder.entries, using: providers, into: &ids)
+                result.append(.folder(folder))
+            }
+        }
+        entries = result
+    }
+
     /// Every folder in the tree, depth-tagged — for the "Move to Folder" menu.
     static func folderList(_ entries: [RootEntry], depth: Int = 0)
         -> [(folder: RootFolder, depth: Int)] {
@@ -377,14 +408,30 @@ final class WorkspaceStore {
     // MARK: Roots of the active workspace
 
     /// Resolve the active workspace's stored roots to live NodeIDs, dropping any
-    /// that no longer resolve.
+    /// that no longer resolve. Read-only — see `restoreRoots` for the launch path.
     func resolvedRoots(using providers: [NodeProvider]) -> [NodeID] {
-        active.rootURIs.compactMap { uri in
-            guard let id = NodeID(uri), let scheme = id.scheme,
-                  let p = providers.first(where: { $0.schemes.contains(scheme) })
-            else { return nil }
-            return p.resolve(uri)
+        var entries = active.layout.entries
+        var ids: [NodeID] = []
+        RootLayout.resolveInPlace(&entries, using: providers, into: &ids)
+        return ids
+    }
+
+    /// Restore the active workspace's roots at launch (and on workspace switch).
+    ///
+    /// Resolves every stored root **in place**: a provider may spell an identity
+    /// differently than we stored it (they build ids with `NodeID(canonical:)`
+    /// but resolve through the normalizing initializer), and that must not read
+    /// as "the old root vanished, here's a new one" — that used to prune the
+    /// entry out of its folder and re-append it loose at the end, which looks
+    /// exactly like the root disappearing. Rewriting keeps its place; only roots
+    /// the owning provider reports gone are dropped.
+    @discardableResult
+    func restoreRoots(using providers: [NodeProvider]) -> [NodeID] {
+        var ids: [NodeID] = []
+        mutateActive { workspace in
+            RootLayout.resolveInPlace(&workspace.layout.entries, using: providers, into: &ids)
         }
+        return ids
     }
 
     /// Reconcile the active workspace's layout with the live root set (called on
