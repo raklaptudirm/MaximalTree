@@ -1,11 +1,9 @@
 import SwiftUI
 import AppKit
-import Highlightr
 
 // The editor's highlighting vocabulary and machinery: the engine-neutral token
-// kinds plugins emit, the palette that colors them in code styles, and the
-// stock Highlightr tokenizer that serves every source file without a
-// dedicated parser.
+// kinds plugins emit, the palette that colors them, and the stock tokenizer
+// that serves every source file without a dedicated parser.
 
 // MARK: - Tokenizer
 
@@ -22,8 +20,9 @@ public enum EditorTokenKind: Equatable {
     /// equations (`$ x $`) center in their line. The delimiters arrive
     /// separately as `punctuation`, so they conceal.
     case math(block: Bool)
-    /// A token colored by an external highlighter (embedded foreign-language
-    /// code): the tokenizer supplies both appearances, paint-time picks one.
+    /// A token whose colour a tokenizer pins itself, for the rare thing with no
+    /// semantic equivalent (diff additions/deletions read *as* colours). Both
+    /// appearances are supplied; paint-time picks one.
     case colored(light: NSColor, dark: NSColor)
     case aligned(EditorAlignment)
     /// Structural delimiters (content brackets, decorator-call heads): dimmed mono
@@ -100,30 +99,20 @@ func fontVariant(of base: NSFont, bold: Bool = false, italic: Bool = false,
     return NSFont(descriptor: descriptor, size: size) ?? base
 }
 
-// MARK: - Stock tokenizer (Highlightr)
+// MARK: - Stock tokenizer (highlight.js)
 
-/// The framework's batteries-included tokenizer: whole-document syntax
-/// highlighting via Highlightr (highlight.js, ~190 languages), emitted as
-/// appearance-paired `.colored` tokens so one tokenize serves light and dark.
-/// Plugins with a real parser (typst) use their own tokenizer; everything else
-/// gets this one for free.
+/// The framework's batteries-included tokenizer: whole-document highlighting via
+/// the bundled highlight.js (~190 grammars), emitted as the editor's **own**
+/// token kinds rather than baked-in colours. Plugins with a real parser (typst)
+/// use their own tokenizer; everything else gets this one for free.
+///
+/// Because the tokens are semantic, one pass serves both appearances — the
+/// palette resolves colours at paint time — so switching light/dark repaints
+/// from cache instead of re-highlighting.
 @MainActor
-public final class HighlightrTokenizer: EditorTokenizer {
-    /// One highlighter per appearance, shared process-wide. Lazily built on
-    /// first use (a JS context + highlight.js load, ~100ms once).
-    private static let lightHighlighter: Highlightr? = {
-        let highlighter = Highlightr()
-        highlighter?.setTheme(to: "xcode")
-        return highlighter
-    }()
-    private static let darkHighlighter: Highlightr? = {
-        let highlighter = Highlightr()
-        highlighter?.setTheme(to: "atom-one-dark")
-        return highlighter
-    }()
-
-    /// Highlighted runs per (language, code). Whole documents make big keys —
-    /// keep the cache tiny; its job is absorbing repaints, not history.
+public final class SyntaxTokenizer: EditorTokenizer {
+    /// Runs per (language, code). Whole documents make big keys — keep the cache
+    /// tiny; its job is absorbing repaints, not history.
     private static var cache: [String: [(NSRange, EditorTokenKind)]] = [:]
 
     /// Skip pathological inputs: highlight.js is O(document) per repaint.
@@ -141,22 +130,15 @@ public final class HighlightrTokenizer: EditorTokenizer {
         self.init(language: id)
     }
 
-    /// Pay the JS-context + highlight.js load behind a loading indicator
-    /// instead of the first paint.
-    public static func warmUp() {
-        _ = lightHighlighter
-        _ = darkHighlighter
-    }
-
-    /// Languages the bundled highlight.js actually knows.
-    private static let supported: Set<String> =
-        Set(lightHighlighter?.supportedLanguages() ?? [])
+    /// Pay the JS-context + grammar load behind a loading indicator instead of
+    /// the first paint.
+    public static func warmUp() { SyntaxEngine.warmUp() }
 
     /// Whether `language` can be highlighted. Worth checking before every call:
     /// handed an unknown name, highlight.js silently falls back to *auto
     /// detection*, which paints confident but wrong colors.
     public static func isSupported(_ language: String) -> Bool {
-        supported.contains(language)
+        SyntaxEngine.supportedLanguages.contains(language)
     }
 
     public func tokens(in text: String) -> [(range: NSRange, kind: EditorTokenKind)] {
@@ -172,22 +154,69 @@ public final class HighlightrTokenizer: EditorTokenizer {
         let key = "\(language)\u{0}\(code)"
         if let cached = cache[key] { return cached }
 
-        var runs: [(NSRange, EditorTokenKind)] = []
-        if let light = lightHighlighter?.highlight(code, as: language),
-           let dark = darkHighlighter?.highlight(code, as: language),
-           light.string == code, dark.length == light.length {
-            light.enumerateAttribute(.foregroundColor,
-                                     in: NSRange(location: 0, length: light.length)) { value, range, _ in
-                guard let lightColor = value as? NSColor else { return }
-                let darkColor = dark.attribute(.foregroundColor, at: range.location,
-                                               effectiveRange: nil) as? NSColor ?? lightColor
-                runs.append((range, .colored(light: lightColor, dark: darkColor)))
+        let runs = SyntaxEngine.runs(for: code, language: language)
+            .compactMap { range, className -> (NSRange, EditorTokenKind)? in
+                kind(for: className).map { (range, $0) }
             }
-        }
         if cache.count >= 4 { cache.removeAll(keepingCapacity: true) }
         cache[key] = runs
         return runs
     }
+
+    /// highlight.js class → the editor's token vocabulary.
+    ///
+    /// Deliberately restricted to *colour-only* kinds. The markup kinds
+    /// (`.heading`, `.punctuation`, `.listItem`, …) also drive concealment and
+    /// layout in prose styles, which would be wrong inside a code block — a
+    /// markdown snippet in a typst document must not hide its own `#` markers.
+    static func kind(for className: String) -> EditorTokenKind? {
+        // Classes arrive as `hljs-title function_` — try the whole thing, then
+        // the leading scope.
+        if let direct = kinds[className] { return direct }
+        guard let head = className.split(separator: " ").first else { return nil }
+        return kinds[String(head)]
+    }
+
+    private static let kinds: [String: EditorTokenKind] = [
+        "hljs-comment": .comment, "hljs-quote": .comment, "hljs-doctag": .comment,
+
+        "hljs-string": .string, "hljs-regexp": .string, "hljs-char": .string,
+        "hljs-char.escape_": .string, "hljs-template-tag": .string,
+
+        "hljs-number": .number, "hljs-formula": .number,
+
+        "hljs-keyword": .keyword, "hljs-literal": .keyword,
+        "hljs-selector-tag": .keyword, "hljs-section": .keyword,
+        "hljs-strong": .keyword, "hljs-bullet": .keyword,
+
+        "hljs-type": .type, "hljs-built_in": .type, "hljs-class": .type,
+        "hljs-title.class_": .type, "hljs-title class_": .type,
+        "hljs-title.class_.inherited__": .type,
+
+        "hljs-title": .function, "hljs-title.function_": .function,
+        "hljs-title function_": .function, "hljs-function": .function,
+
+        "hljs-variable": .variable, "hljs-template-variable": .variable,
+        "hljs-variable.language_": .variable, "hljs-variable.constant_": .variable,
+        "hljs-params": .variable, "hljs-emphasis": .variable,
+
+        "hljs-attr": .property, "hljs-attribute": .property,
+        "hljs-property": .property, "hljs-meta": .property,
+        "hljs-symbol": .property, "hljs-selector-attr": .property,
+        "hljs-selector-pseudo": .property, "hljs-meta.keyword_": .property,
+
+        "hljs-tag": .tag, "hljs-name": .tag,
+        "hljs-selector-id": .tag, "hljs-selector-class": .tag,
+
+        "hljs-link": .link, "hljs-code": .raw,
+
+        // Diffs read by colour, not by category — the one place we still pin
+        // both appearances ourselves.
+        "hljs-addition": .colored(light: NSColor(hex: "267507"),
+                                  dark: NSColor(hex: "7EE787")),
+        "hljs-deletion": .colored(light: NSColor(hex: "C41A16"),
+                                  dark: NSColor(hex: "FF8170")),
+    ]
 }
 
 // MARK: - Helpers

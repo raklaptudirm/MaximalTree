@@ -3,16 +3,16 @@ import AppKit
 import MaximalEditorKit
 import MaximalTreeKit
 
-// The editor-seam implementations: parser-backed tokens (with Highlightr for
-// embedded foreign code), tinymist-backed completions, and compiler-backed
-// rendered math.
+// The editor-seam implementations: parser-backed tokens (with the editor's
+// stock tokenizer for embedded foreign code), tinymist-backed completions, and
+// compiler-backed rendered math.
 
 // MARK: - Tokenizer
 
 /// Maps the real typst parser's tokens (via the FFI) to the editor's
 /// engine-neutral vocabulary. Foreign-language code inside raw blocks arrives
 /// as `embed` regions carrying their language; those are expanded through the
-/// editor framework's shared Highlightr tokenizer.
+/// editor framework's shared syntax tokenizer.
 final class TypstTokenizer: EditorTokenizer {
     func tokens(in text: String) -> [(range: NSRange, kind: EditorTokenKind)] {
         // The real parser (mode-aware, exact spans) — the only tokenizer.
@@ -65,7 +65,7 @@ final class TypstTokenizer: EditorTokenizer {
         // Raw-block tags are whatever the author typed (`yml`, `sh`, `C++`) —
         // normalize to a canonical highlighter language first.
         guard let id = EditorLanguage.id(forTag: language) else { return [] }
-        return HighlightrTokenizer.highlight(code, language: id).map {
+        return SyntaxTokenizer.highlight(code, language: id).map {
             (NSRange(location: $0.0.location + offset, length: $0.0.length), $0.1)
         }
     }

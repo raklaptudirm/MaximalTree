@@ -47,8 +47,9 @@ Sources/
     EditorKit.swift             #   MaximalEditor view + style + controller + coordinator
                                 #   (markup rendering, concealment, math overlays,
                                 #   completion triggering, scroll anchoring)
-    EditorHighlighting.swift    #   token vocabulary, palette, Highlightr tokenizer
+    EditorHighlighting.swift    #   token vocabulary, palette, syntax tokenizer
     EditorLanguage.swift        #   file/tag → highlight.js language (130 languages)
+    SyntaxEngine.swift          #   highlight.js in a JSContext; HTML → class runs
     EditorCompletion.swift      #   completion seam onto the engine's window
     EditorMath.swift            #   rendered-math seam (baseline-annotated images)
   MaximalTreeKit/               # the plugin SDK (dynamic framework)
@@ -69,7 +70,7 @@ Sources/
     FileIcons.swift             #   per-language icons (symbol = kind, tint = language)
     FileViews.swift             #   canvas (Quick Look) + inspector (editable)
   TextEditorPlugin/             # reference cross-plugin renderer (loadable bundle)
-    TextEditor.swift            #   Highlightr-highlighted editor over filesystem files
+    TextEditor.swift            #   syntax-highlighted editor over filesystem files
   TypstPlugin/                  # the flagship: typst as a daily driver (loadable bundle)
     TypstCore.swift             #   diagnostics, notes pkg, TypstRef URIs,
                                 #   structure/edit helpers (all tested)
@@ -87,7 +88,8 @@ Sources/
     Web.swift                   #   WKWebView sessions (delegates, favicons), actions
     WebViews.swift              #   page/bookmarks canvases + address-bar inspector
 Vendor/typst-ffi/               # Rust staticlib: typst compiler/parser/renderers (C ABI)
-Tests/MaximalTreeTests/         # swift-testing suite (178 tests)
+Vendor/highlight-js/            # highlight.min.js (BSD-3) — ~190 grammars, run in-process
+Tests/MaximalTreeTests/         # swift-testing suite (184 tests)
 ```
 
 The generated `MaximalTree.xcodeproj` is **not** committed — regenerate it (below).

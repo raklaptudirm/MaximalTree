@@ -16,14 +16,6 @@ packages:
     url: https://github.com/krzyzanowskim/STTextView
     from: "2.3.11"
 
-  # highlight.js via JavaScriptCore (~190 languages, macOS + iOS): the editor
-  # framework's stock tokenizer for source files, and the highlighter for
-  # foreign languages inside typst raw blocks. Typst code itself is highlighted
-  # by the real typst parser in Vendor/typst-ffi.
-  Highlightr:
-    url: https://github.com/raspu/Highlightr
-    from: "2.2.0"
-
   # TextKit 2 conveniences (NSRange ↔ NSTextRange, segment frames) — already a
   # transitive dependency of STTextView; imported directly for math overlays.
   STTextKitPlus:
@@ -81,12 +73,16 @@ targets:
   MaximalEditorKit:
     type: framework
     platform: macOS
-    sources: [Sources/MaximalEditorKit]
+    sources:
+      - Sources/MaximalEditorKit
+      # highlight.js (~190 grammars) runs in our own JSContext — see
+      # SyntaxEngine.swift for why we don't use a wrapper library.
+      - path: Vendor/highlight-js/highlight.min.js
+        buildPhase: resources
     dependencies:
       - package: STTextView
         product: STTextView
       - package: STTextKitPlus
-      - package: Highlightr
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.editorkit

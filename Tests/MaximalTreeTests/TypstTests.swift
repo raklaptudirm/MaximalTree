@@ -19,7 +19,7 @@ import Foundation
             .union(EditorLanguage.idsByFileName.values)
             .union(EditorLanguage.aliases.values)
         for id in ids.sorted() {
-            #expect(HighlightrTokenizer.isSupported(id), "unsupported language id: \(id)")
+            #expect(SyntaxTokenizer.isSupported(id), "unsupported language id: \(id)")
         }
         // The table is meant to be broad, not a token gesture.
         #expect(ids.count > 100, "expected wide language coverage, got \(ids.count)")
@@ -82,29 +82,65 @@ import Foundation
 
 /// The stock tokenizer driving the real highlight.js engine.
 @MainActor
-@Suite struct HighlightrTokenizerTests {
+@Suite struct SyntaxTokenizerTests {
     @Test func fileURLInitFollowsLanguageDetection() {
-        #expect(HighlightrTokenizer(fileURL: URL(fileURLWithPath: "/a/b.swift")) != nil)
-        #expect(HighlightrTokenizer(fileURL: URL(fileURLWithPath: "/p/Dockerfile")) != nil)
-        #expect(HighlightrTokenizer(fileURL: URL(fileURLWithPath: "/a/b.xyzunknown")) == nil)
+        #expect(SyntaxTokenizer(fileURL: URL(fileURLWithPath: "/a/b.swift")) != nil)
+        #expect(SyntaxTokenizer(fileURL: URL(fileURLWithPath: "/p/Dockerfile")) != nil)
+        #expect(SyntaxTokenizer(fileURL: URL(fileURLWithPath: "/a/b.xyzunknown")) == nil)
     }
 
-    @Test func highlightsSwiftSourceWithPairedColors() {
-        let tokenizer = HighlightrTokenizer(language: "swift")
-        let tokens = tokenizer.tokens(in: "let x = 1 // done")
+    /// The point of running highlight.js ourselves: tokens come back in the
+    /// editor's own vocabulary, so the palette themes them and one pass serves
+    /// both appearances.
+    @Test func emitsSemanticKindsNotBakedInColours() {
+        let tokens = SyntaxTokenizer(language: "swift")
+            .tokens(in: "let x = 1 // done")
         #expect(!tokens.isEmpty)
-        #expect(tokens.allSatisfy {
+        #expect(tokens.contains { $0.kind == .keyword }, "`let` is a keyword")
+        #expect(tokens.contains { $0.kind == .number }, "`1` is a number")
+        #expect(tokens.contains { $0.kind == .comment }, "`// done` is a comment")
+        #expect(!tokens.contains {
             if case .colored = $0.kind { return true } else { return false }
-        })
+        }, "code should not carry pinned colours")
+    }
+
+    /// Ranges must land on the *source* text, not highlight.js's escaped HTML.
+    @Test func rangesSurviveEscapingAndUnicode() {
+        let code = "let s = \"a<b & c\" // ✅ done"
+        let tokens = SyntaxTokenizer(language: "swift").tokens(in: code)
+        let ns = code as NSString
+        let string = tokens.first { $0.kind == .string }
+        #expect(string.map { ns.substring(with: $0.range) } == "\"a<b & c\"",
+                "the escaped `<` and `&` must not shift offsets")
+        let comment = tokens.first { $0.kind == .comment }
+        #expect(comment.map { ns.substring(with: $0.range) } == "// ✅ done",
+                "a non-BMP emoji must not shift offsets either")
+    }
+
+    @Test func markupKindsNeverLeakFromCode() {
+        // Markdown emits sections/bullets; mapping those to markup kinds would
+        // conceal characters inside a code block, so they must arrive as
+        // colour-only kinds.
+        let tokens = SyntaxTokenizer(language: "markdown")
+            .tokens(in: "# Title\n\n- item\n")
+        #expect(!tokens.isEmpty)
+        for token in tokens {
+            switch token.kind {
+            case .heading, .punctuation, .listItem, .listMarker, .aligned,
+                 .math, .struck, .underlined, .term, .strong, .emphasis:
+                Issue.record("markup kind \(token.kind) leaked from a code tokenizer")
+            default: break
+            }
+        }
     }
 
     @Test func unknownLanguagesYieldNothingRatherThanGuesses() {
         // No auto-detection fallback: a language we can't name paints nothing.
-        #expect(HighlightrTokenizer.highlight("let x = 1", language: "notalanguage").isEmpty)
+        #expect(SyntaxTokenizer.highlight("let x = 1", language: "notalanguage").isEmpty)
     }
 
     @Test func highlightsAcrossTheBreadthOfTheTable() {
-        // A spread of grammars, each producing colored runs for real snippets.
+        // A spread of grammars, each producing tokens for real snippets.
         let samples: [(String, String)] = [
             ("python", "def f(x):\n    return x  # ok"),
             ("ruby", "def f(x)\n  x # ok\nend"),
@@ -123,9 +159,44 @@ import Foundation
             ("lua", "local x = 1 -- comment"),
         ]
         for (language, code) in samples {
-            #expect(!HighlightrTokenizer.highlight(code, language: language).isEmpty,
+            #expect(!SyntaxTokenizer.highlight(code, language: language).isEmpty,
                     "no highlighting for \(language)")
         }
+    }
+
+    /// Diff hunks read *as* colours — the one case with no semantic equivalent.
+    @Test func diffsKeepPinnedColours() {
+        let tokens = SyntaxTokenizer.highlight("--- a\n+++ b\n+added\n-removed\n",
+                                               language: "diff")
+        #expect(tokens.contains {
+            if case .colored = $0.1 { return true } else { return false }
+        })
+    }
+}
+
+/// The HTML→runs scanner, exercised without the JS engine.
+@MainActor
+@Suite struct SyntaxEngineParsingTests {
+    @Test func decodesEntitiesAndNesting() {
+        let html = "<span class=\"hljs-keyword\">if</span> a &lt; b &amp;&amp; c"
+        let runs = SyntaxEngine.parse(html: html, matching: "if a < b && c")
+        #expect(runs.count == 1)
+        #expect(runs[0].0 == NSRange(location: 0, length: 2))
+        #expect(runs[0].1 == "hljs-keyword")
+    }
+
+    @Test func innermostClassWins() {
+        let html = "<span class=\"hljs-function\">f<span class=\"hljs-title\">g</span></span>"
+        let runs = SyntaxEngine.parse(html: html, matching: "fg")
+        #expect(runs.map(\.1) == ["hljs-function", "hljs-title"])
+        #expect(runs[1].0 == NSRange(location: 1, length: 1))
+    }
+
+    /// If the decoded text ever stops matching the source, offsets would be
+    /// wrong — paint nothing rather than paint in the wrong place.
+    @Test func mismatchedOutputPaintsNothing() {
+        #expect(SyntaxEngine.parse(html: "totally different", matching: "abc").isEmpty)
+        #expect(SyntaxEngine.parse(html: "<div>x</div>", matching: "x").isEmpty)
     }
 }
 

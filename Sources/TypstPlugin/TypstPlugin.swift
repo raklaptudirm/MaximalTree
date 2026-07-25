@@ -36,7 +36,7 @@ final class TypstPlugin: NSObject, Plugin {
             // loading indicator) — never inside a paint.
             prepare: { _ in
                 TypstEngine.warmUp()
-                await HighlightrTokenizer.warmUp()
+                await SyntaxTokenizer.warmUp()
             },
             make: { id, host in AnyView(TypstCanvas(nodeID: id).environment(host)) }
         ))

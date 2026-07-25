@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import Highlightr
 import STTextView
 import STTextKitPlus
 
@@ -15,7 +14,7 @@ import STTextKitPlus
 // This file: the editor view, its style, the controller, and the coordinator
 // (binding sync, markup rendering, concealment, math overlays, completion
 // triggering, scroll anchoring). Companions: EditorHighlighting.swift (token
-// vocabulary + Highlightr tokenizer), EditorCompletion.swift (completion
+// vocabulary + syntax tokenizer), EditorCompletion.swift (completion
 // seam), EditorMath.swift (rendered-math seam).
 //
 // Ground rules:
