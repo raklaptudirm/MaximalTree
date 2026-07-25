@@ -80,6 +80,42 @@ import Foundation
     }
 }
 
+/// The typst tokenizer memoizes its last parse, since repaints (a click into
+/// another paragraph, a theme switch) far outnumber edits. A cache is only
+/// worth having if it cannot serve tokens for text that no longer exists.
+@MainActor
+@Suite struct TypstTokenizerCacheTests {
+    private func kinds(_ tokens: [(range: NSRange, kind: EditorTokenKind)]) -> [String] {
+        tokens.map { "\($0.range)-\($0.kind)" }
+    }
+
+    @Test func repeatedRepaintsOfUnchangedTextAgree() {
+        let tokenizer = TypstTokenizer()
+        let text = "= Heading\n\nProse with $x^2$ and *strong* words."
+        let first = tokenizer.tokens(in: text)
+        let second = tokenizer.tokens(in: text)
+        #expect(!first.isEmpty)
+        #expect(kinds(first) == kinds(second))
+    }
+
+    @Test func editedTextIsReparsedNotServedFromTheCache() {
+        let tokenizer = TypstTokenizer()
+        _ = tokenizer.tokens(in: "= Heading\n\nJust prose here.")
+        // Same length would not save it either; the heading moved and gained math.
+        let edited = "Just prose here.\n\n= Heading\n\n$x^2$ trailing"
+        let tokens = tokenizer.tokens(in: edited)
+        let ns = edited as NSString
+        for token in tokens {
+            #expect(token.range.upperBound <= ns.length, "token outside the new text")
+        }
+        #expect(tokens.contains { if case .math = $0.kind { return true } else { return false } },
+                "the re-parse missed math the first text didn't have")
+        #expect(tokens.contains { if case .heading = $0.kind {
+            return $0.range.location > 10
+        } else { return false } }, "heading token still at its old location")
+    }
+}
+
 /// The stock tokenizer driving the real highlight.js engine.
 @MainActor
 @Suite struct SyntaxTokenizerTests {

@@ -14,7 +14,23 @@ import MaximalTreeKit
 /// as `embed` regions carrying their language; those are expanded through the
 /// editor framework's shared syntax tokenizer.
 final class TypstTokenizer: EditorTokenizer {
+    /// The last parse, keyed by the text it described.
+    ///
+    /// Repaints outnumber edits: moving the caret to another paragraph repaints
+    /// the whole document without changing a character, and so does a theme
+    /// switch. Parsing is cheap — measured ~0.1ms per KB, so under 4ms for a
+    /// 37KB document — but it's pure waste when the text is identical, and the
+    /// result depends on nothing else.
+    private var cached: (text: String, tokens: [(range: NSRange, kind: EditorTokenKind)])?
+
     func tokens(in text: String) -> [(range: NSRange, kind: EditorTokenKind)] {
+        if let cached, cached.text == text { return cached.tokens }
+        let tokens = parse(text)
+        cached = (text, tokens)
+        return tokens
+    }
+
+    private func parse(_ text: String) -> [(range: NSRange, kind: EditorTokenKind)] {
         // The real parser (mode-aware, exact spans) — the only tokenizer.
         guard let parsed = TypstEngine.tokens(in: text) else { return [] }
         let ns = text as NSString
