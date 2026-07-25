@@ -285,12 +285,14 @@ public struct MaximalEditor: NSViewRepresentable {
         /// views once layout settles.
         private var pendingMath: [(range: NSRange, equation: RenderedEquation, block: Bool)] = []
         private var mathOverlays: [NSImageView] = []
+        private var isPlacingOverlays = false
 
         /// The caret's viewport position captured before a repaint, restored
         /// after layout settles. Lazily arriving math images change line
         /// heights; without anchoring, a fragment jump (or plain reading
         /// position) drifts as the document reflows above the caret.
-        private var pendingScrollAnchor: (location: NSTextLocation, offset: CGFloat)?
+        private var pendingScrollAnchor: (anchor: ViewportAnchor.Anchor,
+                                          caretWasVisible: Bool)?
         // nonisolated(unsafe): only written once from installObservers (main)
         // and read in deinit; NotificationCenter removal is thread-safe.
         private nonisolated(unsafe) var observers: [NSObjectProtocol] = []
@@ -459,9 +461,9 @@ public struct MaximalEditor: NSViewRepresentable {
             paragraphStyles.removeAll()
             pendingMath.removeAll()
             // Repaints can change layout (math reservations landing, markup
-            // concealment) — anchor the caret's viewport position now so the
-            // text doesn't jump under the reader when line heights change.
-            pendingScrollAnchor = caretScrollAnchor()
+            // concealment) — pin the topmost visible line now so the text doesn't
+            // shift under the reader when line heights change.
+            captureScrollAnchor()
             // Every exit re-syncs overlays and the anchor — including removal
             // when the doc emptied or the style stopped rendering markup.
             // Deferred a tick: TextKit must lay out the new attributes first.
@@ -681,9 +683,22 @@ public struct MaximalEditor: NSViewRepresentable {
         /// each paint (layout must settle first) and again whenever layout moves
         /// under the overlays (scroll, resize).
         private func layoutMathOverlays() {
+            // Placement forces the view's pending layout, which can scroll and
+            // re-enter here through the bounds observer.
+            guard !isPlacingOverlays else { return }
+            isPlacingOverlays = true
+            defer { isPlacingOverlays = false }
+
             for view in mathOverlays { view.removeFromSuperview() }
             mathOverlays.removeAll()
             guard let textView, !pendingMath.isEmpty else { return }
+            // Resolve the view's pending layout *before* measuring. A repaint's
+            // attribute changes only flag the view as needing layout (STTextView
+            // never invalidates the layout manager itself), so until that pass
+            // runs every fragment origin still describes the pre-repaint
+            // document — measured 36pt out in practice, uniformly, which is an
+            // image sitting well below the equation it belongs to.
+            textView.layoutSubtreeIfNeeded()
             let gutterWidth = textView.gutterView?.frame.width ?? 0
 
             for (range, equation, block) in pendingMath {
@@ -710,38 +725,51 @@ public struct MaximalEditor: NSViewRepresentable {
 
         // MARK: Scroll anchoring
 
-        /// Where the caret sits in the viewport right now — nil when it isn't
-        /// visible (then the repaint shouldn't touch the scroll position).
-        private func caretScrollAnchor() -> (location: NSTextLocation, offset: CGFloat)? {
-            guard let textView,
-                  let contentManager = textView.textLayoutManager.textContentManager
-            else { return nil }
+        /// Pin the top of the viewport across the repaint, and note whether the
+        /// caret was on screen — a reveal can make its paragraph taller and push
+        /// it out, but only chase it back if the reader was looking at it.
+        private func captureScrollAnchor() {
+            guard let textView else { return }
+            let visible = textView.visibleRect
+            guard let anchor = ViewportAnchor.capture(
+                in: textView.textLayoutManager, visible: visible)
+            else { pendingScrollAnchor = nil; return }
+            pendingScrollAnchor = (anchor, caretIsVisible(in: textView))
+        }
+
+        /// Put the anchored line back where it was, compensating for whatever
+        /// line-height changes the repaint landed above it.
+        private func restoreScrollAnchor() {
+            guard let (anchor, caretWasVisible) = pendingScrollAnchor else { return }
+            pendingScrollAnchor = nil
+            guard let textView else { return }
+            if let targetY = ViewportAnchor.targetY(for: anchor,
+                                                    in: textView.textLayoutManager) {
+                let visible = textView.visibleRect
+                let clamped = max(0, targetY)
+                if abs(clamped - visible.minY) > 0.5 {
+                    textView.scroll(CGPoint(x: visible.minX, y: clamped))
+                }
+            }
+            // Revealing the caret's paragraph makes it taller, which can push the
+            // caret below the fold even though the view didn't move.
+            if caretWasVisible, !caretIsVisible(in: textView) {
+                textView.scrollRangeToVisible(
+                    NSRange(location: textView.textSelection.location, length: 0))
+            }
+        }
+
+        private func caretIsVisible(in textView: STTextView) -> Bool {
+            guard let contentManager = textView.textLayoutManager.textContentManager
+            else { return false }
             let length = ((textView.text ?? "") as NSString).length
             let caret = min(textView.textSelection.location, length)
             guard let range = NSTextRange(NSRange(location: caret, length: 0),
                                           in: contentManager),
                   let frame = textView.textLayoutManager.textSegmentFrame(
                     at: range.location, type: .standard)
-            else { return nil }
-            let visible = textView.visibleRect
-            guard frame.midY >= visible.minY, frame.midY <= visible.maxY else { return nil }
-            return (range.location, frame.minY - visible.minY)
-        }
-
-        /// Put the caret's line back at the viewport offset it had before the
-        /// repaint, compensating for whatever line-height changes landed above it.
-        private func restoreScrollAnchor() {
-            guard let anchor = pendingScrollAnchor else { return }
-            pendingScrollAnchor = nil
-            guard let textView,
-                  let frame = textView.textLayoutManager.textSegmentFrame(
-                    at: anchor.location, type: .standard)
-            else { return }
-            let visible = textView.visibleRect
-            let targetY = max(0, frame.minY - anchor.offset)
-            if abs(targetY - visible.minY) > 0.5 {
-                textView.scroll(CGPoint(x: visible.minX, y: targetY))
-            }
+            else { return false }
+            return frame.intersects(textView.visibleRect)
         }
 
     }

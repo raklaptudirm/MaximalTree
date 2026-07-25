@@ -51,6 +51,7 @@ Sources/
     EditorLanguage.swift        #   file/tag → highlight.js language (130 languages)
     SyntaxEngine.swift          #   highlight.js in a JSContext; HTML → class runs
     MathOverlayLayout.swift     #   where equation images sit (line-exact geometry)
+    ViewportAnchor.swift        #   pin the top visible line across a repaint
     EditorCompletion.swift      #   completion seam onto the engine's window
     EditorMath.swift            #   rendered-math seam (baseline-annotated images)
   MaximalTreeKit/               # the plugin SDK (dynamic framework)

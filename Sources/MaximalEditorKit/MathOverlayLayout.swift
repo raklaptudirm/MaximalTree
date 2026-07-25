@@ -18,6 +18,9 @@ import STTextKitPlus
 ///    frame is a *union* when the range straddles a line break (which the
 ///    equation's reserved width invites), and a union's top edge belongs to the
 ///    first line — placing the image above where the equation actually sits.
+/// 3. **Lay out the whole prefix, not just the equation** (see
+///    `ensureLayout(upTo:)`) — an absolute y is only as good as everything
+///    above it.
 @MainActor
 enum MathOverlayLayout {
     /// The image's frame in layout coordinates, or nil when the equation isn't
@@ -31,7 +34,7 @@ enum MathOverlayLayout {
         guard let contentManager = layoutManager.textContentManager,
               let textRange = NSTextRange(range, in: contentManager)
         else { return nil }
-        layoutManager.ensureLayout(for: textRange)
+        layoutManager.ensureLayout(upTo: textRange.endLocation)
 
         guard let (fragment, line) = lineFragment(containing: textRange.location,
                                                   in: layoutManager),
@@ -103,5 +106,22 @@ enum MathOverlayLayout {
             return false        // only the fragment the location belongs to
         }
         return result
+    }
+}
+
+extension NSTextLayoutManager {
+    /// Lay out everything up to `location` for real.
+    ///
+    /// TextKit 2 will hand back a fragment whose *origin* is an estimate:
+    /// laying out a sub-range doesn't recompute the fragments above it, and a
+    /// fragment already marked valid keeps its old origin no matter what
+    /// changed height earlier. After a repaint that grew text further up, a
+    /// measurement can be a hundred points out — an equation drawn over a
+    /// paragraph it has nothing to do with. An absolute y is only as
+    /// trustworthy as everything above it.
+    func ensureLayout(upTo location: NSTextLocation) {
+        guard let prefix = NSTextRange(location: documentRange.location, end: location)
+        else { return }
+        ensureLayout(for: prefix)
     }
 }

@@ -187,6 +187,44 @@ import Foundation
         #expect(abs(immediate.minX - settled.minX) < 0.5)
     }
 
+    /// Clicking reveals a paragraph, which changes heights *above* everything
+    /// below it. TextKit doesn't recompute those origins just because you asked
+    /// for the equation's own range — the fragment is still "valid", so it keeps
+    /// an origin measured before the growth, and the image lands roughly a
+    /// screen too high, over unrelated text. Placement has to lay out the
+    /// prefix.
+    @Test func placementSurvivesTextGrowingAboveTheEquation() throws {
+        let prose = (0..<30)
+            .map { "Paragraph \($0): " + String(repeating: "some words to wrap ", count: 4) }
+            .joined(separator: "\n")
+        let text = prose + "\ntail $e^(i pi)$ after"
+        let equation = NSRange(location: (prose as NSString).length + 6, length: 10)
+        let (layoutManager, _) = layout(text: text, equation: equation, imageWidth: 60,
+                                        lineHeightMultiple: 1)
+        let storage = layoutManager.textContentManager as? NSTextContentStorage
+
+        // A repaint that reveals markup near the top: same characters, taller.
+        storage?.textStorage?.beginEditing()
+        storage?.textStorage?.addAttribute(.font, value: NSFont.systemFont(ofSize: 34),
+                                           range: NSRange(location: 0, length: 200))
+        storage?.textStorage?.endEditing()
+        layoutManager.invalidateLayout(for: layoutManager.documentRange)
+
+        let immediate = try #require(MathOverlayLayout.frame(
+            forEquationAt: equation, image: CGSize(width: 60, height: 18),
+            imageBaseline: 14, block: false, lineHeightMultiple: 1,
+            in: layoutManager))
+
+        layoutManager.ensureLayout(for: layoutManager.documentRange)
+        let settled = try #require(MathOverlayLayout.frame(
+            forEquationAt: equation, image: CGSize(width: 60, height: 18),
+            imageBaseline: 14, block: false, lineHeightMultiple: 1,
+            in: layoutManager))
+
+        #expect(abs(immediate.minY - settled.minY) < 0.5,
+                "placed against an estimated origin: \(immediate.minY) vs \(settled.minY)")
+    }
+
     @Test func blockEquationsCentreInTheirLine() throws {
         let text = "before\n$ x + y $\nafter"
         let equation = NSRange(location: 7, length: 9)
