@@ -50,6 +50,7 @@ Sources/
     EditorHighlighting.swift    #   token vocabulary, palette, syntax tokenizer
     EditorLanguage.swift        #   file/tag → highlight.js language (130 languages)
     SyntaxEngine.swift          #   highlight.js in a JSContext; HTML → class runs
+    MathOverlayLayout.swift     #   where equation images sit (line-exact geometry)
     EditorCompletion.swift      #   completion seam onto the engine's window
     EditorMath.swift            #   rendered-math seam (baseline-annotated images)
   MaximalTreeKit/               # the plugin SDK (dynamic framework)
@@ -89,7 +90,7 @@ Sources/
     WebViews.swift              #   page/bookmarks canvases + address-bar inspector
 Vendor/typst-ffi/               # Rust staticlib: typst compiler/parser/renderers (C ABI)
 Vendor/highlight-js/            # highlight.min.js (BSD-3) — ~190 grammars, run in-process
-Tests/MaximalTreeTests/         # swift-testing suite (184 tests)
+Tests/MaximalTreeTests/         # swift-testing suite (190 tests)
 ```
 
 The generated `MaximalTree.xcodeproj` is **not** committed — regenerate it (below).

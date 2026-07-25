@@ -338,6 +338,27 @@ public struct MaximalEditor: NSViewRepresentable {
             highlightNow()
         }
 
+        /// Keep equation images glued to their text between repaints. Painting
+        /// is debounced, so during continuous typing the document reflows while
+        /// the images would otherwise sit at stale positions — drifting further
+        /// from their equations with every wrapped line.
+        public func textView(_ textView: STTextView, didChangeTextIn affectedCharRange: NSTextRange,
+                             replacementString: String) {
+            guard !pendingMath.isEmpty,
+                  let contentManager = textView.textLayoutManager.textContentManager
+            else { return }
+            let edited = NSRange(affectedCharRange, in: contentManager)
+            let delta = (replacementString as NSString).length - edited.length
+            pendingMath = pendingMath.compactMap { entry in
+                MathOverlayLayout.adjust(entry.range, forEditIn: edited, delta: delta)
+                    .map { (range: $0, equation: entry.equation, block: entry.block) }
+            }
+            // A tick later: the edit's layout has to settle before frames are real.
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated { self?.layoutMathOverlays() }
+            }
+        }
+
         public func textViewDidChangeText(_ notification: Notification) {
             guard !isPushingText, let textView else { return }
             isEditing = true
@@ -662,95 +683,29 @@ public struct MaximalEditor: NSViewRepresentable {
         private func layoutMathOverlays() {
             for view in mathOverlays { view.removeFromSuperview() }
             mathOverlays.removeAll()
-            guard let textView, !pendingMath.isEmpty,
-                  let contentManager = textView.textLayoutManager.textContentManager
-            else { return }
+            guard let textView, !pendingMath.isEmpty else { return }
+            let gutterWidth = textView.gutterView?.frame.width ?? 0
 
             for (range, equation, block) in pendingMath {
-                guard let textRange = NSTextRange(range, in: contentManager),
-                      let segment = textView.textLayoutManager.textSegmentFrame(
-                        in: textRange, type: .standard)
+                // Placement is pure geometry over the layout manager — see
+                // MathOverlayLayout for why it measures the way it does.
+                guard var frame = MathOverlayLayout.frame(
+                    forEquationAt: range,
+                    image: equation.image.size,
+                    imageBaseline: equation.baseline,
+                    block: block,
+                    lineHeightMultiple: lastStyle?.lineHeightMultiple ?? 1,
+                    in: textView.textLayoutManager)
                 else { continue }
-                let image = equation.image
-                // Inline equations baseline-align: the image's internal baseline
-                // (from typst's layout) sits exactly on the text line's drawn
-                // baseline. Block equations own their whole line — they center
-                // in it (also the fallback when line metrics can't be read).
-                let y: CGFloat
-                if !block, let baseline = textBaselineY(at: textRange.location,
-                                                        near: segment, in: textView) {
-                    y = baseline - equation.baseline
-                } else {
-                    y = segment.minY + (segment.height - image.size.height) / 2
-                }
                 // Layout coordinates are content-view coordinates; the content
                 // view sits right of the gutter (its one offset from the view).
-                let gutterWidth = textView.gutterView?.frame.width ?? 0
-                let overlay = NSImageView(image: image)
-                overlay.frame = CGRect(
-                    origin: CGPoint(x: segment.minX + gutterWidth, y: y),
-                    size: image.size)
+                frame.origin.x += gutterWidth
+
+                let overlay = NSImageView(image: equation.image)
+                overlay.frame = frame
                 textView.addSubview(overlay)
                 mathOverlays.append(overlay)
             }
-        }
-
-        // MARK: Completion
-
-        /// Feeds the engine's built-in completion window (Escape/F5). The sync
-        /// variant declines so the engine takes this async path.
-        public func textView(_ textView: STTextView,
-                             completionItemsAtLocation location: any NSTextLocation)
-            async -> [any STCompletionItem]? {
-            guard let completionProvider,
-                  let contentManager = textView.textLayoutManager.textContentManager
-            else { return nil }
-            let text = textView.text ?? ""
-            let offset = contentManager.offset(from: contentManager.documentRange.location,
-                                               to: location)
-            let completions = await completionProvider.completions(in: text, at: offset)
-
-            // Prefix-filter against what's typed so the retriggering window
-            // live-narrows even when the provider returns unfiltered lists —
-            // but trust the provider (fuzzy matching etc.) when filtering
-            // would leave nothing.
-            let ns = text as NSString
-            let typed = ns.substring(with: Self.identifierRange(endingAt: offset, in: ns))
-                .drop { $0 == "#" || $0 == "@" }
-                .lowercased()
-            let filtered = typed.isEmpty ? completions
-                : completions.filter { $0.label.lowercased().hasPrefix(typed) }
-            let final = filtered.isEmpty ? completions : filtered
-            return final.isEmpty ? nil : final.map(CompletionListItem.init)
-        }
-
-        public func textView(_ textView: STTextView,
-                             insertCompletionItem item: any STCompletionItem) {
-            guard let item = item as? CompletionListItem else { return }
-            let ns = (textView.text ?? "") as NSString
-            let caret = min(textView.textSelection.location, ns.length)
-            let range = item.completion.replaceRange
-                ?? Self.identifierRange(endingAt: caret, in: ns)
-            guard range.location + range.length <= ns.length else { return }
-            textView.replaceCharacters(in: range, with: item.completion.insertText)
-            let end = range.location + (item.completion.insertText as NSString).length
-            textView.textSelection = NSRange(location: end, length: 0)
-        }
-
-        /// The identifier being typed just before `offset` — what a completion
-        /// replaces when the provider didn't say (alphanumerics, `_`, `-`, and
-        /// the `#`/`@` that introduce typst calls and references).
-        static func identifierRange(endingAt offset: Int, in text: NSString) -> NSRange {
-            var start = offset
-            while start > 0 {
-                let char = text.character(at: start - 1)
-                guard let scalar = Unicode.Scalar(char),
-                      CharacterSet.alphanumerics.contains(scalar)
-                        || scalar == "_" || scalar == "-" || scalar == "#" || scalar == "@"
-                else { break }
-                start -= 1
-            }
-            return NSRange(location: start, length: offset - start)
         }
 
         // MARK: Scroll anchoring
@@ -789,30 +744,5 @@ public struct MaximalEditor: NSViewRepresentable {
             }
         }
 
-        /// The y of the *drawn* text baseline for the line containing `segment`,
-        /// in layout coordinates. The engine draws each line fragment shifted by
-        /// -(height × (lineHeightMultiple − 1) / 2) — text centered within the
-        /// multiplied line height — so the on-screen baseline is the fragment's
-        /// glyph origin plus that same correction.
-        private func textBaselineY(at location: NSTextLocation, near segment: CGRect,
-                                   in textView: STTextView) -> CGFloat? {
-            let multiple = max(lastStyle?.lineHeightMultiple ?? 1, 1)
-            var baseline: CGFloat?
-            textView.textLayoutManager.enumerateTextLayoutFragments(
-                from: location, options: []) { fragment in
-                for line in fragment.textLineFragments {
-                    let top = fragment.layoutFragmentFrame.minY
-                        + line.typographicBounds.minY
-                    guard segment.midY >= top,
-                          segment.midY <= top + line.typographicBounds.height
-                    else { continue }
-                    let centering = -(line.typographicBounds.height * (multiple - 1) / 2)
-                    baseline = top + centering + line.glyphOrigin.y
-                    return false
-                }
-                return false   // only the fragment containing the location
-            }
-            return baseline
-        }
     }
 }
