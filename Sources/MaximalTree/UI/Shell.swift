@@ -402,6 +402,8 @@ struct NodeRow: View {
     @Environment(AppModel.self) private var model
     @State private var expanded = false
     @State private var dropTargeted = false
+    @State private var renameDraft = ""
+    @FocusState private var renameFocused: Bool
 
     var body: some View {
         let node = host.node(nodeID)
@@ -450,8 +452,28 @@ struct NodeRow: View {
             // Icon and label come from the owning plugin — the host knows nothing
             // about what kind of thing this node is.
             NodeIconView(node?.icon)
-            Text(node?.label ?? nodeID.uri)
-                .lineLimit(1)
+            if host.pendingRename == nodeID {
+                // The host-owned inline rename. Any provider supporting `.rename`
+                // lands here — the row swaps its label for a text field, and the
+                // committed name goes through the same mutation funnel as
+                // drag-and-drop moves. Esc cancels; focus loss commits (the
+                // platform's text-field convention, and Finder's).
+                TextField("Name", text: $renameDraft)
+                    .textFieldStyle(.plain)
+                    .focused($renameFocused)
+                    .onAppear {
+                        renameDraft = node?.label ?? ""
+                        renameFocused = true
+                    }
+                    .onSubmit { commitRename(of: node) }
+                    .onExitCommand { host._setPendingRename(nil) }
+                    .onChange(of: renameFocused) { _, focused in
+                        if !focused, host.pendingRename == nodeID { commitRename(of: node) }
+                    }
+            } else {
+                Text(node?.label ?? nodeID.uri)
+                    .lineLimit(1)
+            }
         }
         // Tree drag-and-drop → the generic `.move` mutation. Dragging a row in
         // the current multi-selection drags the whole selection (newline-joined
@@ -479,6 +501,16 @@ struct NodeRow: View {
         let selection = host.selection
         let ids = selection.contains(nodeID) && selection.count > 1 ? selection : [nodeID]
         return ids.map(\.uri).joined(separator: "\n")
+    }
+
+    /// End the inline edit and apply the result. Clearing `pendingRename` first
+    /// makes this idempotent: submit resigns focus, and the focus-loss observer
+    /// must find nothing left to commit.
+    private func commitRename(of node: Node?) {
+        host._setPendingRename(nil)
+        let name = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != node?.label else { return }
+        host.apply(.rename(nodeID, to: name))
     }
 }
 

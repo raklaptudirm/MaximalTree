@@ -15,10 +15,13 @@ import Foundation
 @Suite struct MathOverlayLayoutTests {
     /// A paragraph that wraps several times, with an "equation" collapsed the
     /// way the editor collapses one: a near-zero font plus kern reserving the
-    /// image's width.
+    /// image's width. `block` additionally centers the equation's paragraphs
+    /// and pins their line heights, mirroring the editor's display-math
+    /// reservation.
     private func layout(text: String, equation: NSRange, imageWidth: CGFloat,
                         width: CGFloat = 300, fontSize: CGFloat = 15,
-                        lineHeightMultiple: CGFloat = 1.5)
+                        lineHeightMultiple: CGFloat = 1.5,
+                        block: Bool = false, imageHeight: CGFloat = 18)
         -> (NSTextLayoutManager, NSTextContainer) {
         let storage = NSTextContentStorage()
         let layoutManager = NSTextLayoutManager()
@@ -40,6 +43,18 @@ import Foundation
                                 range: equation)
         attributed.addAttribute(.kern, value: imageWidth,
                                 range: NSRange(location: equation.upperBound - 1, length: 1))
+        if block {
+            let ns = text as NSString
+            let source = ns.substring(with: equation)
+            let lines = CGFloat(source.components(separatedBy: "\n").count)
+            let style = NSMutableParagraphStyle()
+            style.lineHeightMultiple = lineHeightMultiple
+            style.alignment = .center
+            style.minimumLineHeight = (imageHeight + 2) / lines
+            style.maximumLineHeight = (imageHeight + 2) / lines
+            attributed.addAttribute(.paragraphStyle, value: style,
+                                    range: ns.paragraphRange(for: equation))
+        }
         storage.textStorage?.setAttributedString(attributed)
         layoutManager.ensureLayout(for: layoutManager.documentRange)
         return (layoutManager, container)
@@ -239,5 +254,38 @@ import Foundation
         let lineCentre = line.top + line.height / 2
         #expect(abs(frame.midY - lineCentre) < line.height,
                 "a block equation should sit in its own line")
+    }
+
+    /// Regression: display equations whose *source* spans several lines drifted
+    /// to the right margin. The newlines survive collapse (concealment can't
+    /// remove characters), so the source occupies N centered lines; the
+    /// width-reserving kern rides the last one, leaving the first ~zero-wide —
+    /// centered at the column's midpoint. Measuring x at the range start put
+    /// the image there, extending right. A display equation's x must come from
+    /// the column, not from the reserved box.
+    @Test func multiLineBlockEquationsCentreInTheColumn() throws {
+        let width: CGFloat = 400
+        let text = "before\n$ sum_(k=1)^n k \\\n  = (n(n+1))/2 $\nafter"
+        let ns = text as NSString
+        let equation = ns.range(of: "$ sum_(k=1)^n k \\\n  = (n(n+1))/2 $")
+        let image = CGSize(width: 200, height: 40)
+        let (layoutManager, _) = layout(text: text, equation: equation,
+                                        imageWidth: image.width, width: width,
+                                        block: true, imageHeight: image.height)
+
+        let frame = try #require(MathOverlayLayout.frame(
+            forEquationAt: equation, image: image,
+            imageBaseline: 30, block: true, lineHeightMultiple: 1.5,
+            in: layoutManager))
+
+        #expect(abs(frame.midX - width / 2) < 2,
+                "image drifted to x=\(frame.minX)–\(frame.maxX) in a \(width)pt column")
+        // Vertically it must stay within the equation's reserved span, not hike
+        // above it or leave the span's tail empty below.
+        let top = try #require(lineBounds(at: equation.location, in: layoutManager))
+        let bottom = try #require(lineBounds(at: equation.upperBound - 1, in: layoutManager))
+        #expect(frame.minY >= top.top - 2)
+        #expect(frame.maxY <= bottom.top + bottom.height + 2,
+                "image at \(frame.minY)–\(frame.maxY), span \(top.top)–\(bottom.top + bottom.height)")
     }
 }

@@ -14,8 +14,8 @@ extension NodeID {
     }
 }
 
-private let directoryType = TypeID("file.directory")
-private let fileType = TypeID("file.file")
+let directoryType = TypeID("file.directory")
+let fileType = TypeID("file.file")
 
 /// A `NodeProvider` backed by the local filesystem. Sendable and stateless; all IO
 /// runs off the main actor via detached tasks so directory reads never block the UI.
@@ -127,10 +127,12 @@ struct FileSystemProvider: NodeProvider {
 enum FileSystemError: LocalizedError {
     case notAFile
     case badDestination
+    case invalidName(String)
     var errorDescription: String? {
         switch self {
         case .notAFile: return "Not a filesystem node."
         case .badDestination: return "Invalid destination path."
+        case .invalidName(let name): return "\"\(name)\" can't be used as a file name."
         }
     }
 }
@@ -173,6 +175,10 @@ extension FileSystemProvider: MutatingNodeProvider {
         switch mutation {
         case .rename(let id, let newName):
             guard let url = id.fileURL else { throw FileSystemError.notAFile }
+            // The name arrives from a free-form text field: refuse anything that
+            // isn't a single path component before it can escape the parent.
+            guard !newName.isEmpty, !newName.contains("/"), newName != ".", newName != ".."
+            else { throw FileSystemError.invalidName(newName) }
             let parentURL = url.deletingLastPathComponent()
             let dest = parentURL.appendingPathComponent(newName)
             try fm.moveItem(at: url, to: dest)
@@ -240,6 +246,23 @@ extension FileSystemProvider: MutatingNodeProvider {
         }
     }
 
+    /// Copy each item next to itself under a uniqued name. Not a `GraphMutation`
+    /// (duplication isn't generic graph vocabulary — most schemes can't copy), so
+    /// the action does the IO here and reports the changes via `notify`.
+    static func duplicate(_ ids: [NodeID]) throws -> [NodeChange] {
+        let fm = FileManager.default
+        var parents = Set<NodeID>()
+        for id in ids {
+            guard let url = id.fileURL else { continue }
+            let directory = url.deletingLastPathComponent()
+            let copy = directory.appendingPathComponent(
+                uniqueName(url.lastPathComponent, in: directory))
+            try fm.copyItem(at: url, to: copy)
+            if let parent = NodeID(fileURL: directory) { parents.insert(parent) }
+        }
+        return parents.map { .childrenChanged($0) }
+    }
+
     /// Finder-style collision handling: "name", "name 2", "name 3", … (the
     /// extension, when present, stays at the end).
     static func uniqueName(_ name: String, in directory: URL) -> String {
@@ -288,57 +311,7 @@ final class FileSystemPlugin: NSObject, Plugin {
                 AnyView(FileInspector(nodeID: id).environment(host))
         })
 
-        registry.register(action: Action(
-            id: "file.reveal",
-            title: "Reveal in Finder",
-            systemImage: "folder",
-            appliesTo: .custom { ctx in
-                !ctx.selectedNodes.isEmpty && ctx.selectedNodes.allSatisfy { $0.type.raw.hasPrefix("file.") }
-            },
-            handler: { ctx in
-                let urls = ctx.selection.compactMap { URL(string: $0.uri) }
-                if !urls.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(urls) }
-            }
-        ))
-
-        // File-only, to demonstrate the palette/menu filtering by predicate.
-        registry.register(action: Action(
-            id: "file.openDefault",
-            title: "Open with Default App",
-            systemImage: "arrow.up.forward.app",
-            appliesTo: .type(fileType),
-            handler: { ctx in
-                for url in ctx.selection.compactMap({ URL(string: $0.uri) }) {
-                    NSWorkspace.shared.open(url)
-                }
-            }
-        ))
-
-        // Creation isn't in the GraphMutation vocabulary yet (needs a "what kind of
-        // node?" story), but an action + notify() covers the common case cleanly:
-        // do the IO, then tell the host what changed.
-        registry.register(action: Action(
-            id: "file.newFolder",
-            title: "New Folder",
-            systemImage: "folder.badge.plus",
-            appliesTo: .custom { ctx in
-                ctx.selectedNodes.count == 1 && ctx.selectedNodes[0].type == directoryType
-            },
-            handler: { ctx in
-                guard let dir = ctx.selection.first else { return }
-                ctx.host.apply(.create(in: dir, name: "untitled folder", asContainer: true))
-            }
-        ))
-
-        registry.register(action: Action(
-            id: "file.trash",
-            title: "Move to Trash",
-            systemImage: "trash",
-            appliesTo: .custom { ctx in
-                !ctx.selection.isEmpty && ctx.selectedNodes.allSatisfy { $0.type.raw.hasPrefix("file.") }
-            },
-            handler: { ctx in ctx.host.apply(.delete(ctx.selection)) }
-        ))
+        registerActions(with: registry)   // see FileActions.swift
     }
 }
 

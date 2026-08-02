@@ -216,6 +216,31 @@ import STTextView
                 "image at \(placed.frame.minY), text at \(expected.minY)")
     }
 
+    /// Repositioning must reuse the overlay views, not rebuild them. Every
+    /// subview add/remove invalidates the text view's layout; the observers
+    /// fire on every layout pass; rebuilding on each firing re-dirtied every
+    /// pass until AppKit's feedback-loop detector aborted the app — the prose
+    /// mode crash. Identity equality across a reposition is the whole fix.
+    @Test func repositioningReusesOverlayViewsInsteadOfRebuilding() async throws {
+        let editor = makeEditor(text: document)
+        editor.coordinator.highlightNow()
+        await settle()
+
+        let before = overlays(in: editor.textView)
+        #expect(!before.isEmpty)
+
+        // The path the layout pass takes: the frame-change notification the
+        // coordinator observes. Must reposition without any churn.
+        NotificationCenter.default.post(name: NSView.frameDidChangeNotification,
+                                        object: editor.textView)
+        await settle()
+
+        let after = overlays(in: editor.textView)
+        #expect(after.count == before.count)
+        #expect(zip(before, after).allSatisfy { $0 === $1 },
+                "reposition created fresh views — the churn that fed the constraint loop")
+    }
+
     /// Scrolled down, the prefix above the viewport has never been laid out for
     /// real — TextKit is carrying estimates for it. That's the state the editor
     /// is actually in when a reader clicks mid-document.

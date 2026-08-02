@@ -257,6 +257,43 @@ import AppKit
         })
     }
 
+    /// The rename UI feeds arbitrary text into the mutation; nothing resembling
+    /// a path may pass through as a name.
+    @Test func renameRejectsUnsafeNames() throws {
+        let base = try makeTempTree()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let id = try #require(NodeID(fileURL: base.appendingPathComponent("a.txt")))
+
+        for name in ["", "evil/name", ".", ".."] {
+            #expect(throws: FileSystemError.self) {
+                try FileSystemProvider.perform(.rename(id, to: name))
+            }
+        }
+        // The file is untouched after every refusal.
+        #expect(FileManager.default.fileExists(atPath: base.appendingPathComponent("a.txt").path))
+    }
+
+    @Test func duplicateCopiesBesideTheOriginalUnderAUniquedName() throws {
+        let base = try makeTempTree()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let id = try #require(NodeID(fileURL: base.appendingPathComponent("a.txt")))
+
+        let changes = try FileSystemProvider.duplicate([id])
+
+        let copy = base.appendingPathComponent("a 2.txt")
+        #expect(FileManager.default.fileExists(atPath: copy.path))
+        #expect(try String(contentsOf: copy, encoding: .utf8) == "hello",
+                "a duplicate carries the content, not just the name")
+        let parent = try #require(NodeID(fileURL: base))
+        #expect(changes.contains {
+            if case .childrenChanged(let p) = $0 { return p == parent } else { return false }
+        })
+
+        // Again: the uniquing must keep stepping, not overwrite the first copy.
+        _ = try FileSystemProvider.duplicate([id])
+        #expect(FileManager.default.fileExists(atPath: base.appendingPathComponent("a 3.txt").path))
+    }
+
     @Test func deleteTrashesFileAndReportsRemoval() async throws {
         let base = try makeTempTree()
         defer { try? FileManager.default.removeItem(at: base) }

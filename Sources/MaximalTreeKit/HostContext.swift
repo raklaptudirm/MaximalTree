@@ -28,6 +28,11 @@ public final class HostContext {
     /// tab strip, or toolbar. Canvases should shed their own chrome too
     /// (headers, status rows, anything that isn't the content).
     public internal(set) var isZenMode = false
+    /// The node the sidebar is inline-renaming right now, nil when none. Set via
+    /// `beginRename(_:)` — the host validates support first — and cleared by the
+    /// shell when the edit commits or cancels. Plugins trigger the rename UI;
+    /// they never draw it.
+    public internal(set) var pendingRename: NodeID?
 
     // Observable caches, filled by the backend.
     internal var nodes: [NodeID: Node] = [:]
@@ -100,6 +105,12 @@ public final class HostContext {
     /// Whether the owning provider can perform `mutation` right now (for enabling UI).
     public func canApply(_ mutation: GraphMutation) -> Bool { backend?.canApply(mutation) ?? false }
 
+    /// Ask the host to start its inline-rename UI on `id` (the sidebar text
+    /// field). No-op when the owning provider doesn't support `.rename` for the
+    /// node. This is the plugin-facing trigger for the *host's* rename
+    /// affordance — one UI, any renamable node, whoever owns it.
+    public func beginRename(_ id: NodeID) { backend?.beginRename(id) }
+
     /// Report changes that happened outside the mutation path — an action created a
     /// file, an editor saved bytes, a provider observed an external edit. The host
     /// updates its caches and navigation exactly as it does for `apply(_:)` results.
@@ -116,6 +127,7 @@ public final class HostContext {
     public func _setSelection(_ ids: [NodeID]) { selection = ids }
     public func _postFragment(_ fragment: NodeFragment?) { activeFragment = fragment }
     public func _setZenMode(_ zen: Bool) { isZenMode = zen }
+    public func _setPendingRename(_ id: NodeID?) { pendingRename = id }
 
     /// Rewrite every cached reference to `old` as `new` after a rename. Note this is
     /// shallow: for a directory rename, descendant URIs also change, so the caller
@@ -132,6 +144,7 @@ public final class HostContext {
         roots = roots.map { $0 == old ? new : $0 }
         if focusedNode == old { focusedNode = new }
         selection = selection.map { $0 == old ? new : $0 }
+        if pendingRename == old { pendingRename = new }
     }
 
     /// Drop a node that no longer exists from every cache and from open state.
@@ -146,6 +159,7 @@ public final class HostContext {
         roots = roots.filter { $0 != id }
         if focusedNode == id { focusedNode = nil }
         selection = selection.filter { $0 != id }
+        if pendingRename == id { pendingRename = nil }
     }
 
     /// Forget a node's children so they're re-fetched on next access. Clears the
@@ -169,6 +183,7 @@ public protocol GraphBackend: AnyObject {
     func openURI(_ uri: String)
     func apply(_ mutation: GraphMutation)
     func canApply(_ mutation: GraphMutation) -> Bool
+    func beginRename(_ id: NodeID)
     func notify(_ changes: [NodeChange])
     func requestChildren(of id: NodeID)
     func requestMoreChildren(of id: NodeID)

@@ -177,7 +177,7 @@ public struct MaximalEditor: NSViewRepresentable {
     }
 
     public func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = STTextView.scrollableTextView()
+        let scrollView = EditorTextView.scrollableTextView()
         let textView = scrollView.documentView as! STTextView
 
         textView.textDelegate = context.coordinator
@@ -231,6 +231,23 @@ public struct MaximalEditor: NSViewRepresentable {
             context.coordinator.highlightNow()
         }
         context.coordinator.highlightIfAppearanceChanged()
+    }
+
+    /// The engine's text view, minus its intrinsic content size.
+    ///
+    /// STTextView reports the *document's* size (`usageBoundsForTextContainer`)
+    /// as its intrinsic size. Inside a scroll view that's meaningless — overflow
+    /// scrolls — and in a SwiftUI hosting hierarchy it's fatal: with
+    /// width-tracking wrap, assigning a width re-wraps synchronously, the
+    /// document height changes, the intrinsic size changes, and the window runs
+    /// another constraint pass — all inside one display-cycle flush. The prose
+    /// style closes that circuit (its layout leaves the editor's width
+    /// negotiable, and math line heights land mid-flush), and AppKit's
+    /// feedback-loop detector aborts the app. No intrinsic size, no circuit.
+    final class EditorTextView: STTextView {
+        override var intrinsicContentSize: NSSize {
+            NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+        }
     }
 
     private func apply(style: EditorStyle, to textView: STTextView) {
@@ -315,9 +332,17 @@ public struct MaximalEditor: NSViewRepresentable {
         /// Overlay positions derive from text layout, which shifts on scroll
         /// (viewport re-layout), resize (re-wrap), and external frame changes —
         /// none of which repaint. Track them and reposition.
+        ///
+        /// Deferred, never inline: these notifications deliver *synchronously*
+        /// when posted on the main thread — i.e. in the middle of the layout
+        /// pass that moved the view. Placing overlays right there (forcing
+        /// layout, touching subviews) re-dirties the layout the pass is trying
+        /// to settle; AppKit's feedback-loop detector eventually aborts with
+        /// "_postWindowNeedsUpdateConstraints". One hop coalesces the storm a
+        /// single pass emits and lands after the pass has finished.
         func installObservers(for textView: STTextView, in scrollView: NSScrollView) {
             let reposition: @Sendable (Notification) -> Void = { [weak self] _ in
-                MainActor.assumeIsolated { self?.layoutMathOverlays() }
+                MainActor.assumeIsolated { self?.scheduleOverlayReposition() }
             }
             observers.append(NotificationCenter.default.addObserver(
                 forName: NSView.boundsDidChangeNotification,
@@ -325,6 +350,20 @@ public struct MaximalEditor: NSViewRepresentable {
             observers.append(NotificationCenter.default.addObserver(
                 forName: NSView.frameDidChangeNotification,
                 object: textView, queue: .main, using: reposition))
+        }
+
+        private var repositionScheduled = false
+
+        private func scheduleOverlayReposition() {
+            guard !repositionScheduled, !pendingMath.isEmpty else { return }
+            repositionScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.repositionScheduled = false
+                    self.layoutMathOverlays()
+                }
+            }
         }
 
         private var isPushingText = false
@@ -666,13 +705,24 @@ public struct MaximalEditor: NSViewRepresentable {
             textView.addAttributes([.font: NSFont.systemFont(ofSize: 0.1)], range: range)
             let last = NSRange(location: range.location + range.length - 1, length: 1)
             textView.addAttributes([.kern: image.size.width + 2], range: last)
+            // A multi-line source still occupies one collapsed line per newline
+            // (concealment can't remove characters) — split one image-box of
+            // height across them, or every extra line reserves a whole empty box.
+            let lines = CGFloat(ns.substring(with: range)
+                .components(separatedBy: "\n").count)
             composeParagraphStyle(over: ns.paragraphRange(for: range),
                                   base: style.paragraphStyle, on: textView) {
-                $0.minimumLineHeight = max(image.size.height + 2,
-                                           style.font.pointSize * style.lineHeightMultiple)
-                // A block equation centers: the collapsed source + kern is the
-                // reserved box, so centering the paragraph centers the image
-                // (which is placed at the reserved box's segment frame).
+                if lines > 1 {
+                    $0.minimumLineHeight = (image.size.height + 2) / lines
+                    $0.maximumLineHeight = (image.size.height + 2) / lines
+                } else {
+                    $0.minimumLineHeight = max(image.size.height + 2,
+                                               style.font.pointSize * style.lineHeightMultiple)
+                }
+                // A block equation centers. The reserved box is invisible; what
+                // centering buys is a caret that lands mid-column when clicking
+                // around the image. (The image's own x is computed from the
+                // column — see MathOverlayLayout.)
                 if block { $0.alignment = .center }
             }
             textView.addRenderingAttributes([.foregroundColor: NSColor.clear], range: range)
@@ -689,9 +739,12 @@ public struct MaximalEditor: NSViewRepresentable {
             isPlacingOverlays = true
             defer { isPlacingOverlays = false }
 
-            for view in mathOverlays { view.removeFromSuperview() }
-            mathOverlays.removeAll()
-            guard let textView, !pendingMath.isEmpty else { return }
+            guard let textView else { return }
+            guard !pendingMath.isEmpty else {
+                for view in mathOverlays { view.removeFromSuperview() }
+                mathOverlays.removeAll()
+                return
+            }
             // Resolve the view's pending layout *before* measuring. A repaint's
             // attribute changes only flag the view as needing layout (STTextView
             // never invalidates the layout manager itself), so until that pass
@@ -701,6 +754,7 @@ public struct MaximalEditor: NSViewRepresentable {
             textView.layoutSubtreeIfNeeded()
             let gutterWidth = textView.gutterView?.frame.width ?? 0
 
+            var placed: [(image: NSImage, frame: CGRect)] = []
             for (range, equation, block) in pendingMath {
                 // Placement is pure geometry over the layout manager — see
                 // MathOverlayLayout for why it measures the way it does.
@@ -715,11 +769,25 @@ public struct MaximalEditor: NSViewRepresentable {
                 // Layout coordinates are content-view coordinates; the content
                 // view sits right of the gutter (its one offset from the view).
                 frame.origin.x += gutterWidth
+                placed.append((equation.image, frame))
+            }
 
-                let overlay = NSImageView(image: equation.image)
-                overlay.frame = frame
+            // Reuse the views. Adding or removing a subview invalidates the text
+            // view's layout — done on every reposition, that re-dirties each
+            // layout pass and feeds the constraint feedback loop that crashed
+            // prose mode. Steady state (same equations, new geometry) must be
+            // pure frame updates, which invalidate nothing.
+            while mathOverlays.count > placed.count {
+                mathOverlays.removeLast().removeFromSuperview()
+            }
+            while mathOverlays.count < placed.count {
+                let overlay = NSImageView()
                 textView.addSubview(overlay)
                 mathOverlays.append(overlay)
+            }
+            for (view, target) in zip(mathOverlays, placed) {
+                if view.image !== target.image { view.image = target.image }
+                if view.frame != target.frame { view.frame = target.frame }
             }
         }
 

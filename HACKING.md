@@ -68,7 +68,8 @@ Sources/
     Host/                       #   Registry, GraphStore, HostBroker, NavigationModel, Workspace, PluginHost
     UI/                         #   Shell (3 panes + tabs + zen) + Commands (menu/palette)
   FileSystemPlugin/             # reference provider plugin (loadable bundle)
-    FileSystem.swift            #   provider, mutations, symlink anchors, actions
+    FileSystem.swift            #   provider, mutations, symlink anchors, FSEvents
+    FileActions.swift           #   the action vocabulary (new/duplicate/trash/…)
     FileIcons.swift             #   per-language icons (symbol = kind, tint = language)
     FileViews.swift             #   canvas (Quick Look) + inspector (editable)
   TextEditorPlugin/             # reference cross-plugin renderer (loadable bundle)
@@ -91,7 +92,7 @@ Sources/
     WebViews.swift              #   page/bookmarks canvases + address-bar inspector
 Vendor/typst-ffi/               # Rust staticlib: typst compiler/parser/renderers (C ABI)
 Vendor/highlight-js/            # highlight.min.js (BSD-3) — ~190 grammars, run in-process
-Tests/MaximalTreeTests/         # swift-testing suite (190 tests)
+Tests/MaximalTreeTests/         # swift-testing suite (204 tests)
 ```
 
 The generated `MaximalTree.xcodeproj` is **not** committed — regenerate it (below).

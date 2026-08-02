@@ -205,6 +205,16 @@ final class GraphStore: GraphBackend {
         }
     }
 
+    /// Start the sidebar's inline rename on `id` — but only when the owning
+    /// provider would actually honor the resulting `.rename`, so the text field
+    /// never appears on nodes that can't be renamed. The probe uses the current
+    /// label: providers gate `.rename` support on the node, not the new name.
+    func beginRename(_ id: NodeID) {
+        let name = context.node(id)?.label ?? id.uri
+        guard canApply(.rename(id, to: name)) else { return }
+        context._setPendingRename(id)
+    }
+
     /// Plugin-initiated change reports (actions, content saves) flow into the same
     /// funnel as mutation results — one code path keeps the cache truthful.
     func notify(_ changes: [NodeChange]) { process(changes) }

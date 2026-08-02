@@ -222,8 +222,33 @@ final class AppModel {
         paletteVisible = false
     }
 
+    /// Actions the host contributes itself — node manipulation that belongs to no
+    /// plugin because it rides the generic mutation vocabulary. Rename is the
+    /// model case: any provider that supports `.rename` (filesystem today,
+    /// bookmarks or branches tomorrow) gets the sidebar's inline-rename UI, the
+    /// menu item, the shortcut, and the palette entry without writing any UI.
+    private func registerCoreActions(with registry: Registry) {
+        registry.register(action: Action(
+            id: "core.rename",
+            title: "Rename…",
+            systemImage: "pencil",
+            appliesTo: .custom { ctx in
+                guard ctx.targets.count == 1, let target = ctx.targets.first else { return false }
+                let label = ctx.host.node(target)?.label ?? target.uri
+                return ctx.host.canApply(.rename(target, to: label))
+            },
+            shortcut: KeyboardShortcut("r", modifiers: [.command, .shift]),
+            handler: { ctx in
+                guard let target = ctx.targets.first else { return }
+                ctx.host.beginRename(target)
+            }
+        ))
+    }
+
     func start() {
         guard store == nil else { return }
+        // Host-owned actions register first so they lead every action list.
+        registerCoreActions(with: pluginHost.registry)
         // Under XCTest the test bundle compiles the plugin's sources directly; don't
         // also dlopen the .bundle into the same process, or the @objc principal class
         // collides. Tests exercise provider logic without the running host.

@@ -25,6 +25,14 @@ packages:
 settings:
   base:
     SWIFT_VERSION: "6.0"            # Swift 6 language mode: complete data-race checking
+    # Apple Silicon only, because the typst FFI decides it: cargo builds
+    # libtypst_ffi.a for the host, and the toolchain here ships only the
+    # aarch64-apple-darwin std. Release otherwise defaults to "arm64 x86_64"
+    # and dies at link with "symbol(s) not found for architecture x86_64" —
+    # Debug hid it by building the active arch alone. For a universal build,
+    # add the x86_64-apple-darwin std to the Rust toolchain, build both
+    # targets, and lipo them into one archive before this links.
+    ARCHS: arm64
     CODE_SIGN_IDENTITY: "-"
     CODE_SIGN_STYLE: Manual
     DEVELOPMENT_TEAM: ""

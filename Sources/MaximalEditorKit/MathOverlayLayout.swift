@@ -50,14 +50,36 @@ enum MathOverlayLayout {
         // needs the same correction (see STTextLayoutFragment.draw).
         let centering = -(height * (max(lineHeightMultiple, 1) - 1) / 2)
 
-        let y: CGFloat
         if block {
-            // A display equation owns its line: centre it there.
-            y = lineTop + centering + (height - image.height) / 2
-        } else {
-            // Inline: the image's own baseline sits on the text's drawn baseline.
-            y = lineTop + centering + line.glyphOrigin.y - imageBaseline
+            // A display equation owns its paragraph, and its *source* may span
+            // several collapsed lines — concealment can't remove the newlines.
+            // The reserved box is then useless for x: the kern rides the last
+            // line, leaving the first ~zero-wide, which centering parks at the
+            // column's midpoint (the image drifted to the right margin from
+            // there). Centre in the column instead, and centre y across the
+            // whole span. For a one-line source the span is the line and this
+            // reduces to the old formula.
+            guard let endRange = NSTextRange(
+                    NSRange(location: max(range.location, range.upperBound - 1), length: 0),
+                    in: contentManager),
+                  let (endFragment, endLine) = lineFragment(containing: endRange.location,
+                                                            in: layoutManager)
+            else { return nil }
+            let bottom = endFragment.layoutFragmentFrame.minY + endLine.typographicBounds.maxY
+            // No `centering` here: that term tracks where the engine draws
+            // *glyphs* inside a line, and a block equation's glyphs are
+            // invisible. The image centres in the reserved box itself.
+            let y = lineTop + (bottom - lineTop - image.height) / 2
+
+            let padding = layoutManager.textContainer?.lineFragmentPadding ?? 0
+            let column = layoutManager.textContainer?.size.width
+                ?? fragment.layoutFragmentFrame.width
+            let x = max(padding, (column - image.width) / 2)
+            return CGRect(origin: CGPoint(x: x, y: y), size: image)
         }
+
+        // Inline: the image's own baseline sits on the text's drawn baseline.
+        let y = lineTop + centering + line.glyphOrigin.y - imageBaseline
         return CGRect(origin: CGPoint(x: start.minX, y: y), size: image)
     }
 

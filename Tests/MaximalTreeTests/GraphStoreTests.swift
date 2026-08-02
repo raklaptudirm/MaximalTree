@@ -95,6 +95,61 @@ private struct PagingProvider: NodeProvider {
     }
 }
 
+/// A provider that renames only nodes whose URI ends in "/renamable" — enough
+/// to watch the host gate its rename UI on provider support.
+private struct SelectivelyMutableProvider: NodeProvider, MutatingNodeProvider {
+    let schemes: Set<String> = ["mut"]
+    func resolve(_ uri: String) -> NodeID? { NodeID(uri) }
+    func node(for id: NodeID) async -> Node? { Node(id: id, type: "mut.item") }
+    func children(of id: NodeID, page cursor: Cursor?) async -> Page<Node> { Page(items: []) }
+
+    func supports(_ mutation: GraphMutation) -> Bool {
+        if case .rename(let id, _) = mutation { return id.uri.hasSuffix("/renamable") }
+        return false
+    }
+    func apply(_ mutation: GraphMutation) async throws -> [NodeChange] { [] }
+}
+
+@MainActor
+@Suite struct RenameGatingTests {
+    private func makeStore() -> (GraphStore, HostContext) {
+        let context = HostContext()
+        let registry = Registry()
+        registry.register(provider: SelectivelyMutableProvider())
+        let store = GraphStore(context: context, registry: registry, nav: NavigationModel())
+        return (store, context)
+    }
+
+    /// The sidebar's text field appears only for nodes whose provider would
+    /// honor the rename — `beginRename` is the single gate.
+    @Test func beginRenameRequiresProviderSupport() throws {
+        let (store, context) = makeStore()
+        let yes = try #require(NodeID("mut://x/renamable"))
+        let no = try #require(NodeID("mut://x/readonly"))
+
+        store.beginRename(no)
+        #expect(context.pendingRename == nil)
+
+        store.beginRename(yes)
+        #expect(context.pendingRename == yes)
+    }
+
+    /// A rename that lands while the field is open (an external one, say) must
+    /// follow the node; a removal must dismiss the edit.
+    @Test func pendingRenameTracksRemapAndRemoval() throws {
+        let (store, context) = makeStore()
+        let id = try #require(NodeID("mut://x/renamable"))
+        let moved = try #require(NodeID("mut://y/renamable"))
+
+        store.beginRename(id)
+        context._remap(from: id, to: moved)
+        #expect(context.pendingRename == moved)
+
+        context._remove(moved)
+        #expect(context.pendingRename == nil)
+    }
+}
+
 /// A streaming provider whose stream the test drives by hand, plus a flag
 /// proving the host terminated it on unmount.
 private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider,
