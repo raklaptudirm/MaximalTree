@@ -58,10 +58,18 @@ import Foundation
         #expect(host.roots == [parent])
     }
 
-    @Test func invalidateChildrenForcesRefetch() {
-        let (host, parent, _) = populated()
+    @Test func invalidateChildrenGoesStaleWithoutBlanking() {
+        let (host, parent, child) = populated()
         host._invalidateChildren(of: parent)
-        #expect(host.cachedChildren(of: parent) == nil)
+        // Stale-while-revalidate: the listing is marked outdated (the backend
+        // refetches on next read) but keeps being served — dropping it blanked
+        // expanded subtrees for a frame.
+        #expect(host._isChildrenStale(parent))
+        #expect(host.cachedChildren(of: parent) == [child])
+
+        // The refetch landing clears the flag and swaps the data in place.
+        host._setChildren([child], of: parent)
+        #expect(!host._isChildrenStale(parent))
     }
 }
 

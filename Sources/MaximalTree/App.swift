@@ -32,6 +32,9 @@ struct MaximalTreeApp: App {
 final class AppModel {
     let host: HostContext
     let navigation = NavigationModel()
+    /// Sidebar UI state (expansion, selection anchor) — session-scoped, owned
+    /// here so the tree survives sidebar view recreation.
+    let sidebar = SidebarState()
     private let pluginHost = PluginHost()
     private let workspaceStore = WorkspaceStore()
     private(set) var store: GraphStore?
@@ -259,6 +262,9 @@ final class AppModel {
         // Persist on every root-set change, no matter who mounted (UI or plugin).
         // New roots join the folder of the current node's root — creating a node
         // respects where you already are.
+        store.onNodeRenamed = { [weak self] old, new in
+            self?.sidebar.remap(from: old, to: new)
+        }
         store.onRootsChanged = { [weak self] in
             guard let self else { return }
             self.workspaceStore.reconcileRoots(self.host.roots,

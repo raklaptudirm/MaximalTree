@@ -37,6 +37,10 @@ public final class HostContext {
     // Observable caches, filled by the backend.
     internal var nodes: [NodeID: Node] = [:]
     internal var childrenByParent: [NodeID: [NodeID]] = [:]
+    /// Parents whose cached listing is outdated but still being served while
+    /// the refetch runs (stale-while-revalidate). Dropping the cache instead
+    /// blanks every expanded subtree for a frame — the UI reads as a blink.
+    internal var staleChildren: Set<NodeID> = []
     internal var relatedByNode: [NodeID: [Related]] = [:]
     /// Cursor for the *next* page of a node's children, when the provider reported
     /// one. Presence means "there's more to load".
@@ -64,9 +68,13 @@ public final class HostContext {
 
     public func node(_ id: NodeID) -> Node? { nodes[id] }
 
-    /// Cached children, requesting a load if we've never fetched them.
+    /// Cached children, requesting a load if we've never fetched them — or a
+    /// refetch if the cache is stale. Stale data keeps being served meanwhile,
+    /// so an update never blanks what's on screen.
     public func children(of id: NodeID) -> [NodeID] {
-        if childrenByParent[id] == nil { backend?.requestChildren(of: id) }
+        if childrenByParent[id] == nil || staleChildren.contains(id) {
+            backend?.requestChildren(of: id)
+        }
         return childrenByParent[id] ?? []
     }
 
@@ -120,7 +128,10 @@ public final class HostContext {
     // MARK: Backend-facing mutation (host only)
 
     public func _ingest(_ node: Node) { nodes[node.id] = node }
-    public func _setChildren(_ ids: [NodeID], of parent: NodeID) { childrenByParent[parent] = ids }
+    public func _setChildren(_ ids: [NodeID], of parent: NodeID) {
+        childrenByParent[parent] = ids
+        staleChildren.remove(parent)
+    }
     public func _setRelated(_ r: [Related], of id: NodeID) { relatedByNode[id] = r }
     public func _setRoots(_ ids: [NodeID]) { roots = ids }
     public func _setFocus(_ id: NodeID?) { focusedNode = id }
@@ -136,6 +147,7 @@ public final class HostContext {
     public func _remap(from old: NodeID, to new: NodeID) {
         if let node = nodes.removeValue(forKey: old) { nodes[new] = node }
         if let kids = childrenByParent.removeValue(forKey: old) { childrenByParent[new] = kids }
+        if staleChildren.remove(old) != nil { staleChildren.insert(new) }
         if let cursor = childCursors.removeValue(forKey: old) { childCursors[new] = cursor }
         for (parent, kids) in childrenByParent where kids.contains(old) {
             childrenByParent[parent] = kids.map { $0 == old ? new : $0 }
@@ -153,6 +165,7 @@ public final class HostContext {
         childrenByParent[id] = nil
         relatedByNode[id] = nil
         childCursors[id] = nil
+        staleChildren.remove(id)
         for (parent, kids) in childrenByParent where kids.contains(id) {
             childrenByParent[parent] = kids.filter { $0 != id }
         }
@@ -162,12 +175,18 @@ public final class HostContext {
         if pendingRename == id { pendingRename = nil }
     }
 
-    /// Forget a node's children so they're re-fetched on next access. Clears the
-    /// pagination cursor too — the refetch restarts from the first page.
+    /// Mark a node's children outdated so the next access refetches. The stale
+    /// listing keeps being served until the fresh one lands and swaps in place
+    /// — never drop what's on screen. Clears the pagination cursor; the
+    /// refetch restarts from the first page. (A never-fetched parent has
+    /// nothing to keep; it simply fetches on next access.)
     public func _invalidateChildren(of id: NodeID) {
-        childrenByParent[id] = nil
+        if childrenByParent[id] != nil { staleChildren.insert(id) }
         childCursors[id] = nil
     }
+
+    /// Whether a cached listing is awaiting its refetch (backend-facing).
+    public func _isChildrenStale(_ id: NodeID) -> Bool { staleChildren.contains(id) }
 
     public func _setChildCursor(_ cursor: Cursor?, of id: NodeID) { childCursors[id] = cursor }
 }

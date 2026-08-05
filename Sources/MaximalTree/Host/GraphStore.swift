@@ -45,6 +45,10 @@ final class GraphStore: GraphBackend {
     /// mount too (e.g. "Open as Git Repository"), and those must persist as well.
     var onRootsChanged: (() -> Void)?
 
+    /// Fired for every `.renamed` change so host-side UI state keyed by NodeID
+    /// (sidebar expansion) can follow the node.
+    var onNodeRenamed: ((NodeID, NodeID) -> Void)?
+
     init(context: HostContext, registry: Registry, nav: NavigationModel) {
         self.context = context
         self.registry = registry
@@ -226,6 +230,7 @@ final class GraphStore: GraphBackend {
         for change in changes {
             switch change {
             case .renamed(let from, let to):
+                onNodeRenamed?(from, to)
                 nav.remap(from: from, to: to)
                 context._remap(from: from, to: to)
                 context._invalidateChildren(of: to)   // descendant URIs changed
@@ -321,7 +326,9 @@ final class GraphStore: GraphBackend {
     }
 
     func requestChildren(of id: NodeID) {
-        guard context.cachedChildren(of: id) == nil,
+        // Fetch when never loaded, or refetch when marked stale — the stale
+        // listing stays on screen until the fresh one swaps in.
+        guard context.cachedChildren(of: id) == nil || context._isChildrenStale(id),
               !childrenInFlight.contains(id),
               let p = provider(for: id) else { return }
         childrenInFlight.insert(id)

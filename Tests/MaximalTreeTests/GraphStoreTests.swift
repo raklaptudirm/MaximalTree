@@ -71,15 +71,31 @@ private struct PagingProvider: NodeProvider {
         #expect(context.node(id) == nil)
     }
 
-    @Test func notifyChildrenChangedInvalidatesCacheAndCursor() throws {
+    /// Stale-while-revalidate: an update marks the listing outdated and
+    /// refetches, but the stale rows keep being served until the fresh ones
+    /// swap in — dropping them blanked every expanded subtree for a frame
+    /// (the sidebar blink).
+    @Test func notifyChildrenChangedRefetchesWithoutBlankingTheListing() async throws {
         let (store, context) = makeStore()
         let root = try #require(NodeID("stub://root"))
-        context._setChildren([], of: root)
-        context._setChildCursor(Cursor("2"), of: root)
+
+        store.requestChildren(of: root)
+        try await waitUntil { context.cachedChildren(of: root) != nil }
+        let before = try #require(context.cachedChildren(of: root))
+        #expect(before.count == 2)
 
         store.notify([.childrenChanged(root)])
-        #expect(context.cachedChildren(of: root) == nil)
+        // The very next read — the frame the update lands on — still serves
+        // the stale listing, and never an empty one.
+        #expect(context.children(of: root) == before,
+                "the listing blanked on invalidation")
         #expect(!context.hasMoreChildren(root), "a restarted fetch must not resume a stale cursor")
+
+        // The read above also kicked the refetch; the fresh page swaps in
+        // (and restores the provider's pagination cursor).
+        try await waitUntil { context.hasMoreChildren(root) }
+        #expect(context.cachedChildren(of: root)?.count == 2)
+        #expect(!context._isChildrenStale(root))
     }
 
     @Test func notifyModifiedRefetchesNodeInPlace() async throws {
@@ -196,10 +212,12 @@ private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider
         let root = try #require(NodeID("stub://root"))
         try await waitUntil { provider.continuationBox.continuation != nil }
 
-        // An external batch invalidates the cache like a plugin notify would.
+        // An external batch invalidates the cache like a plugin notify would:
+        // the listing goes stale (kept on screen), not blank.
         context._setChildren([], of: root)
         provider.continuationBox.continuation?.yield([.childrenChanged(root)])
-        try await waitUntil { context.cachedChildren(of: root) == nil }
+        try await waitUntil { context._isChildrenStale(root) }
+        #expect(context.cachedChildren(of: root) != nil, "stale must still be served")
 
         // Unmounting cancels the consuming task, which terminates the stream.
         store.unmount(root)

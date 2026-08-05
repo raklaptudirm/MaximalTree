@@ -66,7 +66,10 @@ Sources/
   MaximalTree/                  # the host app
     App.swift                   #   @main, AppModel wiring
     Host/                       #   Registry, GraphStore, HostBroker, NavigationModel, Workspace, PluginHost
-    UI/                         #   Shell (3 panes + tabs + zen) + Commands (menu/palette)
+    UI/                         #   Shell (3 panes + tabs + zen), SidebarModel (pure
+                                #   row flatten + selection semantics), SidebarTree
+                                #   (the rendered tree; deliberately not a List),
+                                #   Commands (menu/palette)
   FileSystemPlugin/             # reference provider plugin (loadable bundle)
     FileSystem.swift            #   provider, mutations, symlink anchors, FSEvents
     FileActions.swift           #   the action vocabulary (new/duplicate/trash/…)
@@ -92,7 +95,7 @@ Sources/
     WebViews.swift              #   page/bookmarks canvases + address-bar inspector
 Vendor/typst-ffi/               # Rust staticlib: typst compiler/parser/renderers (C ABI)
 Vendor/highlight-js/            # highlight.min.js (BSD-3) — ~190 grammars, run in-process
-Tests/MaximalTreeTests/         # swift-testing suite (204 tests)
+Tests/MaximalTreeTests/         # swift-testing suite (217 tests)
 ```
 
 The generated `MaximalTree.xcodeproj` is **not** committed — regenerate it (below).
