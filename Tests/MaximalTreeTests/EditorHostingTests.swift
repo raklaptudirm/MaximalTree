@@ -205,3 +205,59 @@ import STTextView
                 "constraints never settle after the mode switch: \(dirtyTurns)/25 dirty turns")
     }
 }
+
+/// Editor styles and the geometry every consumer derives from them.
+@MainActor
+@Suite struct EditorStyleGeometryTests {
+    /// The invariant behind the jittery caret: `lineHeightMultiple` is the one
+    /// paragraph property STTextView compensates for at *draw* time — it shifts
+    /// glyphs by `-(height × (multiple − 1) / 2)` in the two glyph renderers and
+    /// the gutter, and nowhere else. The caret, selection rectangles, and hit
+    /// testing read raw layout geometry, so any multiple ≠ 1 puts the drawn text
+    /// somewhere the caret and mouse don't agree with. Our styles must never
+    /// trigger it.
+    @Test func stylesNeverTriggerTheDrawTimeGlyphShift() {
+        for style in [EditorStyle.prose(), .prose(size: 18),
+                      .code(), .code(size: 14, wrapLines: true)] {
+            let paragraph = style.paragraphStyle
+            // 0 is NSParagraphStyle's "natural"; the engine maps it to 1.0.
+            let effective = paragraph.lineHeightMultiple == 0 ? 1 : paragraph.lineHeightMultiple
+            #expect(effective == 1,
+                    "a multiple of \(effective) shifts glyphs away from the caret")
+            let shift = -(style.naturalLineHeight * (effective - 1) / 2)
+            #expect(shift == 0)
+        }
+    }
+
+    /// …and the roominess that motivated the multiple is preserved, now as
+    /// spacing that lives inside the line fragment where every consumer sees it.
+    @Test func proseStaysRoomierThanTheBareFont() throws {
+        let style = EditorStyle.prose()
+        #expect(style.lineSpacing > 0)
+        #expect(style.paragraphStyle.lineSpacing == style.lineSpacing)
+
+        // Measure a real line: the laid-out height must exceed the font's own,
+        // by the spacing we asked for.
+        let storage = NSTextContentStorage()
+        let layoutManager = NSTextLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: 400,
+                                                     height: CGFloat.greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        layoutManager.textContainer = container
+        storage.addTextLayoutManager(layoutManager)
+        storage.textStorage?.setAttributedString(NSAttributedString(
+            string: "one line\nand another",
+            attributes: [.font: style.font, .paragraphStyle: style.paragraphStyle]))
+        layoutManager.ensureLayout(for: layoutManager.documentRange)
+
+        var heights: [CGFloat] = []
+        layoutManager.enumerateTextLayoutFragments(from: layoutManager.documentRange.location,
+                                                   options: [.ensuresLayout]) { fragment in
+            heights += fragment.textLineFragments.map(\.typographicBounds.height)
+            return true
+        }
+        let first = try #require(heights.first)
+        #expect(first > style.font.ascender - style.font.descender,
+                "prose lines lost their air: \(first)")
+    }
+}

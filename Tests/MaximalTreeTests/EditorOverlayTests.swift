@@ -270,6 +270,146 @@ import STTextView
                 "image drifted while scrolled: image at \(placed.frame.minY), text at \(expected.minY)")
     }
 
+    /// A click must leave the document's geometry alone.
+    ///
+    /// Moving the caret across a paragraph boundary used to repaint the whole
+    /// document — every attribute rewritten, the entire layout invalidated — so
+    /// TextKit re-derived heights the reader never asked about and the text
+    /// below the click reflowed on every click. Only the two paragraphs that
+    /// change reveal state may move now; everything else holds still.
+    @Test func clickingDoesNotReflowTheRestOfTheDocument() async throws {
+        // Long enough that the viewport sits mid-document: scrolled to the very
+        // bottom, the height change clamps the scroll and the test would be
+        // measuring that instead.
+        var long = document
+        for index in 12..<40 {
+            long += "\n\nParagraph \(index) says $x^\(index)$ and then continues "
+                + "with enough words to wrap onto another line or two."
+        }
+        let editor = makeEditor(text: long)
+        editor.coordinator.highlightNow()
+        await settle()
+
+        let ns = long as NSString
+        let low = ns.range(of: "Paragraph 9")
+        let high = ns.range(of: "Paragraph 6")
+        try #require(low.location != NSNotFound && high.location != NSNotFound)
+
+        /// Document y of a paragraph's first line, against settled layout.
+        func documentY(of offset: Int) -> CGFloat? {
+            let lm = editor.textView.textLayoutManager
+            editor.textView.layoutSubtreeIfNeeded()
+            lm.ensureLayout(for: lm.documentRange)
+            guard let cm = lm.textContentManager,
+                  let range = NSTextRange(NSRange(location: offset, length: 0), in: cm),
+                  let (fragment, _) = MathOverlayLayout.lineFragment(
+                    containing: range.location, in: lm)
+            else { return nil }
+            return fragment.layoutFragmentFrame.minY
+        }
+
+        let highY = try #require(documentY(of: high.location))
+        editor.textView.scroll(CGPoint(x: 0, y: max(0, highY - 60)))
+        editor.scrollView.reflectScrolledClipView(editor.scrollView.contentView)
+        await settle()
+
+        func click(at offset: Int) async {
+            editor.textView.textSelection = NSRange(location: offset, length: 0)
+            editor.coordinator.textViewDidChangeSelection(
+                Notification(name: STTextView.didChangeSelectionNotification,
+                             object: editor.textView))
+            await settle()
+        }
+
+        // Everything from the top of the document down to the paragraph being
+        // clicked — none of it changes reveal state, so none of it may move.
+        func untouched() -> [CGFloat] {
+            (0...5).compactMap { documentY(of: ns.range(of: "Paragraph \($0)").location) }
+        }
+
+        // Caret low in the viewport, then click a paragraph above it.
+        await click(at: low.location + 3)
+        let before = untouched()
+        let clickedBefore = try #require(documentY(of: high.location))
+        let scrollBefore = editor.textView.visibleRect.minY
+
+        await click(at: high.location + 3)
+        let after = untouched()
+        let clickedAfter = try #require(documentY(of: high.location))
+
+        #expect(before.count == 6 && after == before,
+                "content above the click moved: \(before) -> \(after)")
+        #expect(clickedAfter == clickedBefore,
+                "the clicked paragraph itself moved: \(clickedBefore) -> \(clickedAfter)")
+        #expect(editor.textView.visibleRect.minY == scrollBefore, "the click scrolled")
+    }
+
+    /// Clicking with the caret far above the viewport must not shift the view.
+    ///
+    /// This is the one case anchoring exists for: the paragraph losing its
+    /// reveal is off-screen *above*, so its height change moves every line the
+    /// reader is looking at. Absolute-position anchoring can't do this job —
+    /// TextKit re-estimates the prefix above the viewport, which is what threw
+    /// the view hundreds of points per click — so the compensation has to come
+    /// from that one paragraph's own height delta.
+    @Test func clickingWithTheCaretScrolledOffScreenDoesNotShiftTheView() async throws {
+        // Long enough that the target sits mid-document — clamped at the bottom
+        // the scroll can't move and the test measures clamping, not the fix.
+        var long = document
+        for index in 12..<90 {
+            long += "\n\nParagraph \(index) says $x^\(index)$ and *emphasis* here too, "
+                + "continuing with enough words to wrap onto another line or two."
+        }
+        let editor = makeEditor(text: long)
+        editor.coordinator.highlightNow()
+        await settle()
+
+        let ns = long as NSString
+        func offset(_ name: String) throws -> Int {
+            let r = ns.range(of: name)
+            try #require(r.location != NSNotFound)
+            return r.location
+        }
+        func documentY(of offset: Int) -> CGFloat? {
+            let lm = editor.textView.textLayoutManager
+            editor.textView.layoutSubtreeIfNeeded()
+            lm.ensureLayout(for: lm.documentRange)
+            guard let cm = lm.textContentManager,
+                  let range = NSTextRange(NSRange(location: offset, length: 0), in: cm),
+                  let (fragment, _) = MathOverlayLayout.lineFragment(
+                    containing: range.location, in: lm)
+            else { return nil }
+            return fragment.layoutFragmentFrame.minY
+        }
+        func click(at offset: Int) async {
+            editor.textView.textSelection = NSRange(location: offset, length: 0)
+            editor.coordinator.textViewDidChangeSelection(
+                Notification(name: STTextView.didChangeSelectionNotification,
+                             object: editor.textView))
+            await settle()
+        }
+
+        // Caret near the top, then scroll far down — the caret's paragraph ends
+        // up well above the viewport.
+        let near = try offset("Paragraph 2 ")
+        await click(at: near + 3)
+
+        let target = try offset("Paragraph 25")
+        let targetY = try #require(documentY(of: target))
+        editor.textView.scroll(CGPoint(x: 0, y: targetY - 80))
+        editor.scrollView.reflectScrolledClipView(editor.scrollView.contentView)
+        await settle()
+
+        // Where a visible line sits on screen, before and after clicking it.
+        let screenBefore = try #require(documentY(of: target)) - editor.textView.visibleRect.minY
+
+        await click(at: target + 3)
+
+        let screenAfter = try #require(documentY(of: target)) - editor.textView.visibleRect.minY
+        #expect(abs(screenAfter - screenBefore) < 1,
+                "the view jerked: the clicked line moved \(screenAfter - screenBefore)pt on screen")
+    }
+
     /// The user's report: clicking into a paragraph reveals its markup, which
     /// changes heights — and every image has to move with its text, not stay
     /// behind at the geometry the repaint was measured against.

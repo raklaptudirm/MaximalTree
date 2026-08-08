@@ -240,6 +240,44 @@ import Foundation
                 "placed against an estimated origin: \(immediate.minY) vs \(settled.minY)")
     }
 
+    /// Placement under the style the app actually runs: prose now spaces lines
+    /// with `lineSpacing` rather than a multiple (see EditorStyle), which moves
+    /// where the baseline sits inside a line fragment. Equations have to follow
+    /// the real baseline, not the old multiplied geometry.
+    @Test func placementFollowsTheRealBaselineUnderProseSpacing() throws {
+        let style = EditorStyle.prose()
+        let text = "Prose with $x^2$ inline math in it."
+        let ns = text as NSString
+        let equation = ns.range(of: "$x^2$")
+        let image = CGSize(width: 40, height: 18)
+
+        let storage = NSTextContentStorage()
+        let layoutManager = NSTextLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: 400,
+                                                     height: CGFloat.greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        layoutManager.textContainer = container
+        storage.addTextLayoutManager(layoutManager)
+        let attributed = NSMutableAttributedString(
+            string: text,
+            attributes: [.font: style.font, .paragraphStyle: style.paragraphStyle])
+        attributed.addAttribute(.font, value: NSFont.systemFont(ofSize: 0.1), range: equation)
+        attributed.addAttribute(.kern, value: image.width,
+                                range: NSRange(location: equation.upperBound - 1, length: 1))
+        storage.textStorage?.setAttributedString(attributed)
+        layoutManager.ensureLayout(for: layoutManager.documentRange)
+
+        let frame = try #require(MathOverlayLayout.frame(
+            forEquationAt: equation, image: image, imageBaseline: 14, block: false,
+            lineHeightMultiple: style.lineHeightMultiple, in: layoutManager))
+        let line = try #require(lineBounds(at: equation.location, in: layoutManager))
+
+        // The image's baseline sits on the text's, so the box straddles the
+        // line it belongs to rather than drifting into a neighbour.
+        #expect(frame.maxY > line.top)
+        #expect(frame.minY < line.top + line.height)
+    }
+
     @Test func blockEquationsCentreInTheirLine() throws {
         let text = "before\n$ x + y $\nafter"
         let equation = NSRange(location: 7, length: 9)

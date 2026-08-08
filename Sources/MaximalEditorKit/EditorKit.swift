@@ -34,6 +34,23 @@ public struct EditorStyle: Equatable {
 
     public var design: Design
     public var size: CGFloat
+    /// Extra space *between* lines, in points.
+    ///
+    /// Deliberately not `lineHeightMultiple`. A multiple is the one paragraph
+    /// property the engine compensates for at *draw* time: it shifts glyphs up
+    /// by `height × (multiple − 1) / 2` in exactly three places (the two glyph
+    /// renderers and the gutter). The caret, selection rectangles, and hit
+    /// testing all read raw layout geometry instead, so with a 1.5 multiple in
+    /// prose the text was drawn ~7pt above the line the engine thought it was
+    /// on — a caret that sat below its own text, selections offset from what
+    /// they highlighted, and drags that grabbed the neighbouring line.
+    /// `lineSpacing` lands *inside* the line fragment, so every consumer —
+    /// glyphs, caret, selection, hit testing — agrees.
+    public var lineSpacing: CGFloat
+    /// Line height as a multiple of the natural height. Kept at 1 by both
+    /// presets (see `lineSpacing`); non-1 values still work, and
+    /// `MathOverlayLayout` compensates for the engine's draw-time shift, but
+    /// the caret and selection will disagree with the glyphs.
     public var lineHeightMultiple: Double
     public var wrapLines: Bool
     public var indentSpaces: Int
@@ -43,11 +60,13 @@ public struct EditorStyle: Equatable {
     /// dimmed — instead of syntax colors. The WYSIWYG-ish prose experience.
     public var rendersMarkup: Bool
 
-    public init(design: Design, size: CGFloat, lineHeightMultiple: Double,
+    public init(design: Design, size: CGFloat, lineSpacing: CGFloat = 0,
+                lineHeightMultiple: Double = 1,
                 wrapLines: Bool, indentSpaces: Int, showsLineNumbers: Bool = true,
                 rendersMarkup: Bool = false) {
         self.design = design
         self.size = size
+        self.lineSpacing = lineSpacing
         self.lineHeightMultiple = lineHeightMultiple
         self.wrapLines = wrapLines
         self.indentSpaces = indentSpaces
@@ -57,13 +76,13 @@ public struct EditorStyle: Equatable {
 
     public static func code(size: CGFloat = 12, wrapLines: Bool = false,
                             indentSpaces: Int = 4) -> EditorStyle {
-        EditorStyle(design: .monospaced, size: size, lineHeightMultiple: 1.2,
+        EditorStyle(design: .monospaced, size: size, lineSpacing: (size * 0.2).rounded(),
                     wrapLines: wrapLines, indentSpaces: indentSpaces)
     }
 
     /// Manuscript, not IDE: no line-number gutter, markup rendered as formatting.
     public static func prose(size: CGFloat = 15) -> EditorStyle {
-        EditorStyle(design: .serif, size: size, lineHeightMultiple: 1.5,
+        EditorStyle(design: .serif, size: size, lineSpacing: (size * 0.6).rounded(),
                     wrapLines: true, indentSpaces: 2, showsLineNumbers: false,
                     rendersMarkup: true)
     }
@@ -84,8 +103,18 @@ public struct EditorStyle: Equatable {
 
     var paragraphStyle: NSParagraphStyle {
         let style = NSMutableParagraphStyle()
-        style.lineHeightMultiple = lineHeightMultiple
+        style.lineSpacing = lineSpacing
+        // Left at the default (0 — "natural") unless a caller asks for one, so
+        // the engine's draw-time glyph shift stays out of the picture.
+        if lineHeightMultiple != 1 { style.lineHeightMultiple = lineHeightMultiple }
         return style
+    }
+
+    /// A line's full height with this style's spacing — the floor a reserved
+    /// math box must clear so an equation never shrinks its own line.
+    var naturalLineHeight: CGFloat {
+        let font = self.font
+        return font.ascender - font.descender + font.leading + lineSpacing
     }
 }
 
@@ -310,6 +339,18 @@ public struct MaximalEditor: NSViewRepresentable {
         /// position) drifts as the document reflows above the caret.
         private var pendingScrollAnchor: (anchor: ViewportAnchor.Anchor,
                                           caretWasVisible: Bool)?
+        /// Whether the pending repaint was caused by the reader's own typing —
+        /// those must not pin the viewport (see `highlightNow`).
+        private var repaintFollowsEdit = false
+        /// Whether the pending repaint was caused by the caret moving to another
+        /// paragraph — a click or an arrow key. Those must not anchor either
+        /// (see `highlightNow`).
+        private var repaintFollowsCaret = false
+        /// The paragraph about to lose its reveal, when it sits above the
+        /// viewport: its height change moves everything the reader can see.
+        private var pendingRevealLoss: NSRange?
+        /// That paragraph's height before the repaint, to compare against after.
+        private var pendingHeightCompensation: (location: NSTextLocation, height: CGFloat)?
         // nonisolated(unsafe): only written once from installObservers (main)
         // and read in deinit; NotificationCenter removal is thread-safe.
         private nonisolated(unsafe) var observers: [NSObjectProtocol] = []
@@ -407,6 +448,7 @@ public struct MaximalEditor: NSViewRepresentable {
             isEditing = false
             // Debounced: a full-document repaint per keystroke stutters; colors
             // catching up ~100ms after typing pauses is imperceptible.
+            repaintFollowsEdit = true
             scheduleHighlight()
             scheduleAutoCompletion(in: textView)
         }
@@ -461,8 +503,13 @@ public struct MaximalEditor: NSViewRepresentable {
             // within a line rides the (debounced) text-change repaint, which reads
             // the updated range from here.
             let moved = paragraph.location != revealedParagraph?.location
+            let previous = revealedParagraph
             revealedParagraph = paragraph
-            if moved { highlightNow() }
+            if moved {
+                repaintFollowsCaret = true
+                pendingRevealLoss = previous
+                highlightNow()
+            }
         }
 
         private func scheduleHighlight() {
@@ -499,10 +546,31 @@ public struct MaximalEditor: NSViewRepresentable {
             let full = NSRange(location: 0, length: ns.length)
             paragraphStyles.removeAll()
             pendingMath.removeAll()
-            // Repaints can change layout (math reservations landing, markup
-            // concealment) — pin the topmost visible line now so the text doesn't
-            // shift under the reader when line heights change.
-            captureScrollAnchor()
+            // Pin the topmost visible line so a repaint that changes line
+            // heights (math images landing, a concealment reveal, a theme
+            // switch) doesn't shift the text under the reader.
+            //
+            // Only for repaints the reader didn't cause. Typing: the engine is
+            // already scrolling to follow the caret and anchoring fights it. A
+            // caret move (click, arrow): measured in the app, the restore threw
+            // the view 200–600pt upward *every click*, scaling with scroll
+            // depth — the signature of TextKit re-estimating the prefix above
+            // the viewport after the repaint's layout pass, which makes the
+            // anchored line look higher than it is. Both cases move only
+            // paragraphs already in view, so there is nothing to compensate
+            // for; anchoring is for images landing and theme switches, where
+            // heights change under a passive reader.
+            let followsCaret = repaintFollowsCaret
+            let followsReader = repaintFollowsEdit || followsCaret
+            let revealLoss = pendingRevealLoss
+            repaintFollowsEdit = false
+            repaintFollowsCaret = false
+            pendingRevealLoss = nil
+            if followsCaret {
+                captureHeightCompensation(of: revealLoss)
+            } else if !followsReader {
+                captureScrollAnchor()
+            }
             // Every exit re-syncs overlays and the anchor — including removal
             // when the doc emptied or the style stopped rendering markup.
             // Deferred a tick: TextKit must lay out the new attributes first.
@@ -510,24 +578,42 @@ public struct MaximalEditor: NSViewRepresentable {
                 DispatchQueue.main.async { [weak self] in
                     MainActor.assumeIsolated {
                         self?.layoutMathOverlays()
+                        self?.applyHeightCompensation()
                         self?.restoreScrollAnchor()
                     }
                 }
             }
             guard full.length > 0 else { return }
 
-            // Base reset: uniform font/paragraph/color, clearing prior markup styling.
+            paint(full, style: style, content: content, ns: ns,
+                  tokenizer: tokenizer, on: textView)
+        }
+
+        /// Repaint one range: reset it to the base style, then re-apply every
+        /// token that touches it. The unit both the whole-document paint and the
+        /// incremental reveal paint are built from.
+        private func paint(_ range: NSRange, style: EditorStyle, content: String,
+                           ns: NSString, tokenizer: EditorTokenizer,
+                           on textView: STTextView) {
+            guard range.length > 0 else { return }
+            // Anything this range owned is about to be recomputed.
+            paragraphStyles[range.location] = nil
+            pendingMath.removeAll { NSIntersectionRange($0.range, range).length > 0 }
+
             textView.setAttributes([
                 .font: style.font,
                 .paragraphStyle: style.paragraphStyle,
                 .foregroundColor: NSColor.labelColor,
-            ], range: full)
-            textView.removeRenderingAttribute(.foregroundColor, range: full)
-            textView.removeRenderingAttribute(.backgroundColor, range: full)
-            textView.removeRenderingAttribute(.underlineStyle, range: full)
-            textView.removeRenderingAttribute(.strikethroughStyle, range: full)
+            ], range: range)
+            textView.removeRenderingAttribute(.foregroundColor, range: range)
+            textView.removeRenderingAttribute(.backgroundColor, range: range)
+            textView.removeRenderingAttribute(.underlineStyle, range: range)
+            textView.removeRenderingAttribute(.strikethroughStyle, range: range)
 
-            for token in tokenizer.tokens(in: content) {
+            // Tokenizers memoize, so re-asking for the whole document's tokens
+            // during an incremental repaint is a cache hit, not a re-parse.
+            for token in tokenizer.tokens(in: content)
+            where NSIntersectionRange(token.range, range).length > 0 {
                 if style.rendersMarkup {
                     renderMarkup(token, style: style, in: ns, on: textView)
                 } else if let color = TokenPalette.color(for: token.kind, dark: isDark) {
@@ -717,7 +803,7 @@ public struct MaximalEditor: NSViewRepresentable {
                     $0.maximumLineHeight = (image.size.height + 2) / lines
                 } else {
                     $0.minimumLineHeight = max(image.size.height + 2,
-                                               style.font.pointSize * style.lineHeightMultiple)
+                                               style.naturalLineHeight)
                 }
                 // A block equation centers. The reserved box is invisible; what
                 // centering buys is a caret that lands mid-column when clicking
@@ -796,6 +882,55 @@ public struct MaximalEditor: NSViewRepresentable {
         /// Pin the top of the viewport across the repaint, and note whether the
         /// caret was on screen — a reveal can make its paragraph taller and push
         /// it out, but only chase it back if the reader was looking at it.
+        /// Note the height of a paragraph that sits *above* the viewport and is
+        /// about to lose its reveal — the "scroll away from the caret, then
+        /// click" case. Everything on screen sits below it, so whatever it
+        /// gains or loses moves the whole view by exactly that much.
+        ///
+        /// Only its own height is recorded, never a document position: the
+        /// prefix above the viewport is estimated and re-estimated by TextKit,
+        /// which is what made absolute-position anchoring throw the view
+        /// hundreds of points. A single fragment's height is local and honest.
+        private func captureHeightCompensation(of paragraph: NSRange?) {
+            pendingHeightCompensation = nil
+            guard let textView, let paragraph,
+                  let contentManager = textView.textLayoutManager.textContentManager,
+                  let range = NSTextRange(NSRange(location: paragraph.location, length: 0),
+                                          in: contentManager),
+                  let frame = paragraphFrame(at: range.location,
+                                             in: textView.textLayoutManager)
+            else { return }
+            // Entirely above the viewport: only then does its height shift what
+            // the reader sees. A paragraph in view moves its own text, which is
+            // the reveal doing its job.
+            guard frame.maxY <= textView.visibleRect.minY else { return }
+            pendingHeightCompensation = (range.location, frame.height)
+        }
+
+        /// Scroll by exactly what that paragraph's height changed, so the lines
+        /// on screen stay where they were.
+        private func applyHeightCompensation() {
+            guard let (location, before) = pendingHeightCompensation, let textView else { return }
+            pendingHeightCompensation = nil
+            guard let frame = paragraphFrame(at: location, in: textView.textLayoutManager)
+            else { return }
+            let delta = frame.height - before
+            guard abs(delta) > 0.5 else { return }
+            let visible = textView.visibleRect
+            textView.scroll(CGPoint(x: visible.minX, y: max(0, visible.minY + delta)))
+        }
+
+        private func paragraphFrame(at location: NSTextLocation,
+                                    in layoutManager: NSTextLayoutManager) -> CGRect? {
+            var result: CGRect?
+            layoutManager.enumerateTextLayoutFragments(from: location,
+                                                       options: [.ensuresLayout]) { fragment in
+                result = fragment.layoutFragmentFrame
+                return false
+            }
+            return result
+        }
+
         private func captureScrollAnchor() {
             guard let textView else { return }
             let visible = textView.visibleRect

@@ -393,7 +393,7 @@ private struct MoveToFolderMenu: View {
 
 /// A thin strip along a top-level row's top edge: dropping there inserts the
 /// dragged entries before it (position-aware reorder). Invisible until hovered.
-struct InsertionStrip: View {
+private struct InsertionStrip: View {
     let container: UUID?
     let index: Int
     var minHeight: CGFloat = 4
@@ -418,7 +418,7 @@ struct InsertionStrip: View {
 /// Attaches a String drop target only when `enabled` — files shouldn't light up
 /// as drop zones, and SwiftUI has no conditional-modifier form of
 /// `dropDestination` short of this.
-struct DropTargetModifier: ViewModifier {
+private struct DropTargetModifier: ViewModifier {
     let enabled: Bool
     @Binding var isTargeted: Bool
     let perform: ([String]) -> Bool
