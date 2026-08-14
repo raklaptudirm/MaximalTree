@@ -870,3 +870,47 @@ struct TinymistLiveTests {
         #expect(output.pdf != nil)
     }
 }
+
+/// The inspector's live stats: the buffer channel that carries an open
+/// document's text to views outside the canvas, and the counting itself.
+///
+/// The word count used to read the *file*, in a `.task(id: nodeID)` — so it
+/// never moved while you typed, and even after a save it lagged by an
+/// autosave. Both halves of that are covered here; the SwiftUI wiring that
+/// joins them is not.
+@MainActor
+@Suite struct TypstLiveStatsTests {
+    @Test func wordCountCountsTheSourceAsWritten() {
+        #expect(TypstStructure.wordCount(of: "") == 0)
+        #expect(TypstStructure.wordCount(of: "   \n\t ") == 0)
+        #expect(TypstStructure.wordCount(of: "one") == 1)
+        #expect(TypstStructure.wordCount(of: "one two  three") == 3)
+        // Newlines separate words the same as spaces; markup counts as written.
+        #expect(TypstStructure.wordCount(of: "= Heading\n\nbody text") == 4)
+        #expect(TypstStructure.wordCount(of: "*bold* and _italic_") == 3)
+    }
+
+    @Test func bufferChannelIsPerDocumentAndClears() throws {
+        let state = TypstUIState.shared
+        let a = URL(fileURLWithPath: "/tmp/maximaltree-a.typ")
+        let b = URL(fileURLWithPath: "/tmp/maximaltree-b.typ")
+        defer { state.clearBuffer(for: a); state.clearBuffer(for: b) }
+
+        #expect(state.buffer(for: a) == nil, "no canvas open means no buffer")
+        state.setBuffer("hello world", for: a)
+        state.setBuffer("just b", for: b)
+        #expect(state.buffer(for: a) == "hello world")
+        #expect(state.buffer(for: b) == "just b")
+
+        // The count the inspector shows comes from the buffer, not the file —
+        // which need not exist at all.
+        let live = try #require(state.buffer(for: a))
+        #expect(TypstStructure.wordCount(of: live) == 2)
+
+        // Closing one document leaves the other's buffer alone.
+        state.clearBuffer(for: a)
+        #expect(state.buffer(for: a) == nil)
+        #expect(state.buffer(for: b) == "just b")
+        #expect(state.buffer(for: nil) == nil)
+    }
+}

@@ -75,6 +75,7 @@ struct TypstCanvas: View {
             loadedNode = nil
             await load()
             loadedNode = nodeID
+            TypstUIState.shared.setBuffer(text, for: fileURL)
             if loadError == nil { scheduleCompile(delay: .zero) }
             handleFragment()   // a phony-node open may have posted before we existed
         }
@@ -86,6 +87,7 @@ struct TypstCanvas: View {
         }
         .onDisappear {
             if mode.autosaves && dirty && loadedNode == nodeID { saveToDisk() }
+            TypstUIState.shared.clearBuffer(for: fileURL)
         }
     }
 
@@ -154,6 +156,9 @@ struct TypstCanvas: View {
         .clipped()
         .onChange(of: text) {
             guard loadedNode == nodeID else { return }
+            // Publish the buffer so views outside the canvas (the inspector's
+            // word count) reflect what's on screen rather than what's on disk.
+            TypstUIState.shared.setBuffer(text, for: fileURL)
             scheduleCompile(delay: .milliseconds(400))
             if mode.autosaves { scheduleAutosave() }
         }
@@ -328,6 +333,7 @@ struct TypstDocumentInspector: View {
 
     @State private var links: [URL] = []
     @State private var backlinks: [URL] = []
+    @State private var countTask: Task<Void, Never>?
     @State private var loaded = false
     @State private var wordCount: Int?
     private let uiState = TypstUIState.shared
@@ -372,13 +378,34 @@ struct TypstDocumentInspector: View {
             await countWords()
             await reload()
         }
+        // Reading the live buffer here registers the dependency, so an edit in
+        // the canvas re-runs the count. Debounced: recounting a 30KB document
+        // on every keystroke is work nobody asked for, and the number is only
+        // ever read at a glance.
+        .onChange(of: TypstUIState.shared.buffer(for: fileURL)) { _, _ in
+            countTask?.cancel()
+            countTask = Task {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+                await countWords()
+            }
+        }
+        .onDisappear { countTask?.cancel() }
     }
 
+    /// Words in the document as it currently reads. Prefers the open buffer —
+    /// disk lags by an autosave, and an unsaved edit is exactly when the count
+    /// is being watched — and falls back to the file for documents that have no
+    /// canvas open (selected in the sidebar, never opened).
     private func countWords() async {
+        if let live = TypstUIState.shared.buffer(for: fileURL) {
+            wordCount = await Task.detached { TypstStructure.wordCount(of: live) }.value
+            return
+        }
         guard let url = fileURL else { return }
         wordCount = await Task.detached {
-            (try? String(contentsOf: url, encoding: .utf8))?
-                .split { $0.isWhitespace || $0.isNewline }.count
+            (try? String(contentsOf: url, encoding: .utf8))
+                .map(TypstStructure.wordCount(of:))
         }.value
     }
 

@@ -398,6 +398,16 @@ enum TypstStructure {
 
     /// Local files this document references via `#include`/`#import` — from the
     /// real parser; package imports (`@…`) are not file links.
+    /// Words in a document, for the inspector's stats.
+    ///
+    /// Deliberately counts the source as written — typst markup included —
+    /// because that's what the editor shows and what the reader is watching
+    /// change. Rendering first would give a different (and, mid-edit,
+    /// unstable) number.
+    static func wordCount(of text: String) -> Int {
+        text.split { $0.isWhitespace || $0.isNewline }.count
+    }
+
     static func links(of source: String) -> [String] {
         (TypstEngine.structure(in: source) ?? [])
             .filter { $0.kind == "link" }
