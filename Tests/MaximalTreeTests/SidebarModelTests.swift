@@ -146,3 +146,52 @@ import Foundation
                                             selection: []) == id(0))
     }
 }
+
+/// Disclosure has to write through to the host the moment it changes — the app
+/// can be quit at any point, and nothing else would have saved it.
+@MainActor
+@Suite struct SidebarPersistenceTests {
+    private func node(_ path: String) throws -> NodeID {
+        try #require(NodeID("file://\(path)"))
+    }
+
+    @Test func togglingReportsTheRevealedSet() throws {
+        let state = SidebarState()
+        var reported: [Set<NodeID>] = []
+        state.onExpansionChanged = { reported.append($0) }
+
+        let a = try node("/tmp/a")
+        state.toggle(a)
+        state.toggle(a)
+
+        #expect(reported == [[a], []])
+    }
+
+    @Test func restoringDoesNotReportBack() throws {
+        let state = SidebarState()
+        var reports = 0
+        state.onExpansionChanged = { _ in reports += 1 }
+
+        state.restore(SidebarState.Snapshot(expandedNodes: [try node("/tmp/a")],
+                                            anchor: nil))
+
+        // Loading persisted state isn't an edit; echoing it back would let a
+        // restore overwrite the workspace it was just read from.
+        #expect(reports == 0)
+        #expect(state.expandedNodes.count == 1)
+    }
+
+    @Test func renamingKeepsTheSubtreeOpenAndReportsIt() throws {
+        let state = SidebarState()
+        let old = try node("/tmp/old")
+        let new = try node("/tmp/new")
+        state.restore(SidebarState.Snapshot(expandedNodes: [old], anchor: old))
+
+        var reported: Set<NodeID>?
+        state.onExpansionChanged = { reported = $0 }
+        state.remap(from: old, to: new)
+
+        #expect(state.expandedNodes == [new])
+        #expect(reported == [new])
+    }
+}

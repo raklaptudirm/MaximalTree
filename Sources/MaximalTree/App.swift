@@ -62,8 +62,9 @@ final class AppModel {
 
     /// What each workspace looked like when you left it: its tabs (with their
     /// splits and history) and which nodes were revealed in the sidebar.
-    /// In memory only — a switch restores exactly what you had, a relaunch
-    /// still starts fresh (roots persist; sessions would need serializing).
+    /// In memory, so a switch restores exactly what you had. The revealed set
+    /// is *also* written to the workspace file, so it survives a relaunch too;
+    /// tabs still don't (they'd need their canvases serialized).
     private struct WorkspaceSession {
         var navigation: NavigationModel.Snapshot
         var sidebar: SidebarState.Snapshot
@@ -106,11 +107,20 @@ final class AppModel {
         // the tabs pointing into them are focused.
         store?.switchRoots(roots)
         guard let id = activeWorkspaceID, let session = sessions[id] else {
-            sidebar.restore(SidebarState.Snapshot(expandedNodes: [], anchor: nil))
+            // First visit this run: fall back to what the workspace persisted.
+            restoreRevealedNodesFromDisk()
             return
         }
         sidebar.restore(session.sidebar)
         store?.restoreNavigation(session.navigation)
+    }
+
+    /// Put the sidebar's disclosure back the way the active workspace last had
+    /// it. Uris that no longer resolve are simply dropped — an expanded node
+    /// that's gone has nothing to disclose.
+    private func restoreRevealedNodesFromDisk() {
+        let revealed = Set(workspaceStore.active.revealedNodes.compactMap(NodeID.init))
+        sidebar.restore(SidebarState.Snapshot(expandedNodes: revealed, anchor: nil))
     }
 
     // MARK: Root folders
@@ -288,6 +298,11 @@ final class AppModel {
         store.onNodeRenamed = { [weak self] old, new in
             self?.sidebar.remap(from: old, to: new)
         }
+        // Every disclosure writes through to the active workspace, so quitting
+        // at any moment leaves the tree the way it looks right now.
+        sidebar.onExpansionChanged = { [weak self] revealed in
+            self?.workspaceStore.setRevealedNodes(revealed.map(\.uri))
+        }
         store.onRootsChanged = { [weak self] in
             guard let self else { return }
             self.workspaceStore.reconcileRoots(self.host.roots,
@@ -305,6 +320,9 @@ final class AppModel {
             workspaceStore.reconcileRoots(roots)
         }
         store.setRoots(roots)
+        // After the roots exist, so the disclosed subtrees have something to
+        // hang from; flattening them pulls their children in on its own.
+        restoreRevealedNodesFromDisk()
     }
 
     /// Prompt for a folder and mount it as a new root. (Persistence happens in the

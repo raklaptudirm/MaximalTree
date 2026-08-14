@@ -260,14 +260,23 @@ struct Workspace: Codable, Identifiable, Equatable {
     var id: UUID
     var name: String
     var layout: RootLayout
+    /// Which nodes are revealed (disclosed) in the sidebar, as uris. Folder
+    /// expansion has always persisted here inside `layout`; node expansion is
+    /// the same kind of state — where the user left the tree open — and users
+    /// reasonably expect a relaunch to put it back rather than collapse
+    /// everything. Stored as uris because a NodeID only exists once its
+    /// provider has resolved one.
+    var revealedNodes: [String] = []
 
     /// Convenience for the flat root set (what older code and `resolvedRoots` want).
     var rootURIs: [String] { layout.rootURIs }
 
-    init(id: UUID = UUID(), name: String, layout: RootLayout = RootLayout()) {
+    init(id: UUID = UUID(), name: String, layout: RootLayout = RootLayout(),
+         revealedNodes: [String] = []) {
         self.id = id
         self.name = name
         self.layout = layout
+        self.revealedNodes = revealedNodes
     }
 
     init(id: UUID = UUID(), name: String, rootURIs: [String]) {
@@ -276,7 +285,7 @@ struct Workspace: Codable, Identifiable, Equatable {
 
     // Decodes the current shape (`layout`) or a pre-folders workspace (`rootURIs`),
     // so an existing library keeps loading — everything becomes loose roots.
-    private enum CodingKeys: String, CodingKey { case id, name, layout, rootURIs }
+    private enum CodingKeys: String, CodingKey { case id, name, layout, rootURIs, revealedNodes }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -288,6 +297,7 @@ struct Workspace: Codable, Identifiable, Equatable {
             let uris = try container.decodeIfPresent([String].self, forKey: .rootURIs) ?? []
             self.layout = RootLayout(looseRoots: uris)
         }
+        revealedNodes = try container.decodeIfPresent([String].self, forKey: .revealedNodes) ?? []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -295,6 +305,7 @@ struct Workspace: Codable, Identifiable, Equatable {
         try container.encode(id, forKey: .id)
         try container.encode(name, forKey: .name)
         try container.encode(layout, forKey: .layout)
+        try container.encode(revealedNodes, forKey: .revealedNodes)
     }
 }
 
@@ -467,6 +478,14 @@ final class WorkspaceStore {
 
     func renameFolder(_ id: UUID, to name: String) {
         mutateActive { RootLayout.mutateFolder(id, in: &$0.layout.entries) { $0.name = name } }
+    }
+
+    /// Record which nodes are revealed in the active workspace's sidebar.
+    /// Sorted so the persisted file doesn't churn on set reordering.
+    func setRevealedNodes(_ uris: [String]) {
+        let sorted = uris.sorted()
+        guard active.revealedNodes != sorted else { return }
+        mutateActive { $0.revealedNodes = sorted }
     }
 
     func setFolderExpanded(_ id: UUID, _ expanded: Bool) {

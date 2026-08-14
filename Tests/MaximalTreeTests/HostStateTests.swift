@@ -121,6 +121,49 @@ import Foundation
         #expect(restored.isEmpty)
     }
 
+    @Test func revealedNodesSurviveARelaunch() throws {
+        let file = try tempLibraryURL()
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        let a = try #require(NodeID("file:///tmp/a"))
+        let b = try #require(NodeID("file:///tmp/b"))
+
+        WorkspaceStore(fileURL: file).setRevealedNodes([b.uri, a.uri])
+
+        // Reopening the library is the relaunch: the tree comes back disclosed.
+        let restored = WorkspaceStore(fileURL: file)
+        #expect(restored.active.revealedNodes == [a.uri, b.uri].sorted())
+    }
+
+    @Test func revealedNodesAreScopedToTheirWorkspace() throws {
+        let file = try tempLibraryURL()
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        let store = WorkspaceStore(fileURL: file)
+        let first = store.library.activeID
+        store.setRevealedNodes(["file:///tmp/a"])
+
+        let second = store.create(named: "Other")
+        store.setActive(second.id)
+        store.setRevealedNodes(["file:///tmp/b"])
+
+        let restored = WorkspaceStore(fileURL: file)
+        #expect(restored.library.workspaces.first { $0.id == first }?.revealedNodes
+                == ["file:///tmp/a"])
+        #expect(restored.library.workspaces.first { $0.id == second.id }?.revealedNodes
+                == ["file:///tmp/b"])
+    }
+
+    /// A library written before the sidebar persisted disclosure must still load.
+    @Test func aLibraryWithoutRevealedNodesLoadsEmpty() throws {
+        let legacy = Workspace(name: "Old")
+        let data = try JSONEncoder().encode(legacy)
+        var object = try #require(try JSONSerialization.jsonObject(with: data)
+                                  as? [String: Any])
+        object.removeValue(forKey: "revealedNodes")
+        let trimmed = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(Workspace.self, from: trimmed)
+        #expect(decoded.revealedNodes.isEmpty)
+    }
+
     @Test func freshLibraryIsFlaggedOnce() throws {
         let file = try tempLibraryURL()
         defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }

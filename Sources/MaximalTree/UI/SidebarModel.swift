@@ -146,15 +146,25 @@ enum SidebarSelection {
     }
 }
 
-/// Session-scoped sidebar UI state. Expansion is ephemeral by design (a fresh
-/// launch starts collapsed); folder expansion persists separately in the
-/// workspace layout, where it always lived.
+/// Sidebar UI state for the active workspace. Expansion outlives the process:
+/// the host persists it per workspace (see `onExpansionChanged`), next to the
+/// folder expansion that always lived in the workspace layout.
 @MainActor
 @Observable
 final class SidebarState {
-    var expandedNodes: Set<NodeID> = []
+    var expandedNodes: Set<NodeID> = [] {
+        didSet {
+            guard !isRestoring, expandedNodes != oldValue else { return }
+            onExpansionChanged?(expandedNodes)
+        }
+    }
     /// The last plainly-clicked row — where a ⇧-range starts.
     var anchor: NodeID?
+
+    /// Called whenever the revealed set changes, so the host can persist it.
+    /// Not called while restoring — that direction is a load, not an edit.
+    var onExpansionChanged: ((Set<NodeID>) -> Void)?
+    private var isRestoring = false
 
     func toggle(_ id: NodeID) {
         if expandedNodes.contains(id) {
@@ -182,7 +192,9 @@ final class SidebarState {
     }
 
     func restore(_ snapshot: Snapshot) {
+        isRestoring = true
         expandedNodes = snapshot.expandedNodes
         anchor = snapshot.anchor
+        isRestoring = false
     }
 }
