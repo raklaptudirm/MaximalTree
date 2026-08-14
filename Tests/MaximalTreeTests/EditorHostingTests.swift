@@ -343,3 +343,163 @@ import STTextView
                 "prose lines lost their air: \(first)")
     }
 }
+
+/// Non-wrapping code needs somewhere to go sideways.
+@MainActor
+@Suite struct EditorHorizontalScrollTests {
+    /// With wrapping off, a line longer than the viewport must make the
+    /// document wider than the viewport — that width *is* the scrollable
+    /// range. Without it the tail of every long line is simply unreachable.
+    @Test func longLinesMakeTheDocumentWiderThanTheViewport() async throws {
+        let scrollView = MaximalEditor.EditorTextView.scrollableTextView()
+        let textView = scrollView.documentView as! STTextView
+        let style = EditorStyle.code()          // wrapLines: false
+        textView.font = style.font
+        textView.defaultParagraphStyle = style.paragraphStyle
+        textView.widthTracksTextView = style.wrapLines
+        textView.text = String(repeating: "let value = compute(everything) ; ", count: 40)
+
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        scrollView.frame = NSRect(x: 0, y: 0, width: 500, height: 300)
+        window.contentView = scrollView
+        window.orderFrontRegardless()
+        window.layoutIfNeeded()
+        defer { window.orderOut(nil) }
+        for _ in 0..<6 {
+            try? await Task.sleep(for: .milliseconds(30))
+            window.displayIfNeeded()
+            window.layoutIfNeeded()
+        }
+
+        let viewport = scrollView.contentView.bounds.width
+        let width = textView.frame.width
+        #expect(width > viewport + 1,
+                "document \(width) fits inside viewport \(viewport) — nowhere to scroll")
+        #expect(scrollView.hasHorizontalScroller)
+    }
+
+    /// A real file's long line is rarely its *last* line — and that is exactly
+    /// what broke. STTextView sizes the document by enumerating fragments in
+    /// reverse from the end and stopping at the first, so it measures the last
+    /// line and clamps up to the viewport. Every earlier test here used a
+    /// single long line, which is also the last line, and so passed while the
+    /// app had no horizontal scroll at all.
+    @Test func aLongLineAboveShorterOnesStillWidensTheDocument() async throws {
+        let scrollView = MaximalEditor.EditorTextView.scrollableTextView()
+        let textView = scrollView.documentView as! STTextView
+        let style = EditorStyle.code()
+        textView.font = style.font
+        textView.defaultParagraphStyle = style.paragraphStyle
+        textView.widthTracksTextView = style.wrapLines
+        textView.text = String(repeating: "let value = compute(everything) ; ", count: 40)
+            + "\nshort\nalso short\n"
+
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        scrollView.frame = NSRect(x: 0, y: 0, width: 500, height: 300)
+        window.contentView = scrollView
+        window.orderFrontRegardless()
+        window.layoutIfNeeded()
+        defer { window.orderOut(nil) }
+        for _ in 0..<8 {
+            try? await Task.sleep(for: .milliseconds(30))
+            window.displayIfNeeded()
+            window.layoutIfNeeded()
+        }
+
+        let viewport = scrollView.contentView.bounds.width
+        let width = textView.frame.width
+        #expect(width > viewport + 1,
+                "document \(width) fits in viewport \(viewport) — long line unreachable")
+    }
+
+    /// The text editor canvas's own shape: a VStack with `.clipped()`. Without
+    /// a flexible frame the editor's width is whatever size negotiation lands
+    /// on rather than the pane's — and a scroll view that isn't the size of its
+    /// viewport has no viewport to scroll within.
+    @Test func editorFillsItsPaneInTheCanvasLayout() async throws {
+        struct CanvasShape: View {
+            @State var text: String
+            var body: some View {
+                VStack(spacing: 0) {
+                    MaximalEditor(text: $text, style: .code())
+                        .clipped()
+                }
+            }
+        }
+        let hosting = NSHostingView(rootView: CanvasShape(
+            text: String(repeating: "let value = compute(everything) ; ", count: 40)))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.contentView = hosting
+        window.orderFrontRegardless()
+        window.layoutIfNeeded()
+        defer { window.orderOut(nil) }
+        for _ in 0..<10 {
+            try? await Task.sleep(for: .milliseconds(40))
+            window.displayIfNeeded()
+            window.layoutIfNeeded()
+        }
+
+        func findScrollView(_ view: NSView) -> NSScrollView? {
+            if let found = view as? NSScrollView { return found }
+            for sub in view.subviews {
+                if let found = findScrollView(sub) { return found }
+            }
+            return nil
+        }
+        let scrollView = try #require(findScrollView(hosting))
+        #expect(abs(scrollView.frame.width - hosting.bounds.width) < 1,
+                "editor is \(scrollView.frame.width) wide in a \(hosting.bounds.width) pane")
+
+        // …and the document inside it still has to overflow, or there is
+        // nothing for the scroller (or the trackpad) to move.
+        let textView = try #require(scrollView.documentView as? STTextView)
+        let viewport = scrollView.contentView.bounds.width
+        print("PROBE canvas doc=\(textView.frame.width) viewport=\(viewport) tracks=\(textView.widthTracksTextView) gutter=\(textView.showsLineNumbers)")
+        #expect(textView.frame.width > viewport + 1,
+                "document \(textView.frame.width) fits in viewport \(viewport) — nothing scrolls")
+    }
+
+    /// The same invariant through SwiftUI, which is how the app actually
+    /// mounts the editor — and where its size is negotiated rather than set.
+    @Test func longLinesStillScrollWhenHostedInSwiftUI() async throws {
+        struct Host: View {
+            @State var text: String
+            var body: some View {
+                MaximalEditor(text: $text, style: .code())
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
+            }
+        }
+        let hosting = NSHostingView(rootView: Host(
+            text: String(repeating: "let value = compute(everything) ; ", count: 40)))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.contentView = hosting
+        window.orderFrontRegardless()
+        window.layoutIfNeeded()
+        defer { window.orderOut(nil) }
+        for _ in 0..<10 {
+            try? await Task.sleep(for: .milliseconds(40))
+            window.displayIfNeeded()
+            window.layoutIfNeeded()
+        }
+
+        func findScrollView(_ view: NSView) -> NSScrollView? {
+            if let found = view as? NSScrollView { return found }
+            for sub in view.subviews {
+                if let found = findScrollView(sub) { return found }
+            }
+            return nil
+        }
+        let scrollView = try #require(findScrollView(hosting))
+        let textView = try #require(scrollView.documentView as? STTextView)
+        let viewport = scrollView.contentView.bounds.width
+        let width = textView.frame.width
+        #expect(viewport > 100, "the editor got a real width: \(viewport)")
+        #expect(width > viewport + 1,
+                "document \(width) fits inside viewport \(viewport) — nowhere to scroll")
+    }
+}

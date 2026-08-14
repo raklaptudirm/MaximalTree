@@ -311,6 +311,30 @@ public struct MaximalEditor: NSViewRepresentable {
         override var intrinsicContentSize: NSSize {
             NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
         }
+
+        /// Never narrower than the text it holds.
+        ///
+        /// With wrapping off, the engine sizes the document by enumerating
+        /// layout fragments *in reverse from the end and stopping at the
+        /// first* — so it measures the last line and then clamps up to the
+        /// viewport. A file whose long line isn't its last (which is most
+        /// files) therefore gets a document exactly as wide as the viewport:
+        /// no overflow, so the caret walks off the right edge and neither the
+        /// scroller nor the trackpad has anywhere to go.
+        ///
+        /// `usageBoundsForTextContainer` is TextKit's own union of what it has
+        /// laid out, which is the number the engine's `intrinsicContentSize`
+        /// reports and the right floor here. Growth only, and only when
+        /// wrapping is off — a wrapping editor must stay the width it's given.
+        override func setFrameSize(_ newSize: NSSize) {
+            var size = newSize
+            if isHorizontallyResizable {
+                let content = textLayoutManager.usageBoundsForTextContainer.maxX
+                    + (gutterView?.frame.width ?? 0)
+                size.width = max(size.width, content.rounded(.up))
+            }
+            super.setFrameSize(size)
+        }
     }
 
     private static func apply(style: EditorStyle, to textView: STTextView) {
