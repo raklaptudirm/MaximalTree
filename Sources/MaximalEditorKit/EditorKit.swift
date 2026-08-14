@@ -222,7 +222,7 @@ public struct MaximalEditor: NSViewRepresentable {
         // let AppKit re-inset it against the title bar, which would recreate
         // zen's dead strip inside the scroll view.
         scrollView.automaticallyAdjustsContentInsets = false
-        apply(style: style, to: textView)
+        Self.apply(style: style, to: textView)
         context.coordinator.installObservers(for: textView, in: scrollView)
 
         context.coordinator.push(text, into: textView)
@@ -240,26 +240,60 @@ public struct MaximalEditor: NSViewRepresentable {
         return scrollView
     }
 
+    /// Take the space offered; never derive a size from the content.
+    ///
+    /// Without this, SwiftUI sizes the representable from AppKit's
+    /// `fittingSize`, which for a scroll view follows its document — so every
+    /// text relayout changed the hosting view's min/max size,
+    /// `SplitViewChildController.hostingView(_:didUpdateMinSize:maxSize:)`
+    /// invalidated layout, and that scheduled another constraint pass which
+    /// re-laid out the text. AppKit's feedback-loop detector aborts once that
+    /// circuit spins, and that call sits at the top of the crash's exception
+    /// backtrace. A scroll view's content is unbounded by design: the right
+    /// answer to "how big are you" is "as big as you like".
+    public func sizeThatFits(_ proposal: ProposedViewSize,
+                             nsView: NSScrollView,
+                             context: Context) -> CGSize? {
+        proposal.replacingUnspecifiedDimensions(
+            by: CGSize(width: 320, height: 240))
+    }
+
     public func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? STTextView else { return }
         controller?.textView = textView
-        context.coordinator.isDark = colorScheme == .dark
+        let coordinator = context.coordinator
+        coordinator.isDark = colorScheme == .dark
 
-        // External text changes (file loads, programmatic rewrites) push in and
-        // repaint immediately; echoes of the view's own edits are filtered by
-        // comparison, and their highlighting rides the debounced typing path —
-        // repainting here too would double the per-keystroke work (it stutters).
-        if !context.coordinator.isEditing, textView.text != text {
-            context.coordinator.push(text, into: textView)
+        let styleChanged = coordinator.lastStyle != style
+        if styleChanged { coordinator.lastStyle = style }
+
+        // Everything below this point mutates layout: assigning text, changing
+        // the font and wrap mode, and repainting every attribute in the
+        // document. `updateNSView` runs *inside* the window's layout pass, and
+        // mutating layout from within one is what AppKit turns into a crash —
+        // an exception escaping NSView.layout, reported through
+        // `_crashOnException`. That was the mode switch: it's the one update
+        // that changes the style, so it's the one that repaints synchronously
+        // from inside layout. Hand the work to the next runloop turn instead,
+        // where the engine owns its own layout again.
+        let text = self.text
+        let style = self.style
+        DispatchQueue.main.async { [weak textView] in
+            MainActor.assumeIsolated {
+                guard let textView else { return }
+                // Re-checked here, not captured: the buffer may have caught up
+                // (or moved on) while this hop was in flight.
+                if !coordinator.isEditing, textView.text != text {
+                    coordinator.push(text, into: textView)
+                }
+                if styleChanged {
+                    Self.apply(style: style, to: textView)
+                    coordinator.invalidateHighlight()
+                    coordinator.highlightNow()
+                }
+                coordinator.highlightIfAppearanceChanged()
+            }
         }
-        if context.coordinator.lastStyle != style {
-            context.coordinator.lastStyle = style
-            apply(style: style, to: textView)
-            // Styling depends on the style (fonts, markup rendering) — repaint.
-            context.coordinator.invalidateHighlight()
-            context.coordinator.highlightNow()
-        }
-        context.coordinator.highlightIfAppearanceChanged()
     }
 
     /// The engine's text view, minus its intrinsic content size.
@@ -279,7 +313,7 @@ public struct MaximalEditor: NSViewRepresentable {
         }
     }
 
-    private func apply(style: EditorStyle, to textView: STTextView) {
+    private static func apply(style: EditorStyle, to textView: STTextView) {
         textView.font = style.font
         textView.defaultParagraphStyle = style.paragraphStyle
         textView.widthTracksTextView = style.wrapLines

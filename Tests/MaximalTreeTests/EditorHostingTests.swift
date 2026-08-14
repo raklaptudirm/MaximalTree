@@ -165,6 +165,88 @@ import STTextView
         #expect(textView.intrinsicContentSize.height == NSView.noIntrinsicMetric)
     }
 
+    /// The reported crash: switching a small/new document to prose mode threw
+    /// out of a layout pass (EXC_BREAKPOINT via `_crashOnException`).
+    /// `updateNSView` runs inside the window's layout, and a style change was
+    /// the one update that reassigned the font, the wrap mode, and every
+    /// attribute in the document from in there. The switch must leave the pass
+    /// untouched and still land — the text view ends up carrying the new style.
+    @Test(arguments: ["", "x", "= H\n\nsome words $x^2$ here"])
+    func modeSwitchAppliesWithoutMutatingLayoutInPlace(_ text: String) async throws {
+        let mode = Mode()
+        let hosting = NSHostingView(rootView: Shell(
+            mode: mode, text: text,
+            tokenizer: StubTokenizer(), math: StubMath()))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1310, height: 850),
+                              styleMask: [.titled, .resizable],
+                              backing: .buffered, defer: false)
+        window.contentView = hosting
+        window.orderFrontRegardless()
+        window.layoutIfNeeded()
+        defer { window.orderOut(nil) }
+        for _ in 0..<10 {
+            try? await Task.sleep(for: .milliseconds(30))
+            window.layoutIfNeeded()
+        }
+
+        func editorTextView(in view: NSView) -> STTextView? {
+            if let found = view as? STTextView { return found }
+            for sub in view.subviews {
+                if let found = editorTextView(in: sub) { return found }
+            }
+            return nil
+        }
+        let before = try #require(editorTextView(in: hosting))
+        #expect(before.font.fontName == EditorStyle.code(size: 12).font.fontName)
+
+        mode.write = true
+        for _ in 0..<20 {
+            try? await Task.sleep(for: .milliseconds(30))
+            window.displayIfNeeded()
+            window.layoutIfNeeded()
+        }
+
+        // Deferring must not mean dropping: prose is serif, code is monospaced.
+        let after = try #require(editorTextView(in: hosting))
+        #expect(after.font.fontName == EditorStyle.prose().font.fontName,
+                "the deferred style change never landed for a \(text.count)-char document")
+    }
+
+    /// A newly created file is empty or nearly so — the reported hang-then-crash
+    /// case. An empty text view has no content to size against, which is exactly
+    /// where a size negotiation can fail to converge.
+    @Test(arguments: ["", "x", "= H\n\nsome words $x^2$ here"])
+    func switchingToWriteModeSettlesForSmallDocuments(_ text: String) async throws {
+        let mode = Mode()
+        let hosting = NSHostingView(rootView: Shell(
+            mode: mode, text: text,
+            tokenizer: StubTokenizer(), math: StubMath()))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1310, height: 850),
+                              styleMask: [.titled, .resizable],
+                              backing: .buffered, defer: false)
+        window.contentView = hosting
+        window.orderFrontRegardless()
+        window.layoutIfNeeded()
+        defer { window.orderOut(nil) }
+
+        for _ in 0..<10 {
+            try? await Task.sleep(for: .milliseconds(30))
+            window.layoutIfNeeded()
+        }
+
+        mode.write = true
+
+        var dirtyTurns = 0
+        for _ in 0..<25 {
+            try? await Task.sleep(for: .milliseconds(30))
+            window.displayIfNeeded()
+            window.layoutIfNeeded()
+            if unsettled(in: hosting) > 0 { dirtyTurns += 1 }
+        }
+        #expect(dirtyTurns < 20,
+                "constraints never settle for a \(text.count)-char document: \(dirtyTurns)/25")
+    }
+
     @Test func switchingToWriteModeSettles() async throws {
         let mode = Mode()
         let hosting = NSHostingView(rootView: Shell(
