@@ -159,6 +159,7 @@ struct TypstCanvas: View {
             // Publish the buffer so views outside the canvas (the inspector's
             // word count) reflect what's on screen rather than what's on disk.
             TypstUIState.shared.setBuffer(text, for: fileURL)
+            host.markEdited(nodeID)   // this tab is work now, not a preview
             scheduleCompile(delay: .milliseconds(400))
             if mode.autosaves { scheduleAutosave() }
         }

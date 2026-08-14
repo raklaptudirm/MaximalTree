@@ -169,4 +169,20 @@ final class SidebarState {
         if expandedNodes.remove(old) != nil { expandedNodes.insert(new) }
         if anchor == old { anchor = new }
     }
+
+    /// Which nodes are revealed, so a workspace switch can put the tree back
+    /// the way it was rather than collapsing everything.
+    struct Snapshot {
+        var expandedNodes: Set<NodeID>
+        var anchor: NodeID?
+    }
+
+    func snapshot() -> Snapshot {
+        Snapshot(expandedNodes: expandedNodes, anchor: anchor)
+    }
+
+    func restore(_ snapshot: Snapshot) {
+        expandedNodes = snapshot.expandedNodes
+        anchor = snapshot.anchor
+    }
 }

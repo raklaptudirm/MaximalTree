@@ -233,3 +233,127 @@ import Foundation
         #expect(nav.current == nil)
     }
 }
+
+/// Preview tabs and session snapshots — the two behaviours that make tabs feel
+/// like an editor's rather than a browser's.
+@MainActor
+@Suite struct TabLifecycleTests {
+    private func id(_ s: String) -> NodeID { NodeID("stub://\(s)")! }
+
+    /// Clicking around reuses one provisional tab; editing claims it, so the
+    /// next thing opened arrives beside your work instead of on top of it.
+    @Test func previewTabIsReusedUntilTheDocumentIsEdited() {
+        let nav = NavigationModel()
+
+        nav.openInPreview(id("a"))
+        #expect(nav.tabs.count == 1)
+        #expect(nav.current == id("a"))
+        #expect(!nav.activeTab.isPinned)
+
+        // Still a preview: b replaces a rather than stacking up.
+        nav.openInPreview(id("b"))
+        #expect(nav.tabs.count == 1)
+        #expect(nav.current == id("b"))
+
+        // Typing in b claims the tab.
+        nav.pinTabs(showing: id("b"))
+        #expect(nav.activeTab.isPinned)
+
+        // So c can't displace it.
+        nav.openInPreview(id("c"))
+        #expect(nav.tabs.count == 2)
+        #expect(nav.current == id("c"))
+        #expect(!nav.activeTab.isPinned, "the new tab is itself a preview")
+        #expect(nav.tabs[0].current == id("b"), "the edited document survived")
+
+        // And c, still a preview, is the one that gets reused next.
+        nav.openInPreview(id("d"))
+        #expect(nav.tabs.count == 2)
+        #expect(nav.tabs[1].current == id("d"))
+    }
+
+    /// Asking for a new tab explicitly means keeping it.
+    @Test func explicitNewTabsArePinned() {
+        let nav = NavigationModel()
+        nav.newTab(with: id("a"))
+        #expect(nav.activeTab.isPinned)
+
+        nav.openInPreview(id("b"))
+        #expect(nav.tabs.count == 3, "a pinned tab is never reused")
+    }
+
+    /// Pinning targets the document, not the active tab: an edit in a
+    /// background tab still protects it.
+    @Test func editingPinsWhicheverTabShowsTheDocument() {
+        let nav = NavigationModel()
+        nav.newTab(with: id("a"))
+        nav.newTab(with: id("b"))
+
+        nav.pinTabs(showing: id("a"))
+        #expect(nav.tabs.first { $0.current == id("a") }?.isPinned == true)
+    }
+
+    /// A workspace switch swaps whole surfaces: tabs, their splits, each
+    /// pane's history, and which tab was active all come back.
+    @Test func snapshotRestoresTheWholeSurface() {
+        let nav = NavigationModel()
+        nav.openInPreview(id("a"))
+        nav.pinTabs(showing: id("a"))
+        nav.newTab(with: id("b"))
+        // Split first: a new pane starts fresh at the same document, so the
+        // history has to be built in the pane that will carry it.
+        nav.splitActivePane(horizontal: true)
+        nav.navigate(to: id("b2"))
+        nav.selectTab(0)
+        let saved = nav.snapshot()
+
+        // Go somewhere else entirely, as switching workspaces does.
+        nav.reset()
+        #expect(nav.tabs.count == 1)
+        #expect(nav.current == nil)
+
+        nav.restore(saved)
+        #expect(nav.tabs.count == 2)
+        #expect(nav.activeIndex == 0)
+        #expect(nav.current == id("a"))
+        #expect(nav.tabs[0].isPinned)
+        #expect(nav.tabs[1].current == id("b2"))
+        #expect(nav.tabs[1].root.panes.count == 2, "the split came back")
+
+        // History survived, not just the current node.
+        nav.selectTab(1)
+        #expect(nav.canGoBack)
+        nav.back()
+        #expect(nav.current == id("b"))
+    }
+
+    @Test func restoringAnEmptySnapshotFallsBackToAFreshTab() {
+        let nav = NavigationModel()
+        nav.openInPreview(id("a"))
+        nav.restore(NavigationModel.Snapshot(tabs: [], activeIndex: 5))
+        #expect(nav.tabs.count == 1)
+        #expect(nav.current == nil)
+    }
+}
+
+@MainActor
+@Suite struct SidebarSessionTests {
+    @Test func expansionRoundTripsThroughASnapshot() throws {
+        let state = SidebarState()
+        let a = try #require(NodeID("stub://a"))
+        let b = try #require(NodeID("stub://b"))
+        state.toggle(a)
+        state.toggle(b)
+        state.anchor = a
+        let saved = state.snapshot()
+
+        // Switching away collapses the tree…
+        state.restore(SidebarState.Snapshot(expandedNodes: [], anchor: nil))
+        #expect(state.expandedNodes.isEmpty)
+
+        // …and switching back reveals exactly what was revealed before.
+        state.restore(saved)
+        #expect(state.expandedNodes == [a, b])
+        #expect(state.anchor == a)
+    }
+}

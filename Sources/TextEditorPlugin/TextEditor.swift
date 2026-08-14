@@ -98,6 +98,12 @@ struct TextEditorCanvas: View {
             await load()
             loadedNode = nodeID  // set either way: this node is resolved, error or not
         }
+        // Guarded on the load having finished: `load()` assigns `text` too, and
+        // opening a file is not editing it.
+        .onChange(of: text) {
+            guard loadedNode == nodeID else { return }
+            host.markEdited(nodeID)   // this tab is work now, not a preview
+        }
     }
 
     private var fileURL: URL? {

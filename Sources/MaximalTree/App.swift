@@ -60,8 +60,22 @@ final class AppModel {
     var activeWorkspaceID: UUID? { workspaceStore.library.activeID }
     var activeWorkspaceName: String { workspaceStore.active.name }
 
+    /// What each workspace looked like when you left it: its tabs (with their
+    /// splits and history) and which nodes were revealed in the sidebar.
+    /// In memory only — a switch restores exactly what you had, a relaunch
+    /// still starts fresh (roots persist; sessions would need serializing).
+    private struct WorkspaceSession {
+        var navigation: NavigationModel.Snapshot
+        var sidebar: SidebarState.Snapshot
+    }
+    private var sessions: [UUID: WorkspaceSession] = [:]
+
     func switchWorkspace(to id: UUID) {
         guard id != activeWorkspaceID else { return }
+        if let leaving = activeWorkspaceID {
+            sessions[leaving] = WorkspaceSession(navigation: navigation.snapshot(),
+                                                 sidebar: sidebar.snapshot())
+        }
         workspaceStore.setActive(id)
         reloadActiveWorkspaceRoots()
     }
@@ -87,7 +101,16 @@ final class AppModel {
 
     private func reloadActiveWorkspaceRoots() {
         let roots = workspaceStore.restoreRoots(using: pluginHost.registry.providers)
+        // switchRoots resets the surface; put this workspace's own back if we
+        // have seen it before. Order matters: the roots have to exist before
+        // the tabs pointing into them are focused.
         store?.switchRoots(roots)
+        guard let id = activeWorkspaceID, let session = sessions[id] else {
+            sidebar.restore(SidebarState.Snapshot(expandedNodes: [], anchor: nil))
+            return
+        }
+        sidebar.restore(session.sidebar)
+        store?.restoreNavigation(session.navigation)
     }
 
     // MARK: Root folders

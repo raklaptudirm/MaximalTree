@@ -41,6 +41,7 @@ struct TabStrip: View {
                 HStack(spacing: 4) {
                     ForEach(Array(nav.tabs.enumerated()), id: \.element.id) { i, tab in
                         TabChip(title: title(of: tab),
+                                provisional: !tab.isPinned,
                                 active: i == nav.activeIndex,
                                 closable: nav.tabs.count > 1,
                                 select: { model.selectTab(i) },
@@ -79,6 +80,9 @@ struct TabStrip: View {
 
 private struct TabChip: View {
     let title: String
+    /// A preview tab — the next thing opened replaces it. Italic, as editors
+    /// have spelled this for years.
+    var provisional: Bool = false
     let active: Bool
     let closable: Bool
     let select: () -> Void
@@ -87,6 +91,7 @@ private struct TabChip: View {
     var body: some View {
         HStack(spacing: 4) {
             Text(title).lineLimit(1).font(.callout)
+                .italic(provisional)
             if closable {
                 Button(action: close) {
                     Image(systemName: "xmark").font(.system(size: 8, weight: .bold))

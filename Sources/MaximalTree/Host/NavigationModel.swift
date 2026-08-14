@@ -164,11 +164,17 @@ final class NavigationModel {
         let id = UUID()
         var root: SplitNode
         var activePaneID: UUID
+        /// A pinned tab keeps its document; an unpinned one is a *preview* and
+        /// gets reused by the next thing you open. Editing pins it, which is
+        /// what stops a glance at one file from throwing away the file you're
+        /// working in. At most one preview tab exists at a time.
+        var isPinned: Bool
 
-        init(with nodeID: NodeID? = nil) {
+        init(with nodeID: NodeID? = nil, pinned: Bool = false) {
             let pane = Pane(with: nodeID)
             self.root = .pane(pane)
             self.activePaneID = pane.id
+            self.isPinned = pinned
         }
 
         /// Falls back to the first pane if the active id ever dangles.
@@ -230,9 +236,30 @@ final class NavigationModel {
 
     // MARK: Tabs
 
+    /// Explicitly asking for a new tab means you intend to keep it.
     func newTab(with id: NodeID?) {
-        tabs.append(Tab(with: id))
+        tabs.append(Tab(with: id, pinned: true))
         activeIndex = tabs.count - 1
+    }
+
+    /// Open the way clicking a file in an explorer does: reuse the preview tab
+    /// when the active one still is one, otherwise start a new preview beside
+    /// it rather than displacing work.
+    func openInPreview(_ id: NodeID) {
+        if tabs[activeIndex].isPinned {
+            tabs.append(Tab(with: id))
+            activeIndex = tabs.count - 1
+        } else {
+            navigate(to: id)
+        }
+    }
+
+    /// Pin every tab currently showing `id` — called when its document is
+    /// edited, so the next thing opened can't take its place.
+    func pinTabs(showing id: NodeID) {
+        for index in tabs.indices where tabs[index].current == id {
+            tabs[index].isPinned = true
+        }
     }
 
     func closeTab(_ tabID: Tab.ID) {
@@ -265,5 +292,23 @@ final class NavigationModel {
     func reset() {
         tabs = [Tab()]
         activeIndex = 0
+    }
+
+    // MARK: Session snapshots
+
+    /// The whole surface — tabs, their splits, each pane's history, and which
+    /// is active. Switching workspaces swaps one of these for another, so a
+    /// workspace you come back to is where you left it.
+    struct Snapshot {
+        var tabs: [Tab]
+        var activeIndex: Int
+    }
+
+    func snapshot() -> Snapshot { Snapshot(tabs: tabs, activeIndex: activeIndex) }
+
+    func restore(_ snapshot: Snapshot) {
+        guard !snapshot.tabs.isEmpty else { reset(); return }
+        tabs = snapshot.tabs
+        activeIndex = min(max(snapshot.activeIndex, 0), tabs.count - 1)
     }
 }

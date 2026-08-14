@@ -88,10 +88,16 @@ final class GraphStore: GraphBackend {
     // jump to.
     func open(_ id: NodeID) {
         withResolved(id) { target, fragment in
-            self.nav.navigate(to: target)
+            // Opening reuses the preview tab, or starts one — the explorer
+            // behaviour of every editor. `newTab` remains the explicit
+            // "keep this" path.
+            self.nav.openInPreview(target)
             self.finishAnchoredNavigation(phony: id, target: target, fragment: fragment)
         }
     }
+
+    /// A plugin reported unsaved edits: keep the tab showing that document.
+    func markEdited(_ id: NodeID) { nav.pinTabs(showing: id) }
 
     func select(_ ids: [NodeID]) { context._setSelection(ids) }
 
@@ -278,6 +284,13 @@ final class GraphStore: GraphBackend {
     func switchRoots(_ ids: [NodeID]) {
         nav.reset()
         setRoots(ids)
+        didNavigate()
+    }
+
+    /// Put a workspace's tabs back after switching to it, then re-sync focus
+    /// and selection to whatever those tabs point at.
+    func restoreNavigation(_ snapshot: NavigationModel.Snapshot) {
+        nav.restore(snapshot)
         didNavigate()
     }
 
