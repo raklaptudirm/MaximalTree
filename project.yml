@@ -237,6 +237,7 @@ targets:
       - path: Sources/TypstPlugin/TypstCore.swift
       - path: Sources/TypstPlugin/TypstEngine.swift
       - path: Sources/TypstPlugin/TypstLSP.swift
+      - path: Sources/TypstPlugin/TypstPackages.swift
       - path: Sources/TypstPlugin/TypstServices.swift
       - path: Sources/TypstPlugin/TypstUIState.swift
       - path: Sources/WebPlugin/WebCore.swift

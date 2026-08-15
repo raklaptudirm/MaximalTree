@@ -14,9 +14,12 @@ typst-pdf = "0.15"
 typst-layout = "0.15"
 typst-render = "0.15"
 typst-svg = "0.15"
-# fonts + embedded fallbacks only — no package downloads, no networking, no openssl.
-# (@local packages are resolved by our World from the data directory.)
-typst-kit = { version = "0.15", default-features = false, features = ["scan-fonts", "embedded-fonts"] }
+# Fonts, plus package storage (gzip/tar extraction + the Universe registry
+# layout). Deliberately *not* "system-downloader": that pulls ureq + openssl,
+# and HTTP belongs on the host side, where the app's networking, proxies, and
+# error reporting already live. We implement typst-kit's `Downloader` trait
+# over a callback into Swift instead — see `typst_set_package_fetcher`.
+typst-kit = { version = "0.15", default-features = false, features = ["scan-fonts", "embedded-fonts", "system-packages"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 time = "0.3"

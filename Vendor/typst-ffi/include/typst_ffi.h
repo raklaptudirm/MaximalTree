@@ -11,9 +11,21 @@ typedef struct {
     size_t cap;
 } TypstBuffer;
 
+/// Downloads `url` and writes it to `dest` (both NUL-terminated UTF-8).
+/// Returns 0 on success, 1 when the remote reports the resource does not exist
+/// (HTTP 404), and any other value for a failure.
+typedef int32_t (*TypstFetchFn)(const char *url, const char *dest);
+
+/// Register the host's package fetcher, or pass NULL to clear it. Missing
+/// @preview packages are downloaded from Typst Universe through this callback;
+/// without one, only packages already on disk resolve. HTTP lives on the host
+/// side so this library stays free of networking and TLS.
+void typst_set_package_fetcher(TypstFetchFn fetch);
+
 /// Compile `source` (NUL-terminated UTF-8) as though it lived at <root>/main.typ.
 /// Relative files resolve against `root`; @<ns> packages against
-/// <packages>/<ns>/<name>/<version>.
+/// <packages>/<ns>/<name>/<version>, downloading missing @preview packages
+/// when a fetcher is registered.
 ///
 /// Returns 0 on success (out_pdf filled), 1 on compile errors (no PDF), 2 on
 /// internal error. out_diagnostics receives a JSON array of

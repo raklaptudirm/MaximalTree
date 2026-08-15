@@ -2,23 +2,34 @@
 //!
 //! One entry point: compile a UTF-8 source string as though it lived at
 //! `<root>/main.typ`, resolving relative files against `root` and `@<ns>/…`
-//! packages against `<packages>/<ns>/<name>/<version>`. Returns PDF bytes and
+//! packages against `<packages>/<ns>/<name>/<version>`, downloading missing
+//! `@preview` packages from Typst Universe through a host-provided fetcher.
+//! Returns PDF bytes and
 //! structured diagnostics (JSON) — no CLI, no stderr parsing, works on iOS.
 //!
 //! Diagnostic coordinates follow typst's conventions: 1-based lines,
 //! 0-based columns.
 
-use std::ffi::{c_char, CStr};
+use std::any::Any;
+use std::collections::HashMap;
+use std::ffi::{c_char, CStr, CString};
+use std::io::{self, Cursor, Read};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration as StdDuration, Instant};
 
-use typst::diag::{FileError, FileResult, Severity, SourceDiagnostic};
+use typst::diag::{FileError, FileResult, PackageError, PackageResult, Severity,
+                  SourceDiagnostic};
 use typst::foundations::{Bytes, Datetime, Duration};
 use typst::syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot};
 use typst::text::{Font, FontBook};
 use typst::utils::LazyHash;
 use typst::{Library, LibraryExt, World, WorldExt};
+use typst::syntax::package::PackageSpec;
+use typst_kit::downloader::Downloader;
 use typst_kit::fonts::FontStore;
+use typst_kit::packages::{FsPackages, SystemPackages, UniversePackages};
 use typst_layout::PagedDocument;
 
 // MARK: Buffers
@@ -68,6 +79,134 @@ fn library() -> &'static LazyHash<Library> {
     LIBRARY.get_or_init(|| LazyHash::new(Library::default()))
 }
 
+// MARK: Packages
+
+/// The host's package fetcher: download `url` and write it to `dest`, both
+/// NUL-terminated UTF-8 paths. Returns 0 on success, 1 when the remote said
+/// the resource does not exist (HTTP 404 — typst reads this as "no such
+/// package/version" and can then suggest the latest one), and any other value
+/// for a failure.
+///
+/// Downloading happens on the host side on purpose: the app already owns
+/// networking (proxies, timeouts, the user's error UI), and keeping HTTP and
+/// TLS out of this library is what lets it stay portable. Handing over a file
+/// path rather than a buffer keeps both allocators on their own side of the
+/// boundary.
+pub type TypstFetchFn = extern "C" fn(url: *const c_char, dest: *const c_char) -> i32;
+
+static FETCHER: Mutex<Option<TypstFetchFn>> = Mutex::new(None);
+
+/// Register (or clear, with null) the host's package fetcher. Without one,
+/// only packages already on disk resolve.
+#[no_mangle]
+pub extern "C" fn typst_set_package_fetcher(fetch: Option<TypstFetchFn>) {
+    if let Ok(mut slot) = FETCHER.lock() {
+        *slot = fetch;
+    }
+}
+
+/// typst-kit's downloader, implemented over the host callback.
+struct HostDownloader;
+
+impl Downloader for HostDownloader {
+    fn stream(
+        &self,
+        key: &dyn Any,
+        url: &str,
+    ) -> io::Result<(Option<usize>, Box<dyn Read>)> {
+        let data = self.download(key, url)?;
+        Ok((Some(data.len()), Box::new(Cursor::new(data))))
+    }
+
+    fn download(&self, _key: &dyn Any, url: &str) -> io::Result<Vec<u8>> {
+        let fetch = FETCHER
+            .lock()
+            .ok()
+            .and_then(|slot| *slot)
+            .ok_or_else(|| io::Error::other("no package fetcher registered"))?;
+
+        // Next to the eventual package tree, so the download and the extracted
+        // package land on the same volume, and a crash leaves at most a stray
+        // temp file inside our own directory.
+        let dest = std::env::temp_dir()
+            .join(format!("typst-download-{}.tar.gz", unique_tag()));
+        let (Ok(url_c), Ok(dest_c)) =
+            (CString::new(url), CString::new(dest.to_string_lossy().as_ref()))
+        else {
+            return Err(io::Error::other("path is not representable"));
+        };
+
+        let status = fetch(url_c.as_ptr(), dest_c.as_ptr());
+        let result = match status {
+            0 => std::fs::read(&dest),
+            1 => Err(io::Error::new(io::ErrorKind::NotFound, "not found")),
+            _ => Err(io::Error::other("download failed")),
+        };
+        let _ = std::fs::remove_file(&dest);
+        result
+    }
+}
+
+/// A tag unique to this download, so concurrent compiles never share a temp
+/// file. Process id and a counter are enough — this never leaves our machine.
+fn unique_tag() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!("{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Failed lookups, so a package that can't be had doesn't re-hit the network
+/// on every keystroke — a live preview recompiles constantly. Remembered
+/// briefly rather than forever: a failure is often just "the wifi was off a
+/// second ago", and the fix should be to try again, not to relaunch.
+static FAILURES: Mutex<Option<HashMap<String, (Instant, PackageError)>>> = Mutex::new(None);
+const RETRY_AFTER: StdDuration = StdDuration::from_secs(30);
+
+fn remembered_failure(key: &str) -> Option<PackageError> {
+    let mut guard = FAILURES.lock().ok()?;
+    let map = guard.as_mut()?;
+    match map.get(key) {
+        Some((at, error)) if at.elapsed() < RETRY_AFTER => Some(error.clone()),
+        Some(_) => {
+            map.remove(key);
+            None
+        }
+        None => None,
+    }
+}
+
+fn remember_failure(key: String, error: &PackageError) {
+    if let Ok(mut guard) = FAILURES.lock() {
+        guard
+            .get_or_insert_with(HashMap::new)
+            .insert(key, (Instant::now(), error.clone()));
+    }
+}
+
+/// Make `spec` available under `packages`, downloading it from Typst Universe
+/// if we don't have it yet. Already-present packages (including everything in
+/// the `@local` namespace) never reach the network.
+fn obtain_package(packages: &Path, spec: &PackageSpec) -> PackageResult<()> {
+    let key = spec.to_string();
+    if let Some(error) = remembered_failure(&key) {
+        return Err(error);
+    }
+    // Data and cache are the same tree here: the FFI's contract is that every
+    // package lives at <packages>/<ns>/<name>/<version>, whether the user put
+    // it there or we downloaded it.
+    let store = SystemPackages::from_parts(
+        Some(FsPackages::new(packages)),
+        Some(FsPackages::new(packages)),
+        UniversePackages::new(HostDownloader),
+    );
+    match store.obtain(spec) {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            remember_failure(key, &error);
+            Err(error)
+        }
+    }
+}
+
 // MARK: World
 
 struct FfiWorld {
@@ -88,14 +227,27 @@ impl FfiWorld {
     fn path_for(&self, id: FileId) -> FileResult<PathBuf> {
         let path = id.get();
         let base = match path.root() {
-            VirtualRoot::Package(spec) => self
-                .packages
-                .join(spec.namespace.as_str())
-                .join(spec.name.as_str())
-                .join(spec.version.to_string()),
+            VirtualRoot::Package(spec) => self.package_dir(spec)?,
             VirtualRoot::Project => self.root.clone(),
         };
         path.vpath().realize(&base).map_err(|_| FileError::AccessDenied)
+    }
+
+    /// Where a package's files live, fetching the package first if it isn't
+    /// installed yet. Reporting a package error (rather than letting the read
+    /// fail) is what turns the useless "file typst.toml is missing" into
+    /// "package not found" / "failed to download package".
+    fn package_dir(&self, spec: &PackageSpec) -> FileResult<PathBuf> {
+        let dir = self
+            .packages
+            .join(spec.namespace.as_str())
+            .join(spec.name.as_str())
+            .join(spec.version.to_string());
+        if dir.is_dir() {
+            return Ok(dir);
+        }
+        obtain_package(&self.packages, spec).map_err(FileError::Package)?;
+        Ok(dir)
     }
 
     fn read(&self, id: FileId) -> FileResult<Vec<u8>> {

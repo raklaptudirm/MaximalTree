@@ -914,3 +914,69 @@ struct TinymistLiveTests {
         #expect(state.buffer(for: nil) == nil)
     }
 }
+
+/// Packages the document imports have to arrive on their own — a user writing
+/// `#import "@preview/…"` shouldn't have to go install anything by hand, and
+/// the old behaviour (resolve locally or fail) surfaced as a baffling
+/// "file typst.toml is missing".
+///
+/// These talk to Typst Universe, so they skip themselves when the network
+/// isn't reachable rather than failing a local test run.
+@Suite struct TypstPackageDownloadTests {
+    /// Small, stable, no assets — enough to prove the path end to end.
+    private let package = "@preview/oxifmt:0.2.1"
+
+    private func temporaryPackagesDir() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mt-packages-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private var registryIsReachable: Bool {
+        TypstPackages.download(URL(string: "https://packages.typst.org/preview/index.json")!,
+                               to: FileManager.default.temporaryDirectory
+                                   .appendingPathComponent("mt-index-\(UUID().uuidString)")) == 0
+    }
+
+    @Test func animportedPackageIsDownloadedOnFirstCompile() throws {
+        TypstPackages.install()
+        guard registryIsReachable else { return }
+
+        let packages = try temporaryPackagesDir()
+        defer { try? FileManager.default.removeItem(at: packages) }
+
+        let output = TypstEngine.compile(
+            source: """
+                    #import "\(package)": strfmt
+                    #strfmt("{}", 1)
+                    """,
+            root: FileManager.default.temporaryDirectory,
+            packagesNamespaceDir: packages)
+
+        let errors = (output?.diagnostics ?? []).filter { $0.severity == .error }
+        #expect(errors.isEmpty, "\(errors.map { $0.message })")
+        #expect(output?.pdf != nil)
+        // And it landed where the engine looks, so the next compile is offline.
+        let installed = packages.appendingPathComponent("preview/oxifmt/0.2.1/typst.toml")
+        #expect(FileManager.default.fileExists(atPath: installed.path))
+    }
+
+    /// A package that doesn't exist must say so, not blame a missing toml.
+    @Test func amissingPackageReportsItselfAsAPackageError() throws {
+        TypstPackages.install()
+        guard registryIsReachable else { return }
+
+        let packages = try temporaryPackagesDir()
+        defer { try? FileManager.default.removeItem(at: packages) }
+
+        let output = TypstEngine.compile(
+            source: "#import \"@preview/mt-no-such-package:9.9.9\": *",
+            root: FileManager.default.temporaryDirectory,
+            packagesNamespaceDir: packages)
+
+        let messages = (output?.diagnostics ?? []).map(\.message).joined(separator: " ")
+        #expect(messages.contains("package"), "\(messages)")
+        #expect(!messages.contains("typst.toml"), "\(messages)")
+    }
+}

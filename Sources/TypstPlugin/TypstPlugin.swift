@@ -20,6 +20,10 @@ final class TypstPlugin: NSObject, Plugin {
     override init() { super.init() }
 
     func register(with registry: PluginRegistry) {
+        // Before anything can compile: @preview packages are downloaded on
+        // demand, and the engine can only do that through the host.
+        TypstPackages.install()
+
         // Make `@local/mtnotes` importable before any compile can need it.
         Task.detached(priority: .utility) {
             do { try TypstNotes.installPackage() }
