@@ -13,11 +13,13 @@ enum TypstEngine {
         let column: Int?
     }
 
-    /// Compile `source` as `<root>/main.typ`. Returns nil on *internal* engine
-    /// failure (callers surface it as a diagnostic); compile errors are a
-    /// normal result.
-    static func compile(source: String, root: URL) -> Output? {
-        compile(source: source, root: root, packagesNamespaceDir: packagesRoot())
+    /// Compile `source` as `<root><mainPath>`. Returns nil on *internal*
+    /// engine failure (callers surface it as a diagnostic); compile errors are
+    /// a normal result.
+    static func compile(source: String, root: URL,
+                        mainPath: String = "/main.typ") -> Output? {
+        compile(source: source, root: root, mainPath: mainPath,
+                packagesNamespaceDir: packagesRoot())
     }
 
     struct Output: Sendable {
@@ -28,10 +30,12 @@ enum TypstEngine {
     /// Compile `source` as though it were the contents of `documentURL` —
     /// the async facade canvases use for live preview. The engine is the only
     /// compiler; an internal failure surfaces as a diagnostic, never a hang.
-    static func compile(source: String, documentURL: URL) async -> Output {
+    static func compile(source: String, documentURL: URL,
+                        mountedRoots: [URL] = []) async -> Output {
         await Task.detached(priority: .userInitiated) {
-            let root = documentURL.deletingLastPathComponent()
-            return compile(source: source, root: root)
+            let root = TypstProject.root(for: documentURL, mountedRoots: mountedRoots)
+            return compile(source: source, root: root,
+                           mainPath: TypstProject.mainPath(of: documentURL, in: root))
                 ?? Output(pdf: nil, diagnostics: [
                     TypstDiagnostic(severity: .error, line: nil, column: nil,
                                     message: "the typst engine failed internally"),
@@ -53,16 +57,19 @@ enum TypstEngine {
     /// `name-N.png` when the document has more than one. Returns diagnostics;
     /// no errors among them means the export happened.
     static func export(source: String, documentURL: URL,
-                       format: ExportFormat, to destination: URL) async -> [TypstDiagnostic] {
+                       format: ExportFormat, to destination: URL,
+                       mountedRoots: [URL] = []) async -> [TypstDiagnostic] {
         await Task.detached(priority: .userInitiated) {
             exportSync(source: source, documentURL: documentURL,
-                       format: format, to: destination)
+                       format: format, to: destination, mountedRoots: mountedRoots)
         }.value
     }
 
     static func exportSync(source: String, documentURL: URL,
-                           format: ExportFormat, to destination: URL) -> [TypstDiagnostic] {
-        let root = documentURL.deletingLastPathComponent()
+                           format: ExportFormat, to destination: URL,
+                           mountedRoots: [URL] = []) -> [TypstDiagnostic] {
+        let root = TypstProject.root(for: documentURL, mountedRoots: mountedRoots)
+        let mainPath = TypstProject.mainPath(of: documentURL, in: root)
         func failure(_ message: String) -> [TypstDiagnostic] {
             [TypstDiagnostic(severity: .error, line: nil, column: nil, message: message)]
         }
@@ -70,7 +77,7 @@ enum TypstEngine {
         do {
             switch format {
             case .pdf:
-                guard let output = compile(source: source, root: root) else {
+                guard let output = compile(source: source, root: root, mainPath: mainPath) else {
                     return failure("the typst engine failed internally")
                 }
                 guard let pdf = output.pdf else { return output.diagnostics }
@@ -78,9 +85,9 @@ enum TypstEngine {
                 return output.diagnostics
 
             case .svg:
-                guard let svg = renderSVG(source: source, root: root) else {
+                guard let svg = renderSVG(source: source, root: root, mainPath: mainPath) else {
                     // Compile errors carry no location here; re-compile for them.
-                    return compile(source: source, root: root)?.diagnostics
+                    return compile(source: source, root: root, mainPath: mainPath)?.diagnostics
                         ?? failure("the typst engine failed internally")
                 }
                 try svg.write(to: destination)
@@ -89,8 +96,9 @@ enum TypstEngine {
             case .png:
                 let scale = 300.0 / 72.0
                 guard let first = renderPNG(source: source, root: root,
-                                            page: 0, pixelPerPt: scale) else {
-                    return compile(source: source, root: root)?.diagnostics
+                                            page: 0, pixelPerPt: scale,
+                                            mainPath: mainPath) else {
+                    return compile(source: source, root: root, mainPath: mainPath)?.diagnostics
                         ?? failure("the typst engine failed internally")
                 }
                 guard first.pages > 1 else {
@@ -101,7 +109,8 @@ enum TypstEngine {
                 for page in 0..<first.pages {
                     let render = page == 0 ? first
                         : renderPNG(source: source, root: root,
-                                    page: page, pixelPerPt: scale)
+                                    page: page, pixelPerPt: scale,
+                                    mainPath: mainPath)
                     guard let render else { return failure("page \(page + 1) failed to render") }
                     let url = URL(fileURLWithPath: stem.path + "-\(page + 1).png")
                     try render.png.write(to: url)
@@ -114,12 +123,15 @@ enum TypstEngine {
     }
 
     /// The whole document as one SVG (pages stacked). Nil on compile failure.
-    static func renderSVG(source: String, root: URL) -> Data? {
+    static func renderSVG(source: String, root: URL,
+                          mainPath: String = "/main.typ") -> Data? {
         var buffer = TypstBuffer()
         let status = source.withCString { sourcePtr in
             root.path.withCString { rootPtr in
-                packagesRoot().path.withCString { packagesPtr in
-                    typst_render_svg(sourcePtr, rootPtr, packagesPtr, &buffer)
+                mainPath.withCString { mainPtr in
+                    packagesRoot().path.withCString { packagesPtr in
+                        typst_render_svg(sourcePtr, rootPtr, mainPtr, packagesPtr, &buffer)
+                    }
                 }
             }
         }
@@ -131,16 +143,19 @@ enum TypstEngine {
     /// One page as PNG, plus the document's page count. Nil on compile failure
     /// or page out of range.
     static func renderPNG(source: String, root: URL, page: Int,
-                          pixelPerPt: Double) -> (png: Data, pages: Int)? {
+                          pixelPerPt: Double,
+                          mainPath: String = "/main.typ") -> (png: Data, pages: Int)? {
         struct Info: Decodable { let pages: Int? }
         var pngBuffer = TypstBuffer()
         var infoBuffer = TypstBuffer()
         let status = source.withCString { sourcePtr in
             root.path.withCString { rootPtr in
-                packagesRoot().path.withCString { packagesPtr in
-                    typst_render_png(sourcePtr, rootPtr, packagesPtr,
-                                     pixelPerPt, Int32(page),
-                                     &pngBuffer, &infoBuffer)
+                mainPath.withCString { mainPtr in
+                    packagesRoot().path.withCString { packagesPtr in
+                        typst_render_png(sourcePtr, rootPtr, mainPtr, packagesPtr,
+                                         pixelPerPt, Int32(page),
+                                         &pngBuffer, &infoBuffer)
+                    }
                 }
             }
         }
@@ -203,9 +218,11 @@ enum TypstEngine {
         var infoBuffer = TypstBuffer()
         let status = source.withCString { sourcePtr in
             FileManager.default.temporaryDirectory.path.withCString { rootPtr in
-                packagesRoot().path.withCString { packagesPtr in
-                    typst_render_png(sourcePtr, rootPtr, packagesPtr, scale, 0,
-                                     &pngBuffer, &infoBuffer)
+                "/main.typ".withCString { mainPtr in
+                    packagesRoot().path.withCString { packagesPtr in
+                        typst_render_png(sourcePtr, rootPtr, mainPtr, packagesPtr, scale, 0,
+                                         &pngBuffer, &infoBuffer)
+                    }
                 }
             }
         }
@@ -302,16 +319,18 @@ enum TypstEngine {
             .appendingPathComponent("typst/packages", isDirectory: true)
     }
 
-    static func compile(source: String, root: URL,
+    static func compile(source: String, root: URL, mainPath: String = "/main.typ",
                         packagesNamespaceDir: URL) -> Output? {
         var pdfBuffer = TypstBuffer()
         var diagnosticsBuffer = TypstBuffer()
 
         let status = source.withCString { sourcePtr in
             root.path.withCString { rootPtr in
-                packagesNamespaceDir.path.withCString { packagesPtr in
-                    typst_compile_pdf(sourcePtr, rootPtr, packagesPtr,
-                                      &pdfBuffer, &diagnosticsBuffer)
+                mainPath.withCString { mainPtr in
+                    packagesNamespaceDir.path.withCString { packagesPtr in
+                        typst_compile_pdf(sourcePtr, rootPtr, mainPtr, packagesPtr,
+                                          &pdfBuffer, &diagnosticsBuffer)
+                    }
                 }
             }
         }

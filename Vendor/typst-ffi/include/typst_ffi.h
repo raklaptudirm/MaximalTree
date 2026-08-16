@@ -22,10 +22,12 @@ typedef int32_t (*TypstFetchFn)(const char *url, const char *dest);
 /// side so this library stays free of networking and TLS.
 void typst_set_package_fetcher(TypstFetchFn fetch);
 
-/// Compile `source` (NUL-terminated UTF-8) as though it lived at <root>/main.typ.
-/// Relative files resolve against `root`; @<ns> packages against
-/// <packages>/<ns>/<name>/<version>, downloading missing @preview packages
-/// when a fetcher is registered.
+/// Compile `source` (NUL-terminated UTF-8) as though it lived at
+/// <root><main_path> — e.g. root "/work", main_path "/notes/today.typ". Pass
+/// "/main.typ" when the source has no real location. Relative imports resolve
+/// against the directory holding that file, and never outside `root`; @<ns>
+/// packages resolve against <packages>/<ns>/<name>/<version>, downloading
+/// missing @preview packages when a fetcher is registered.
 ///
 /// Returns 0 on success (out_pdf filled), 1 on compile errors (no PDF), 2 on
 /// internal error. out_diagnostics receives a JSON array of
@@ -33,6 +35,7 @@ void typst_set_package_fetcher(TypstFetchFn fetch);
 /// Free both out-buffers with typst_buffer_free.
 int32_t typst_compile_pdf(const char *source,
                           const char *root,
+                          const char *main_path,
                           const char *packages,
                           TypstBuffer *out_pdf,
                           TypstBuffer *out_diagnostics);
@@ -51,6 +54,7 @@ int32_t typst_structure(const char *source, TypstBuffer *out);
 /// success, 1 on compile error / page out of range, 2 on internal error.
 int32_t typst_render_png(const char *source,
                          const char *root,
+                         const char *main_path,
                          const char *packages,
                          double pixel_per_pt,
                          int32_t page_index,
@@ -61,6 +65,7 @@ int32_t typst_render_png(const char *source,
 /// Returns 0 on success, 1 on compile error, 2 on internal error.
 int32_t typst_render_svg(const char *source,
                          const char *root,
+                         const char *main_path,
                          const char *packages,
                          TypstBuffer *out_svg);
 

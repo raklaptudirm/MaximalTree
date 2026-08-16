@@ -1,7 +1,8 @@
 //! C ABI bindings to the typst compiler for MaximalTree.
 //!
 //! One entry point: compile a UTF-8 source string as though it lived at
-//! `<root>/main.typ`, resolving relative files against `root` and `@<ns>/…`
+//! `<root><main_path>` (default `/main.typ`), resolving relative files against
+//! the directory that file sits in and `@<ns>/…`
 //! packages against `<packages>/<ns>/<name>/<version>`, downloading missing
 //! `@preview` packages from Typst Universe through a host-provided fetcher.
 //! Returns PDF bytes and
@@ -216,8 +217,15 @@ struct FfiWorld {
 }
 
 impl FfiWorld {
-    fn new(source: String, root: PathBuf, packages: PathBuf) -> Self {
-        let vpath = VirtualPath::new("/main.typ").expect("static path is valid");
+    /// `main_path` is where the source sits *inside* the root, e.g.
+    /// `/notes/today.typ`. It matters as much as the root does: relative
+    /// imports resolve against the importing file's own directory, so a file
+    /// compiled as `/main.typ` would resolve `./sibling.typ` at the root
+    /// rather than next to itself.
+    fn new(source: String, root: PathBuf, packages: PathBuf, main_path: &str) -> Self {
+        let vpath = VirtualPath::new(main_path)
+            .or_else(|_| VirtualPath::new("/main.typ"))
+            .expect("static path is valid");
         let id = FileId::new(RootedPath::new(VirtualRoot::Project, vpath));
         FfiWorld { root, packages, main: Source::new(id, source) }
     }
@@ -1041,6 +1049,7 @@ pub unsafe extern "C" fn typst_structure(
 pub unsafe extern "C" fn typst_compile_pdf(
     source: *const c_char,
     root: *const c_char,
+    main_path: *const c_char,
     packages: *const c_char,
     out_pdf: *mut TypstBuffer,
     out_diagnostics: *mut TypstBuffer,
@@ -1048,9 +1057,10 @@ pub unsafe extern "C" fn typst_compile_pdf(
     *out_pdf = TypstBuffer::empty();
     *out_diagnostics = TypstBuffer::empty();
 
-    let (Ok(source), Ok(root), Ok(packages)) = (
+    let (Ok(source), Ok(root), Ok(main_path), Ok(packages)) = (
         CStr::from_ptr(source).to_str(),
         CStr::from_ptr(root).to_str(),
+        CStr::from_ptr(main_path).to_str(),
         CStr::from_ptr(packages).to_str(),
     ) else {
         return 2;
@@ -1060,6 +1070,7 @@ pub unsafe extern "C" fn typst_compile_pdf(
         source.to_string(),
         Path::new(root).to_path_buf(),
         Path::new(packages).to_path_buf(),
+        main_path,
     );
 
     let result = typst::compile::<PagedDocument>(&world);
@@ -1122,6 +1133,7 @@ fn find_baseline(frame: &typst::layout::Frame, y: typst::layout::Abs) -> Option<
 pub unsafe extern "C" fn typst_render_png(
     source: *const c_char,
     root: *const c_char,
+    main_path: *const c_char,
     packages: *const c_char,
     pixel_per_pt: f64,
     page_index: i32,
@@ -1131,9 +1143,10 @@ pub unsafe extern "C" fn typst_render_png(
     *out_png = TypstBuffer::empty();
     *out_info = TypstBuffer::empty();
 
-    let (Ok(source), Ok(root), Ok(packages)) = (
+    let (Ok(source), Ok(root), Ok(main_path), Ok(packages)) = (
         CStr::from_ptr(source).to_str(),
         CStr::from_ptr(root).to_str(),
+        CStr::from_ptr(main_path).to_str(),
         CStr::from_ptr(packages).to_str(),
     ) else {
         return 2;
@@ -1143,6 +1156,7 @@ pub unsafe extern "C" fn typst_render_png(
         source.to_string(),
         Path::new(root).to_path_buf(),
         Path::new(packages).to_path_buf(),
+        main_path,
     );
 
     let result = typst::compile::<PagedDocument>(&world);
@@ -1178,14 +1192,16 @@ pub unsafe extern "C" fn typst_render_png(
 pub unsafe extern "C" fn typst_render_svg(
     source: *const c_char,
     root: *const c_char,
+    main_path: *const c_char,
     packages: *const c_char,
     out_svg: *mut TypstBuffer,
 ) -> i32 {
     *out_svg = TypstBuffer::empty();
 
-    let (Ok(source), Ok(root), Ok(packages)) = (
+    let (Ok(source), Ok(root), Ok(main_path), Ok(packages)) = (
         CStr::from_ptr(source).to_str(),
         CStr::from_ptr(root).to_str(),
+        CStr::from_ptr(main_path).to_str(),
         CStr::from_ptr(packages).to_str(),
     ) else {
         return 2;
@@ -1195,6 +1211,7 @@ pub unsafe extern "C" fn typst_render_svg(
         source.to_string(),
         Path::new(root).to_path_buf(),
         Path::new(packages).to_path_buf(),
+        main_path,
     );
 
     let result = typst::compile::<PagedDocument>(&world);

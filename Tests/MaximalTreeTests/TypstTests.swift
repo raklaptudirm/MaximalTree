@@ -980,3 +980,108 @@ struct TinymistLiveTests {
         #expect(!messages.contains("typst.toml"), "\(messages)")
     }
 }
+
+/// Which directory a document counts as living in.
+///
+/// Typst won't read anything outside the compilation root, so this decides
+/// which imports are legal. Compiling every file against its own directory —
+/// where this started — rejects `#import "../shared.typ"` with "escapes
+/// project root", which is an ordinary way to keep notes: shared definitions
+/// above, documents in folders below.
+@Suite struct TypstProjectRootTests {
+    private func makeTree() throws -> URL {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mt-project-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: base.appendingPathComponent("notes"), withIntermediateDirectories: true)
+        try "#let shared = [from the parent]\n"
+            .write(to: base.appendingPathComponent("shared.typ"),
+                   atomically: true, encoding: .utf8)
+        try "#let sibling = [from next door]\n"
+            .write(to: base.appendingPathComponent("notes/sibling.typ"),
+                   atomically: true, encoding: .utf8)
+        return base
+    }
+
+    private func errors(compiling source: String, at document: URL,
+                        mountedRoots: [URL]) async -> [String] {
+        let root = TypstProject.root(for: document, mountedRoots: mountedRoots)
+        let output = TypstEngine.compile(
+            source: source, root: root,
+            mainPath: TypstProject.mainPath(of: document, in: root),
+            packagesNamespaceDir: TypstEngine.packagesRoot())
+        return (output?.diagnostics ?? [])
+            .filter { $0.severity == .error }.map(\.message)
+    }
+
+    @Test func aDocumentCanImportFromItsParentDirectory() async throws {
+        let base = try makeTree()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let document = base.appendingPathComponent("notes/today.typ")
+
+        let errors = await errors(
+            compiling: "#import \"../shared.typ\": shared\n#shared",
+            at: document, mountedRoots: [base])
+        #expect(errors.isEmpty, "\(errors)")
+    }
+
+    /// The other half of the fix. Widening the root alone would have broken
+    /// this: relative imports resolve against the importing file's directory,
+    /// so a document compiled as `<root>/main.typ` looks for its siblings at
+    /// the root instead of beside itself.
+    @Test func aDocumentCanStillImportItsSiblings() async throws {
+        let base = try makeTree()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let document = base.appendingPathComponent("notes/today.typ")
+
+        let errors = await errors(
+            compiling: "#import \"sibling.typ\": sibling\n#sibling",
+            at: document, mountedRoots: [base])
+        #expect(errors.isEmpty, "\(errors)")
+    }
+
+    @Test func aTypstTomlMarksTheProjectRoot() throws {
+        let base = try makeTree()
+        defer { try? FileManager.default.removeItem(at: base) }
+        try "[package]\n".write(to: base.appendingPathComponent("notes/typst.toml"),
+                                atomically: true, encoding: .utf8)
+        let document = base.appendingPathComponent("notes/today.typ")
+
+        // The marker wins over the mounted folder above it: it's an explicit
+        // statement about where this project begins.
+        #expect(TypstProject.root(for: document, mountedRoots: [base]).standardizedFileURL
+                == base.appendingPathComponent("notes").standardizedFileURL)
+    }
+
+    @Test func theMountedFolderIsTheRootWhenThereIsNoMarker() throws {
+        let base = try makeTree()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let document = base.appendingPathComponent("notes/today.typ")
+
+        #expect(TypstProject.root(for: document, mountedRoots: [base]).standardizedFileURL
+                == base.standardizedFileURL)
+    }
+
+    /// Nothing mounted, no marker: the old behaviour, and the document's own
+    /// directory is as much as we can justify exposing.
+    @Test func anUnmountedDocumentKeepsItsOwnDirectory() throws {
+        let base = try makeTree()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let document = base.appendingPathComponent("notes/today.typ")
+
+        #expect(TypstProject.root(for: document).standardizedFileURL
+                == base.appendingPathComponent("notes").standardizedFileURL)
+    }
+
+    @Test func theMainPathLocatesTheDocumentInsideTheRoot() throws {
+        let base = try makeTree()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let document = base.appendingPathComponent("notes/today.typ")
+
+        #expect(TypstProject.mainPath(of: document, in: base) == "/notes/today.typ")
+        // A document outside the root has no place in it; the placeholder is
+        // what unsaved and synthetic sources compile as.
+        #expect(TypstProject.mainPath(of: URL(fileURLWithPath: "/elsewhere/x.typ"),
+                                      in: base) == "/main.typ")
+    }
+}

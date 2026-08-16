@@ -219,6 +219,13 @@ struct TypstCanvas: View {
         return URL(string: nodeID.uri)
     }
 
+    /// The folders the user mounted, which is the scope a document is allowed
+    /// to import from — a file may sit several directories down and still
+    /// belong to the workspace above it (see TypstProject).
+    private var mountedRoots: [URL] {
+        host.roots.compactMap { $0.scheme == "file" ? URL(string: $0.uri) : nil }
+    }
+
     /// A phony node (section/task) was opened onto this canvas: jump to its
     /// line. The nonce guard makes each jump one-shot — re-renders and later
     /// direct opens of the same file don't replay it.
@@ -304,7 +311,8 @@ struct TypstCanvas: View {
                 guard !Task.isCancelled else { return }
             }
             compiling = true
-            let output = await TypstEngine.compile(source: source, documentURL: url)
+            let output = await TypstEngine.compile(source: source, documentURL: url,
+                                                   mountedRoots: mountedRoots)
             guard !Task.isCancelled else { compiling = false; return }
             compiling = false
             diagnostics = output.diagnostics
