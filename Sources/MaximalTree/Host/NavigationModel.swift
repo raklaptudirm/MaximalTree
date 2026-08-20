@@ -242,16 +242,37 @@ final class NavigationModel {
         activeIndex = tabs.count - 1
     }
 
-    /// Open the way clicking a file in an explorer does: reuse the preview tab
-    /// when the active one still is one, otherwise start a new preview beside
-    /// it rather than displacing work.
+    /// Open the way clicking a file in an explorer does: go to the document if
+    /// it's already open, otherwise reuse the preview tab when the active one
+    /// still is one, and failing that start a new preview beside it rather
+    /// than displacing work.
     func openInPreview(_ id: NodeID) {
+        if focusTab(showing: id) { return }
         if tabs[activeIndex].isPinned {
             tabs.append(Tab(with: id))
             activeIndex = tabs.count - 1
         } else {
             navigate(to: id)
         }
+    }
+
+    /// Switch to a tab already showing `id`, and to the pane showing it — a
+    /// document open in the other half of a split is still open as far as the
+    /// reader is concerned, and duplicating it into a third view is not what
+    /// clicking it asks for.
+    ///
+    /// The active tab is checked first, so clicking the document you are
+    /// already in never moves you somewhere else that happens to show it too.
+    private func focusTab(showing id: NodeID) -> Bool {
+        let searchOrder = [activeIndex] + tabs.indices.filter { $0 != activeIndex }
+        for index in searchOrder {
+            guard let pane = tabs[index].root.panes.first(where: { $0.current == id })
+            else { continue }
+            activeIndex = index
+            tabs[index].activePaneID = pane.id
+            return true
+        }
+        return false
     }
 
     /// Pin every tab currently showing `id` — called when its document is

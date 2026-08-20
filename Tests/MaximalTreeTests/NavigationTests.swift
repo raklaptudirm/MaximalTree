@@ -272,6 +272,69 @@ import Foundation
         #expect(nav.tabs[1].current == id("d"))
     }
 
+    /// A document that's already open is *gone to*, not opened again — the
+    /// same click that opens a file should return you to it once it's open.
+    @Test func openingADocumentAlreadyInATabSwitchesToIt() {
+        let nav = NavigationModel()
+        nav.newTab(with: id("a"))
+        nav.newTab(with: id("b"))
+        #expect(nav.tabs.count == 3)
+
+        nav.openInPreview(id("a"))
+
+        #expect(nav.tabs.count == 3, "a second tab for the same document")
+        #expect(nav.current == id("a"))
+        #expect(nav.tabs[nav.activeIndex].current == id("a"))
+    }
+
+    /// Going back to an open document mustn't spend the preview tab: whatever
+    /// was being glanced at is still there when you return to it.
+    @Test func switchingToAnOpenDocumentLeavesThePreviewTabAlone() {
+        let nav = NavigationModel()
+        nav.newTab(with: id("a"))       // pinned work
+        nav.openInPreview(id("b"))      // a preview beside it
+        #expect(nav.tabs.count == 3)
+
+        nav.openInPreview(id("a"))
+        #expect(nav.current == id("a"))
+
+        nav.openInPreview(id("b"))
+        #expect(nav.tabs.count == 3, "the preview showing b was replaced or duplicated")
+        #expect(nav.current == id("b"))
+        #expect(!nav.activeTab.isPinned, "switching to a preview must not pin it")
+    }
+
+    /// Clicking the document you're already looking at does nothing at all.
+    @Test func openingTheCurrentDocumentStaysPut() {
+        let nav = NavigationModel()
+        nav.newTab(with: id("a"))
+        let tab = nav.activeTab.id
+
+        nav.openInPreview(id("a"))
+
+        #expect(nav.tabs.count == 2)
+        #expect(nav.activeTab.id == tab)
+        #expect(nav.current == id("a"))
+    }
+
+    /// Open in the *other half of a split* still counts as open: go to that
+    /// pane rather than opening a third view of the same document.
+    @Test func aDocumentInASplitPaneIsFocusedInPlace() {
+        let nav = NavigationModel()
+        nav.newTab(with: id("a"))
+        nav.splitActivePane(horizontal: true)
+        nav.navigate(to: id("b"))       // the new pane moves to b
+        let bPane = nav.activePane?.id
+        nav.activatePane(nav.activeTab.root.panes.first { $0.id != bPane }!.id)
+        #expect(nav.current == id("a"))
+
+        nav.openInPreview(id("b"))
+
+        #expect(nav.tabs.count == 2, "opened a new tab for a document already on screen")
+        #expect(nav.activePane?.id == bPane, "focus didn't move to the pane showing it")
+        #expect(nav.current == id("b"))
+    }
+
     /// Asking for a new tab explicitly means keeping it.
     @Test func explicitNewTabsArePinned() {
         let nav = NavigationModel()
