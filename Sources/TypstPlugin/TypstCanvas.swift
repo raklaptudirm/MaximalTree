@@ -197,7 +197,7 @@ struct TypstCanvas: View {
     @ViewBuilder
     private var previewColumn: some View {
         if let preview {
-            PDFPreview(document: preview)
+            PDFPreview(document: preview, dark: colorScheme == .dark)
         } else if hasErrors {
             ContentUnavailableView("Compile Failed", systemImage: "exclamationmark.triangle",
                                    description: Text(mode == .typeset
@@ -492,11 +492,15 @@ private struct DiagnosticsBar: View {
 /// document and restores the previous destination instead of jumping to page 1.
 private struct PDFPreview: NSViewRepresentable {
     let document: PDFDocument
+    /// Invert the page in dark mode — see PDFAppearance.
+    let dark: Bool
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     final class Coordinator {
         var lastDocument: PDFDocument?
+        /// PDFKit's own background, so light mode looks untouched.
+        var defaultBackground: NSColor?
     }
 
     func makeNSView(context: Context) -> PDFView {
@@ -504,10 +508,15 @@ private struct PDFPreview: NSViewRepresentable {
         view.autoScales = true
         view.displayMode = .singlePageContinuous
         view.displaysPageBreaks = true
+        context.coordinator.defaultBackground = view.backgroundColor
         return view
     }
 
     func updateNSView(_ view: PDFView, context: Context) {
+        // Before the document check: the appearance can change on its own,
+        // with the same document still on screen.
+        PDFAppearance.apply(dark: dark, to: view,
+                            defaultBackground: context.coordinator.defaultBackground)
         guard context.coordinator.lastDocument !== document else { return }
         context.coordinator.lastDocument = document
 

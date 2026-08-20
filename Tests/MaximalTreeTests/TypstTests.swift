@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import PDFKit
 @testable import MaximalTreeKit
 @testable import MaximalTree
 @testable import MaximalEditorKit
@@ -1083,5 +1084,97 @@ struct TinymistLiveTests {
         // what unsaved and synthetic sources compile as.
         #expect(TypstProject.mainPath(of: URL(fileURLWithPath: "/elsewhere/x.typ"),
                                       in: base) == "/main.typ")
+    }
+}
+
+/// Dark mode for the typeset preview. The pixels are Core Image's business;
+/// what's worth pinning is that the view is actually *set up* to filter (the
+/// opt-in below is silently ignorable), that light mode is left as it was, and
+/// that the gutter colour survives its own inversion.
+@MainActor
+@Suite struct PDFAppearanceTests {
+    @Test func darkModeFiltersTheView() {
+        let view = PDFView()
+        PDFAppearance.apply(dark: true, to: view, defaultBackground: view.backgroundColor)
+
+        #expect(view.layerUsesCoreImageFilters,
+                "without the opt-in macOS accepts the filters and ignores them")
+        let names = (view.layer?.filters as? [CIFilter])?.map(\.name)
+        #expect(names == ["CIColorInvert", "CIHueAdjust"],
+                "order matters: invert, then put the hues back")
+    }
+
+    /// What the pairing is *for*. Inverting alone flips every hue halfway
+    /// round the wheel — blue links come out orange — so the chain has to
+    /// darken the page while leaving colours recognisably themselves.
+    @Test func theChainDarkensThePageAndKeepsHues() {
+        func filtered(_ color: NSColor) -> (r: CGFloat, g: CGFloat, b: CGFloat) {
+            let rgb = color.usingColorSpace(.sRGB)!
+            var image = CIImage(color: CIColor(red: rgb.redComponent,
+                                               green: rgb.greenComponent,
+                                               blue: rgb.blueComponent))
+                .cropped(to: CGRect(x: 0, y: 0, width: 1, height: 1))
+            for filter in PDFAppearance.filters() {
+                filter.setValue(image, forKey: kCIInputImageKey)
+                image = filter.outputImage!
+            }
+            var pixel = [UInt8](repeating: 0, count: 4)
+            CIContext(options: [.workingColorSpace: CGColorSpaceCreateDeviceRGB()])
+                .render(image, toBitmap: &pixel, rowBytes: 4,
+                        bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                        format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+            return (CGFloat(pixel[0]) / 255, CGFloat(pixel[1]) / 255, CGFloat(pixel[2]) / 255)
+        }
+
+        // The page turns dark and its text turns light.
+        let paper = filtered(.white)
+        #expect(paper.r < 0.05 && paper.g < 0.05 && paper.b < 0.05, "\(paper)")
+        let ink = filtered(.black)
+        #expect(ink.r > 0.95 && ink.g > 0.95 && ink.b > 0.95, "\(ink)")
+
+        // A blue stays blue and a red stays red — blue is still the largest
+        // channel, red still is. Plain inversion would swap them over.
+        let blue = filtered(NSColor(srgbRed: 0.1, green: 0.3, blue: 0.9, alpha: 1))
+        #expect(blue.b > blue.g && blue.g > blue.r, "blue came out \(blue)")
+        let red = filtered(NSColor(srgbRed: 0.9, green: 0.2, blue: 0.2, alpha: 1))
+        #expect(red.r > red.g && red.r > red.b, "red came out \(red)")
+    }
+
+    @Test func lightModeLeavesThePreviewAlone() {
+        let view = PDFView()
+        let original = try! #require(view.backgroundColor)
+        PDFAppearance.apply(dark: true, to: view, defaultBackground: original)
+        PDFAppearance.apply(dark: false, to: view, defaultBackground: original)
+
+        #expect(view.layer?.filters?.isEmpty == true)
+        #expect(view.backgroundColor == original)
+    }
+
+    /// Switching appearance with the same document on screen has to take
+    /// effect — the update path returns early when the document is unchanged,
+    /// which is exactly the case a theme switch hits.
+    @Test func theFilterClearsWhenLeavingDarkMode() {
+        let view = PDFView()
+        PDFAppearance.apply(dark: true, to: view, defaultBackground: view.backgroundColor)
+        #expect(view.layer?.filters?.isEmpty == false)
+
+        PDFAppearance.apply(dark: false, to: view, defaultBackground: view.backgroundColor)
+        #expect(view.layer?.filters?.isEmpty == true)
+    }
+
+    /// The gutter is inside the filtered view, so it's assigned pre-treated:
+    /// what the reader sees is the chain applied to what we set. The gutter is
+    /// neutral precisely so this round trip is exact rather than approximate.
+    @Test func theGutterIsSetToComeOutAsTheIntendedColour() throws {
+        let view = PDFView()
+        PDFAppearance.apply(dark: true, to: view, defaultBackground: view.backgroundColor)
+
+        let assigned = try #require(view.backgroundColor)
+        let onScreen = try #require(PDFAppearance.hueRotated(PDFAppearance.inverted(assigned))
+            .usingColorSpace(.sRGB))
+        let intended = try #require(PDFAppearance.darkGutter.usingColorSpace(.sRGB))
+        #expect(abs(onScreen.redComponent - intended.redComponent) < 0.005)
+        #expect(abs(onScreen.greenComponent - intended.greenComponent) < 0.005)
+        #expect(abs(onScreen.blueComponent - intended.blueComponent) < 0.005)
     }
 }
