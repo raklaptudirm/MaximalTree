@@ -33,12 +33,19 @@ struct TypstCanvas: View {
     @State private var compileTask: Task<Void, Never>?
     @State private var autosaveTask: Task<Void, Never>?
     @State private var consumedFragment: UUID?
+    /// The file's contents when it changed on disk under unsaved edits. Blocks
+    /// autosave until the reader picks a side — following an external change
+    /// is one thing, silently overwriting it is another.
+    @State private var conflict: String?
 
     private var dirty: Bool { text != savedText }
     private var hasErrors: Bool { diagnostics.contains { $0.severity == .error } }
 
     var body: some View {
         VStack(spacing: 0) {
+            if conflict != nil {
+                ExternalChangeBanner(reload: takeDiskVersion, keep: { conflict = nil })
+            }
             if loadedNode != nodeID {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let loadError {
@@ -73,6 +80,7 @@ struct TypstCanvas: View {
         .background(hiddenShortcuts)
         .task(id: nodeID) {
             loadedNode = nil
+            conflict = nil
             await load()
             loadedNode = nodeID
             TypstUIState.shared.setBuffer(text, for: fileURL)
@@ -80,6 +88,10 @@ struct TypstCanvas: View {
             handleFragment()   // a phony-node open may have posted before we existed
         }
         .onChange(of: host.activeFragment) { _, _ in handleFragment() }
+        .onChange(of: host.externalEdit) { _, notice in
+            guard let notice, notice.node == nodeID || notice.node == fileNodeID else { return }
+            Task { await reconcileWithDisk() }
+        }
         .onChange(of: mode) { previous, current in
             // Entering an autosave mode (or leaving Typeset with edits pending)
             // flushes, so disk always matches what Write/Read show.
@@ -96,7 +108,7 @@ struct TypstCanvas: View {
     /// reach — they stay here rather than becoming plugin Actions.
     private var hiddenShortcuts: some View {
         HStack {
-            Button("", action: saveToDisk)
+            Button("") { saveToDisk(deliberate: true) }
                 .keyboardShortcut("s", modifiers: .command)
             Button("") { applyFormat { TypstEdit.toggleWrap("*", in: $0, selection: $1) } }
                 .keyboardShortcut("b", modifiers: .command)
@@ -159,8 +171,11 @@ struct TypstCanvas: View {
             // Publish the buffer so views outside the canvas (the inspector's
             // word count) reflect what's on screen rather than what's on disk.
             TypstUIState.shared.setBuffer(text, for: fileURL)
-            host.markEdited(nodeID)   // this tab is work now, not a preview
             scheduleCompile(delay: .milliseconds(400))
+            // Taking the disk version leaves text == saved, and following a
+            // file is not editing it.
+            guard dirty else { return }
+            host.markEdited(nodeID)   // this tab is work now, not a preview
             if mode.autosaves { scheduleAutosave() }
         }
     }
@@ -284,11 +299,57 @@ struct TypstCanvas: View {
         }
     }
 
-    private func saveToDisk() {
+    /// The file moved under us. Follow it when nothing would be lost, and ask
+    /// when something would — see `ExternalEdit` for why this compares
+    /// contents rather than trusting timing.
+    private func reconcileWithDisk() async {
+        guard loadedNode == nodeID, let url = fileURL else { return }
+        let onDisk = try? await Task.detached(priority: .userInitiated) {
+            try String(contentsOf: url, encoding: .utf8)
+        }.value
+
+        switch ExternalEdit.outcome(onDisk: onDisk, buffer: text, saved: savedText) {
+        case .unchanged:
+            break
+        case .adoptAsSaved(let contents):
+            savedText = contents
+        case .reload(let contents):
+            takeContents(contents)
+        case .conflict(let contents):
+            // Stop the clock: autosave would otherwise write our version over
+            // theirs a second later, before the reader has answered.
+            autosaveTask?.cancel()
+            conflict = contents
+        @unknown default:
+            break
+        }
+    }
+
+    private func takeDiskVersion() {
+        guard let contents = conflict else { return }
+        takeContents(contents)
+    }
+
+    private func takeContents(_ contents: String) {
+        // Baseline first, so the text change can't read as an edit.
+        savedText = contents
+        text = contents
+        conflict = nil
+        TypstUIState.shared.setBuffer(contents, for: fileURL)
+    }
+
+    /// - Parameter deliberate: whether the reader asked for this save (⌘S).
+    ///   An unresolved conflict blocks every *automatic* save — the idle
+    ///   autosave, the flush on leaving Typeset, the flush on close — because
+    ///   each of them would quietly overwrite the other program's version.
+    ///   Pressing ⌘S is the reader saying theirs wins, so it goes through.
+    private func saveToDisk(deliberate: Bool = false) {
         guard let url = fileURL, dirty else { return }
+        guard deliberate || conflict == nil else { return }
         do {
             try text.write(to: url, atomically: true, encoding: .utf8)
             savedText = text
+            conflict = nil          // saving is an explicit "mine wins"
             // childrenChanged too: the document's contributed outline (sections,
             // tasks) may have changed shape with the edit.
             if let fileNodeID {

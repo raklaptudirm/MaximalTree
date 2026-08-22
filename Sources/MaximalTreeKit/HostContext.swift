@@ -28,6 +28,11 @@ public final class HostContext {
     /// tab strip, or toolbar. Canvases should shed their own chrome too
     /// (headers, status rows, anything that isn't the content).
     public internal(set) var isZenMode = false
+    /// Posted when an open node's bytes changed outside the app — another
+    /// editor saving, a branch switch, a sync client. Canvases showing that
+    /// node observe this and reconcile against the file (see `ExternalEdit`);
+    /// nobody else has to care.
+    public internal(set) var externalEdit: ExternalEdit.Notice?
     /// The node the sidebar is inline-renaming right now, nil when none. Set via
     /// `beginRename(_:)` — the host validates support first — and cleared by the
     /// shell when the edit commits or cancels. Plugins trigger the rename UI;
@@ -147,6 +152,7 @@ public final class HostContext {
     public func _postFragment(_ fragment: NodeFragment?) { activeFragment = fragment }
     public func _setZenMode(_ zen: Bool) { isZenMode = zen }
     public func _setPendingRename(_ id: NodeID?) { pendingRename = id }
+    public func _postExternalEdit(_ notice: ExternalEdit.Notice?) { externalEdit = notice }
 
     /// Rewrite every cached reference to `old` as `new` after a rename. Note this is
     /// shallow: for a directory rename, descendant URIs also change, so the caller

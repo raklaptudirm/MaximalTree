@@ -61,11 +61,17 @@ struct TextEditorCanvas: View {
     /// keeps the editor from ever being built with another file's contents — the
     /// engine reads its text binding exactly once, at construction.
     @State private var loadedNode: NodeID?
+    /// The file's contents when it changed on disk under unsaved edits. The
+    /// reader has to pick a side before this clears.
+    @State private var conflict: String?
 
     private var dirty: Bool { text != savedText }
 
     var body: some View {
         VStack(spacing: 0) {
+            if conflict != nil {
+                ExternalChangeBanner(reload: takeDiskVersion, keep: { conflict = nil })
+            }
             if loadedNode != nodeID {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -95,14 +101,20 @@ struct TextEditorCanvas: View {
         )
         .task(id: nodeID) {
             loadedNode = nil     // stop showing the previous file immediately
+            conflict = nil
             await load()
             loadedNode = nodeID  // set either way: this node is resolved, error or not
         }
         // Guarded on the load having finished: `load()` assigns `text` too, and
-        // opening a file is not editing it.
+        // opening a file is not editing it. Guarded on `dirty` for the same
+        // reason a reload isn't: taking the disk version leaves text == saved.
         .onChange(of: text) {
-            guard loadedNode == nodeID else { return }
+            guard loadedNode == nodeID, dirty else { return }
             host.markEdited(nodeID)   // this tab is work now, not a preview
+        }
+        .onChange(of: host.externalEdit) { _, notice in
+            guard let notice, notice.node == nodeID else { return }
+            Task { await reconcileWithDisk() }
         }
     }
 
@@ -129,11 +141,45 @@ struct TextEditorCanvas: View {
         }
     }
 
+    /// The file moved under us. Follow it when nothing would be lost, and ask
+    /// when something would — see `ExternalEdit` for why this compares
+    /// contents rather than trusting timing.
+    private func reconcileWithDisk() async {
+        guard loadedNode == nodeID, let url = fileURL else { return }
+        let onDisk = try? await Task.detached(priority: .userInitiated) {
+            try String(contentsOf: url, encoding: .utf8)
+        }.value
+
+        switch ExternalEdit.outcome(onDisk: onDisk, buffer: text, saved: savedText) {
+        case .unchanged:
+            break
+        case .adoptAsSaved(let contents):
+            savedText = contents
+        case .reload(let contents):
+            // Baseline first, so the text change can't read as an edit.
+            savedText = contents
+            text = contents
+            conflict = nil
+        case .conflict(let contents):
+            conflict = contents
+        @unknown default:
+            break
+        }
+    }
+
+    private func takeDiskVersion() {
+        guard let contents = conflict else { return }
+        savedText = contents
+        text = contents
+        conflict = nil
+    }
+
     private func save() {
         guard let url = fileURL else { return }
         do {
             try text.write(to: url, atomically: true, encoding: .utf8)
             savedText = text
+            conflict = nil          // saving is an explicit "mine wins"
             // Tell the host we changed the file in place, so the FileSystem plugin's
             // inspector (size, modified date) doesn't go stale.
             host.notify([.modified(nodeID)])

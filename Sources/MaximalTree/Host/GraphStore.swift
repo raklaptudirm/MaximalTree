@@ -229,10 +229,18 @@ final class GraphStore: GraphBackend {
     /// funnel as mutation results — one code path keeps the cache truthful.
     func notify(_ changes: [NodeChange]) { process(changes) }
 
+    /// Changes observed *outside* the app, from a provider's change stream.
+    /// The same funnel as `notify`, plus the nudge that sends an open canvas
+    /// back to its file — our own writes must not trigger that.
+    func notifyExternal(_ changes: [NodeChange]) { process(changes, external: true) }
+
     /// Apply reported changes to caches + navigation, then re-sync focus to
     /// whatever the active tab now points at. The single funnel: mutation
     /// results, plugin `notify`s, and external change streams all land here.
-    private func process(_ changes: [NodeChange]) {
+    /// - Parameter external: whether these came from a change *stream* — an
+    ///   edit made outside the app — rather than from our own writes. Only
+    ///   those tell an open canvas to go and look at its file again.
+    private func process(_ changes: [NodeChange], external: Bool = false) {
         for change in changes {
             switch change {
             case .renamed(let from, let to):
@@ -248,6 +256,7 @@ final class GraphStore: GraphBackend {
                 context._invalidateChildren(of: parent)
             case .modified(let id):
                 ingestNode(id)          // same identity; refresh the record in place
+                if external { context._postExternalEdit(ExternalEdit.Notice(node: id)) }
             @unknown default:
                 break
             }
@@ -311,7 +320,7 @@ final class GraphStore: GraphBackend {
             changeStreams[root] = Task { @MainActor [weak self] in
                 for await changes in stream {
                     guard !Task.isCancelled else { break }
-                    self?.process(changes)
+                    self?.notifyExternal(changes)
                 }
             }
         }
