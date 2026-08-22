@@ -253,6 +253,15 @@ final class AppModel {
         return store.actions.filter { $0.appliesTo.matches(ctx) }
     }
 
+    /// The applicable actions a surface should show, in sections — see
+    /// `ActionOrganizer` for what decides the order.
+    func actionGroups(for surface: ActionSurfaces,
+                      targets: [NodeID]? = nil) -> [ActionGroup] {
+        let node = targets?.first ?? host.focusedNode
+        return ActionOrganizer.groups(applicableActions(for: targets), for: surface,
+                                      preferredOwner: store?.registry.owner(of: node))
+    }
+
     func run(_ action: Action, targets: [NodeID]? = nil) {
         action.handler(ActionContext(host: host, targets: targets))
         paletteVisible = false

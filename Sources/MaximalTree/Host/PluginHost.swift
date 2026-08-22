@@ -49,7 +49,11 @@ final class PluginHost {
                 continue
             }
             let plugin = cls.init()
+            // Everything registered in this call belongs to this plugin, so
+            // the menus can group by contributor without plugins declaring it.
+            registry.registeringOwner = url.deletingPathExtension().lastPathComponent
             plugin.register(with: registry)
+            registry.registeringOwner = nil
             plugins.append(plugin)
             loaded.append(url.lastPathComponent)
             NSLog("[MaximalTree] loaded plugin \(url.lastPathComponent)")

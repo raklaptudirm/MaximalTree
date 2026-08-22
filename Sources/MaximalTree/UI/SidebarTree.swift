@@ -257,17 +257,26 @@ private struct NodeRow: View {
             }
         }
         Divider()
-        let actions = model.applicableActions(for: targets)
-        if actions.isEmpty {
+        // Grouped by contributing plugin and ordered by how close each action
+        // sits to this node; commands that act on the app or on some other
+        // document don't belong on a node's menu at all.
+        let groups = model.actionGroups(for: .contextMenu, targets: targets)
+        if groups.isEmpty {
             Button("No Actions") {}.disabled(true)
         } else {
-            ForEach(actions) { action in
-                Button { model.run(action, targets: targets) } label: {
-                    if let image = action.systemImage {
-                        Label(action.title, systemImage: image)
-                    } else {
-                        Text(action.title)
+            ForEach(groups) { group in
+                Section {
+                    ForEach(group.actions) { action in
+                        Button { model.run(action, targets: targets) } label: {
+                            if let image = action.systemImage {
+                                Label(action.title, systemImage: image)
+                            } else {
+                                Text(action.title)
+                            }
+                        }
                     }
+                } header: {
+                    if let title = group.title { Text(title) }
                 }
             }
         }

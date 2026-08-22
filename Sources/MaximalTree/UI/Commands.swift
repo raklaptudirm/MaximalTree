@@ -88,18 +88,25 @@ struct WorkspaceMenuItems: View {
 private struct ActionMenuItems: View {
     var model: AppModel
     var body: some View {
-        let actions = model.applicableActions()
-        if actions.isEmpty {
+        let groups = model.actionGroups(for: .menuBar)
+        if groups.isEmpty {
             Button("No Actions") {}.disabled(true)
         } else {
-            ForEach(actions) { action in
-                // Actions carrying a key equivalent register it window-wide
-                // from here — the menu bar is what makes shortcuts global.
-                if let shortcut = action.shortcut {
-                    Button(action.title) { model.run(action) }
-                        .keyboardShortcut(shortcut)
-                } else {
-                    Button(action.title) { model.run(action) }
+            ForEach(groups) { group in
+                Section {
+                    ForEach(group.actions) { action in
+                        // Actions carrying a key equivalent register it
+                        // window-wide from here — the menu bar is what makes
+                        // shortcuts global.
+                        if let shortcut = action.shortcut {
+                            Button(action.title) { model.run(action) }
+                                .keyboardShortcut(shortcut)
+                        } else {
+                            Button(action.title) { model.run(action) }
+                        }
+                    }
+                } header: {
+                    if let title = group.title { Text(title) }
                 }
             }
         }
@@ -115,7 +122,7 @@ struct CommandPalette: View {
     @FocusState private var focused: Bool
 
     private var results: [Action] {
-        let actions = model.applicableActions()
+        let actions = model.actionGroups(for: .palette).flatMap(\.actions)
         guard !query.isEmpty else { return actions }
         return actions
             .compactMap { action in fuzzyScore(query, action.title).map { ($0, action) } }

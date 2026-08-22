@@ -86,6 +86,7 @@ final class TypstPlugin: NSObject, Plugin {
             title: "Use as Typst Notes Folder",
             systemImage: "calendar.badge.plus",
             appliesTo: .type(TypeID("file.directory")),
+            scope: .container,
             handler: { ctx in
                 guard let dir = ctx.selection.first, dir.scheme == "file",
                       let url = URL(string: dir.uri) else { return }
@@ -109,6 +110,7 @@ final class TypstPlugin: NSObject, Plugin {
                 systemImage: image,
                 appliesTo: .custom { Self.typFileURL(in: $0) != nil },
                 shortcut: KeyboardShortcut(key, modifiers: [.command, .option]),
+                scope: .document,
                 handler: { ctx in
                     TypstUIState.shared.setMode(mode, for: Self.typFileURL(in: ctx))
                 }
@@ -121,6 +123,7 @@ final class TypstPlugin: NSObject, Plugin {
                 title: "Export as \(format.title)",
                 systemImage: "square.and.arrow.up",
                 appliesTo: .custom { Self.typFileURL(in: $0) != nil },
+                scope: .document,
                 handler: { ctx in Self.export(format, in: ctx) }
             ))
         }
@@ -131,6 +134,7 @@ final class TypstPlugin: NSObject, Plugin {
             systemImage: "arrow.clockwise",
             appliesTo: .type(TypeID("typst.agenda")),
             shortcut: KeyboardShortcut("r", modifiers: .command),
+            scope: .workspace,
             handler: { ctx in
                 TypstUIState.shared.agendaRefresh += 1
                 for id in ctx.targets { ctx.host.notify([.childrenChanged(id)]) }
@@ -142,6 +146,7 @@ final class TypstPlugin: NSObject, Plugin {
             title: "New Typst Note",
             systemImage: "square.and.pencil",
             appliesTo: .type(TypeID("file.directory")),
+            scope: .container,
             handler: { ctx in Self.createNote(in: ctx, daily: false) }
         ))
         registry.register(action: Action(
@@ -149,6 +154,7 @@ final class TypstPlugin: NSObject, Plugin {
             title: "Today's Daily Note",
             systemImage: "calendar",
             appliesTo: .type(TypeID("file.directory")),
+            scope: .container,
             handler: { ctx in Self.createNote(in: ctx, daily: true) }
         ))
     }

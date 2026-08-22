@@ -184,7 +184,7 @@ struct InspectorPane: View {
     var body: some View {
         if let id = subject, let node = host.node(id) {
             let sections = model.store?.inspectors(for: node) ?? []
-            let actions = model.applicableActions()
+            let actions = model.actionGroups(for: .inspector).flatMap(\.actions)
             if sections.isEmpty && actions.isEmpty {
                 ContentUnavailableView("No Inspector", systemImage: "sidebar.right")
             } else {

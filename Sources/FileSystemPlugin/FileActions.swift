@@ -31,6 +31,7 @@ extension FileSystemPlugin {
             title: "New File",
             systemImage: "doc.badge.plus",
             appliesTo: .custom { targetDirectory($0) != nil },
+            scope: .container,
             handler: { ctx in
                 guard let dir = targetDirectory(ctx) else { return }
                 // .txt rather than extensionless: gives the file a real content
@@ -44,6 +45,7 @@ extension FileSystemPlugin {
             title: "New Folder",
             systemImage: "folder.badge.plus",
             appliesTo: .custom { targetDirectory($0) != nil },
+            scope: .container,
             handler: { ctx in
                 guard let dir = targetDirectory(ctx) else { return }
                 ctx.host.apply(.create(in: dir, name: "untitled folder", asContainer: true))

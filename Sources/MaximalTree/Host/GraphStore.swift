@@ -15,11 +15,34 @@ final class Registry: PluginRegistry {
     let hostBroker = HostBroker()
     var broker: NodeBroker { hostBroker }
 
-    func register(provider: NodeProvider) { providers.append(provider) }
+    /// The plugin currently being loaded, so its contributions can be
+    /// attributed without every plugin having to name itself. Nil while the
+    /// host registers its own actions — those belong to no plugin.
+    var registeringOwner: String?
+    /// Which plugin owns each uri scheme, so a menu can lead with the section
+    /// belonging to the node in front of the reader.
+    private(set) var ownersByScheme: [String: String] = [:]
+
+    func register(provider: NodeProvider) {
+        providers.append(provider)
+        if let registeringOwner {
+            for scheme in provider.schemes { ownersByScheme[scheme] = registeringOwner }
+        }
+    }
     func register(canvas: CanvasContribution) { canvases.append(canvas) }
     func register(inspector: InspectorContribution) { inspectors.append(inspector) }
     func register(children: ChildContribution) { childContributions.append(children) }
-    func register(action: Action) { actions.append(action) }
+    func register(action: Action) {
+        var action = action
+        action.owner = registeringOwner
+        actions.append(action)
+    }
+
+    /// The plugin that provides `id`'s nodes, if a plugin does.
+    func owner(of id: NodeID?) -> String? {
+        guard let scheme = id?.scheme else { return nil }
+        return ownersByScheme[scheme]
+    }
 }
 
 /// The host's graph store: owns provider routing, the async load path, and drives
@@ -29,7 +52,7 @@ final class Registry: PluginRegistry {
 final class GraphStore: GraphBackend {
     let context: HostContext
     let nav: NavigationModel
-    private let registry: Registry
+    let registry: Registry
 
     // In-flight de-duplication. Kept here (not on HostContext) precisely because
     // GraphStore is not @Observable — touching it during a SwiftUI body is safe.
