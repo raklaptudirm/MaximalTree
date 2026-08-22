@@ -38,10 +38,19 @@ final class WebSessionStore {
         return session
     }
 
-    /// The favicon for `host`, fetching `https://host/favicon.ico` on first ask.
+    /// The favicon for `host`: the one we already have, else
+    /// `https://host/favicon.ico`, fetched once per host per run.
     /// Nil (cached) when the host has none — the globe fallback stays.
+    ///
+    /// A successful fetch is written through to `FaviconStore`, which is what
+    /// makes the icon survive a relaunch: the provider serves it from there
+    /// with no page open and no network.
     func favicon(for host: String) async -> Data? {
         if let cached = favicons[host] { return cached }
+        if let stored = FaviconStore.shared.icon(for: host) {
+            favicons[host] = stored
+            return stored
+        }
         favicons[host] = .some(nil)   // one fetch per host, even on failure
         guard let url = URL(string: "https://\(host)/favicon.ico") else { return nil }
         guard let (data, response) = try? await URLSession.shared.data(from: url),
@@ -49,6 +58,7 @@ final class WebSessionStore {
               NSImage(data: data) != nil   // must actually decode
         else { return nil }
         favicons[host] = data
+        FaviconStore.shared.store(data, for: host)
         return data
     }
 }

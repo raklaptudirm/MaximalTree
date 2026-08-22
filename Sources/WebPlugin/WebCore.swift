@@ -5,6 +5,79 @@ import MaximalTreeKit
 // and the persisted bookmark store. No WebKit here — this file is what the
 // test target compiles.
 
+// MARK: - Favicons
+
+/// Favicons that outlive the session that fetched them.
+///
+/// A site's icon used to live only in the in-memory node record, written by
+/// the open page's canvas — so it was right while you browsed and gone the
+/// moment the app restarted, leaving every page and bookmark back on the
+/// default globe. Icons belong to the *site*, not to a run of the app, so
+/// they're cached on disk by host and served by the provider.
+///
+/// One small file per host rather than a single blob: fetches land at
+/// unpredictable times from different pages, and independent writes can't
+/// clobber each other.
+final class FaviconStore: @unchecked Sendable {
+    /// Replaceable so tests can point it at a temporary directory instead of
+    /// the real Application Support one.
+    nonisolated(unsafe) static var shared = FaviconStore()
+
+    private let lock = NSLock()
+    private let directory: URL
+    /// Hosts already read from (or written to) disk this run, so the sidebar
+    /// isn't doing file I/O for every row it draws. `nil` records a host with
+    /// no icon, which is just as worth remembering.
+    private var cache: [String: Data?] = [:]
+
+    init(directory: URL? = nil) {
+        self.directory = directory ?? FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("MaximalTree/web-favicons", isDirectory: true)
+    }
+
+    /// The cached icon for `host`, or nil when we've never got one. Never
+    /// fetches: this is called while drawing rows.
+    func icon(for host: String) -> Data? {
+        guard let key = Self.key(for: host) else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        if let known = cache[key] { return known }
+        let data = try? Data(contentsOf: directory.appendingPathComponent(key))
+        cache[key] = data
+        return data
+    }
+
+    /// The cached icon for a page URL, by its host.
+    func icon(for url: URL) -> Data? {
+        guard let host = url.host else { return nil }
+        return icon(for: host)
+    }
+
+    func store(_ data: Data, for host: String) {
+        guard let key = Self.key(for: host), !data.isEmpty else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        cache[key] = data
+        try? FileManager.default.createDirectory(at: directory,
+                                                 withIntermediateDirectories: true)
+        try? data.write(to: directory.appendingPathComponent(key), options: .atomic)
+    }
+
+    /// A host as a file name. Hosts can't contain `/`, but they can be empty,
+    /// absurdly long, or (with punycode and IPv6 literals) contain characters
+    /// worth not trusting a file system with.
+    static func key(for host: String) -> String? {
+        let lowered = host.lowercased()
+        guard !lowered.isEmpty, lowered.count <= 255 else { return nil }
+        let safe = lowered.map { character -> Character in
+            character.isLetter || character.isNumber || character == "." || character == "-"
+                ? character : "_"
+        }
+        return String(safe)
+    }
+}
+
 // MARK: - Provider
 
 /// Serves `http(s)` pages as nodes — a page's identity *is* its URL, which
@@ -34,7 +107,7 @@ struct WebProvider: NodeProvider {
         guard let url = URL(string: id.uri) else { return nil }
         return Node(id: id, type: TypeID("web.page"),
                     label: WebProvider.label(for: url),
-                    icon: NodeIcon("globe", tint: .blue))
+                    icon: WebProvider.icon(for: url))
     }
 
     func children(of id: NodeID, page cursor: Cursor?) async -> Page<Node> {
@@ -43,8 +116,16 @@ struct WebProvider: NodeProvider {
             guard let pageID = NodeID(bookmark.url) else { return nil }
             return Node(id: pageID, type: TypeID("web.page"),
                         label: bookmark.title,
-                        icon: NodeIcon("globe", tint: .blue))
+                        icon: URL(string: bookmark.url).map(WebProvider.icon(for:))
+                            ?? NodeIcon("globe", tint: .blue))
         })
+    }
+
+    /// A page's icon: its site's favicon once we have one, the globe until
+    /// then. The globe stays as the symbol either way, so a favicon that fails
+    /// to decode falls back to it rather than to nothing.
+    static func icon(for url: URL) -> NodeIcon {
+        NodeIcon("globe", tint: .blue, imageData: FaviconStore.shared.icon(for: url))
     }
 
     /// The start page a fresh browser node opens at.
@@ -80,7 +161,10 @@ struct Bookmark: Codable, Equatable, Sendable {
 /// call from off-main, actions from main); storage is one small JSON file in
 /// Application Support.
 final class BookmarkStore: @unchecked Sendable {
-    static let shared = BookmarkStore()
+    /// Replaceable so tests can point it at a temporary file rather than the
+    /// real one — the provider reads this, so driving it any other way tests
+    /// the test instead of the code.
+    nonisolated(unsafe) static var shared = BookmarkStore()
 
     private let lock = NSLock()
     private var bookmarks: [Bookmark]

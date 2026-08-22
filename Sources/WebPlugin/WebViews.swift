@@ -80,6 +80,10 @@ struct WebCanvas: View {
                   node.icon?.imageData != favicon else { return }
             node.icon = NodeIcon("globe", tint: .blue, imageData: favicon)
             host._ingest(node)
+            // The icon belongs to the site, so anything else listing it gains
+            // one too — a bookmark to this host is drawn from the provider,
+            // which now has the icon on disk. Runs once per node per icon.
+            host.notify([.childrenChanged(WebProvider.bookmarksID)])
         }
     }
 }
