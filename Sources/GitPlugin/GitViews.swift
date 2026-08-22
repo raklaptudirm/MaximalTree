@@ -40,21 +40,83 @@ struct CommitCanvas: View {
                 } else {
                     Text("Changed Files").font(.headline)
                     ForEach(files, id: \.self) { fid in
-                        Button {
-                            host.open(fid)
-                        } label: {
-                            HStack(spacing: 8) {
-                                NodeIconView(host.node(fid)?.icon).frame(width: 16)
-                                Text(host.node(fid)?.label ?? fid.uri).lineLimit(1)
-                                Spacer()
-                            }
-                        }
-                        .buttonStyle(.plain)
+                        ChangedFileRow(nodeID: fid)
                     }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
+        }
+    }
+}
+
+/// One changed file in a commit: the row, and its diff in a drawer.
+///
+/// The drawer is what makes a commit readable in one place — most of reviewing
+/// a commit is skimming a few files, and that shouldn't cost a navigation each
+/// time. Opening the row still leads to the file's own canvas for a proper
+/// read; the arrow is the glance.
+///
+/// The diff is fetched when the drawer is first opened, never before: a commit
+/// touching fifty files would otherwise run fifty `git show`s to draw a list.
+private struct ChangedFileRow: View {
+    let nodeID: NodeID
+    @Environment(HostContext.self) private var host
+
+    @State private var expanded = false
+    @State private var file: GitDiff.File?
+    @State private var loading = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Button {
+                    expanded.toggle()
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 12)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(expanded ? "Hide diff" : "Show diff")
+
+                Button {
+                    host.open(nodeID)
+                } label: {
+                    HStack(spacing: 8) {
+                        NodeIconView(host.node(nodeID)?.icon).frame(width: 16)
+                        Text(host.node(nodeID)?.label ?? nodeID.uri).lineLimit(1)
+                        Spacer(minLength: 8)
+                        if let file { DiffStat(file: file) }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            if expanded {
+                Group {
+                    if loading {
+                        ProgressView().controlSize(.small).padding(.vertical, 6)
+                    } else if let file {
+                        DiffView(file: file)
+                    } else {
+                        Text("No diff for this file")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .padding(.vertical, 6)
+                    }
+                }
+                .padding(.leading, 20)
+            }
+        }
+        .task(id: expanded) {
+            guard expanded, file == nil, !loading else { return }
+            loading = true
+            file = await CommitFileCanvas.load(nodeID)
+            loading = false
         }
     }
 }

@@ -313,6 +313,12 @@ final class GitPlugin: NSObject, Plugin {
             matches: { $0.type == TypeID("git.commit") }) { id, host in
                 AnyView(CommitCanvas(nodeID: id).environment(host))
         })
+        // A changed file's canvas is its diff. Without this it fell through to
+        // the generic list canvas, which had nothing to list.
+        registry.register(canvas: CanvasContribution(priority: 10,
+            matches: { $0.type == TypeID("git.commitfile") }) { id, host in
+                AnyView(CommitFileCanvas(nodeID: id).environment(host))
+        })
         registry.register(canvas: CanvasContribution(priority: 0,
             matches: { $0.type.raw.hasPrefix("git.") }) { id, host in
                 AnyView(GitListCanvas(nodeID: id).environment(host))
