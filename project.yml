@@ -33,6 +33,13 @@ settings:
     # add the x86_64-apple-darwin std to the Rust toolchain, build both
     # targets, and lipo them into one archive before this links.
     ARCHS: arm64
+    # Where the typst FFI's cargo output lives. The build phase below exports
+    # it as CARGO_TARGET_DIR and the linker searches it, so the two cannot
+    # disagree. Override it (xcodebuild TYPST_FFI_TARGET_DIR=…) to give a build
+    # its own copy — which is what the release install does, so that building
+    # in the background can't race an interactive build over the same
+    # artifacts and leave corrupt proc-macro dylibs behind.
+    TYPST_FFI_TARGET_DIR: $(SRCROOT)/Vendor/typst-ffi/target
     CODE_SIGN_IDENTITY: "-"
     CODE_SIGN_STYLE: Manual
     DEVELOPMENT_TEAM: ""
@@ -130,6 +137,17 @@ targets:
         # rustup, and Homebrew since Xcode build phases get a minimal environment.
         script: |
           export PATH="/etc/profiles/per-user/$USER/bin:/run/current-system/sw/bin:$HOME/.cargo/bin:/opt/homebrew/bin:$PATH"
+          # Xcode exports its *app* toolchain settings into every script
+          # phase, and cargo would apply them to host builds too — including
+          # the proc-macro dylibs it compiles and then immediately loads.
+          # Built that way they come out unloadable ("mis-aligned LINKEDIT
+          # string pool", or E0463 for a crate cargo just built), which is why
+          # this has intermittently failed under Xcode while a plain
+          # `cargo build` in the same directory always worked.
+          unset SDKROOT MACOSX_DEPLOYMENT_TARGET LIBRARY_PATH CPATH
+          unset CFLAGS CXXFLAGS LDFLAGS OTHER_LDFLAGS
+          # Build where the linker looks — one setting decides both.
+          export CARGO_TARGET_DIR="$TYPST_FFI_TARGET_DIR"
           cd "$SRCROOT/Vendor/typst-ffi"
           cargo build --release
         basedOnDependencyAnalysis: false
@@ -141,7 +159,7 @@ targets:
         INFOPLIST_KEY_NSPrincipalClass: TypstPlugin
         SWIFT_INCLUDE_PATHS: $(SRCROOT)/Vendor/typst-ffi/include
         OTHER_LDFLAGS:
-          - "-L$(SRCROOT)/Vendor/typst-ffi/target/release"
+          - "-L$(TYPST_FFI_TARGET_DIR)/release"
           - "-ltypst_ffi"
           # libghostty's C++ and its keyboard-layout lookup (see TerminalPlugin).
           - "-lstdc++"
@@ -310,7 +328,7 @@ targets:
         # makes them hermetic — no typst CLI needed on the machine.
         SWIFT_INCLUDE_PATHS: $(SRCROOT)/Vendor/typst-ffi/include
         OTHER_LDFLAGS:
-          - "-L$(SRCROOT)/Vendor/typst-ffi/target/release"
+          - "-L$(TYPST_FFI_TARGET_DIR)/release"
           - "-ltypst_ffi"
           # libghostty's C++ and its keyboard-layout lookup (see TerminalPlugin).
           - "-lstdc++"

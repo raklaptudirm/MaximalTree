@@ -61,12 +61,16 @@ while :; do
         fail "xcodegen couldn't generate the project"
     fi
 
+    # Its own cargo output, so a build running in the background can't race
+    # an interactive build over the same artifacts. Both the cargo phase and
+    # the linker follow this one setting.
     if ! xcodebuild build \
             -project "$REPO/MaximalTree.xcodeproj" \
             -scheme MaximalTree \
             -configuration Release \
             -destination 'platform=macOS' \
-            -derivedDataPath "$DERIVED" >> "$LOG" 2>&1; then
+            -derivedDataPath "$DERIVED" \
+            TYPST_FFI_TARGET_DIR="$REPO/.git/release-cargo" >> "$LOG" 2>&1; then
         fail "the Release build failed \u2014 see .git/release-install.log"
     fi
 
