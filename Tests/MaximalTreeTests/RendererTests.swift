@@ -70,7 +70,10 @@ import SwiftUI
         let node = fileNode("file:///a.txt", uti: "public.plain-text")
         let sections = store.inspectors(for: node)
         #expect(sections.count == 2)                 // both match, both shown
-        #expect(sections.map(\.priority) == [10, 5]) // sorted most-specific first
+        // Sorted most-specific first, and each paired with the node it should
+        // be rendered for — see `Node.identities`.
+        #expect(sections.map(\.contribution.priority) == [10, 5])
+        #expect(sections.allSatisfy { $0.id == node.id })
     }
 }
 

@@ -150,6 +150,23 @@ public struct Node: Identifiable, Hashable, Sendable {
     public var hasChildren: Bool
     /// Non-nil makes this a phony node — see `NodeAnchor`.
     public var anchor: NodeAnchor?
+    /// The same thing, seen another way.
+    ///
+    /// A git repository *is* a directory. A typst agenda *is* the folder its
+    /// notes live in. Those are one thing with two names, not two things that
+    /// happen to be related — and a node that only answers to one of its names
+    /// loses everything the other one could do: a repo you can't rename, move
+    /// to the trash, reveal in Finder, or make a new file inside.
+    ///
+    /// Declaring the other identity gets all of that back. The host offers the
+    /// actions and inspector sections of every identity, and runs each one
+    /// against the identity it belongs to — "Move to Trash" on a repo trashes
+    /// the directory, because that is the identity that understands trashing.
+    ///
+    /// Only for things that genuinely *are* the same: a commit's version of a
+    /// file is not the file on disk, and a terminal is not its working
+    /// directory. Those are `Related`, which is the weaker claim.
+    public var identities: [NodeID]
 
     public init(
         id: NodeID,
@@ -158,7 +175,8 @@ public struct Node: Identifiable, Hashable, Sendable {
         icon: NodeIcon? = nil,
         attributes: Attributes = .init(),
         hasChildren: Bool = false,
-        anchor: NodeAnchor? = nil
+        anchor: NodeAnchor? = nil,
+        identities: [NodeID] = []
     ) {
         self.id = id
         self.type = type
@@ -167,6 +185,7 @@ public struct Node: Identifiable, Hashable, Sendable {
         self.attributes = attributes
         self.hasChildren = hasChildren
         self.anchor = anchor
+        self.identities = identities
     }
 
     private static func lastSegment(of id: NodeID) -> String {

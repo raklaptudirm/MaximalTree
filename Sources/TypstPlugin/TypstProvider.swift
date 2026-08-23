@@ -123,7 +123,10 @@ struct TypstProvider: NodeProvider {
              type: TypeID("typst.agenda"),
              label: "Agenda — \(dir.lastPathComponent)",
              icon: NodeIcon("calendar", tint: .orange),
-             hasChildren: true)
+             hasChildren: true,
+             // An agenda is a reading of a folder, not a separate thing: the
+             // same directory, with everything a directory can do.
+             identities: [NodeID(dir.standardizedFileURL.absoluteString)].compactMap { $0 })
     }
 
     static func agendaTasks(under dir: URL) -> [(file: URL, task: TypstStructure.TaskItem)] {

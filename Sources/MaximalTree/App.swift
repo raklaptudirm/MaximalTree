@@ -35,8 +35,13 @@ final class AppModel {
     /// Sidebar UI state (expansion, selection anchor) — session-scoped, owned
     /// here so the tree survives sidebar view recreation.
     let sidebar = SidebarState()
-    private let pluginHost = PluginHost()
-    private let workspaceStore = WorkspaceStore()
+    // Not private: under XCTest the plugin bundles aren't dlopened (their
+    // sources are compiled into the test target instead), so a test that wants
+    // the real registry has to populate it itself.
+    let pluginHost = PluginHost()
+    /// Where the workspace library lives. Injectable so a test drives the
+    /// real model without writing into the user's own workspaces.
+    private let workspaceStore: WorkspaceStore
     private(set) var store: GraphStore?
 
     /// Whether the command palette overlay is showing.
@@ -52,7 +57,10 @@ final class AppModel {
     var showingFolderPrompt = false
     var pendingFolderRename: RootFolder?
 
-    init(host: HostContext) { self.host = host }
+    init(host: HostContext, workspaceFile: URL? = nil) {
+        self.host = host
+        self.workspaceStore = WorkspaceStore(fileURL: workspaceFile)
+    }
 
     // MARK: Workspaces
 
@@ -249,8 +257,17 @@ final class AppModel {
     /// menu, and the inspector.
     func applicableActions(for targets: [NodeID]? = nil) -> [Action] {
         guard let store else { return [] }
-        let ctx = ActionContext(host: host, targets: targets)
-        return store.actions.filter { $0.appliesTo.matches(ctx) }
+        let variants = targetVariants(for: targets)
+        return store.actions.filter { action in
+            variants.contains { action.appliesTo.matches(ActionContext(host: host, targets: $0)) }
+        }
+    }
+
+    /// The nodes as clicked, and as each identity they also are — so a git
+    /// repository is offered to the file actions as the directory it is.
+    private func targetVariants(for targets: [NodeID]?) -> [[NodeID]] {
+        let resolved = targets ?? host.selection
+        return ActionTargets.variants(for: resolved) { host.node($0)?.identities ?? [] }
     }
 
     /// The applicable actions a surface should show, in sections — see
@@ -262,8 +279,13 @@ final class AppModel {
                                       preferredOwner: store?.registry.owner(of: node))
     }
 
+    /// Run an action against the identity that understands it — the same one
+    /// that made it applicable in the first place.
     func run(_ action: Action, targets: [NodeID]? = nil) {
-        action.handler(ActionContext(host: host, targets: targets))
+        let context = targetVariants(for: targets)
+            .first { action.appliesTo.matches(ActionContext(host: host, targets: $0)) }
+            .map { ActionContext(host: host, targets: $0) }
+        action.handler(context ?? ActionContext(host: host, targets: targets))
         paletteVisible = false
     }
 

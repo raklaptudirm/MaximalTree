@@ -191,7 +191,7 @@ struct InspectorPane: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(sections.enumerated()), id: \.offset) { _, section in
-                            section.make(id, host)
+                            section.contribution.make(section.id, host)
                         }
                         // Host-provided: what you can *do* with this node belongs next
                         // to what it *is*.

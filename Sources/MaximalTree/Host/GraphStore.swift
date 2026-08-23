@@ -85,8 +85,24 @@ final class GraphStore: GraphBackend {
     }
 
     /// All matching inspector sections, most-specific (highest priority) first.
-    func inspectors(for node: Node) -> [InspectorContribution] {
-        registry.inspectors.filter { $0.matches(node) }.sorted { $0.priority > $1.priority }
+    /// Inspector sections for a node *and* for everything else it is, each
+    /// paired with the identity it should be rendered for — the FileSystem
+    /// section of a git repo has to be handed the directory's id, not the
+    /// repo's, or it will describe a node it can't read.
+    func inspectors(for node: Node) -> [(contribution: InspectorContribution, id: NodeID)] {
+        var sections = registry.inspectors
+            .filter { $0.matches(node) }
+            .sorted { $0.priority > $1.priority }
+            .map { (contribution: $0, id: node.id) }
+
+        for identity in node.identities {
+            guard let other = context.node(identity) else { continue }
+            sections += registry.inspectors
+                .filter { $0.matches(other) }
+                .sorted { $0.priority > $1.priority }
+                .map { (contribution: $0, id: identity) }
+        }
+        return sections
     }
 
     var actions: [Action] { registry.actions }
@@ -370,7 +386,25 @@ final class GraphStore: GraphBackend {
     private func ingestNode(_ id: NodeID) {
         guard let p = provider(for: id) else { return }
         Task { @MainActor in
-            if let n = await p.node(for: id) { context._ingest(decorate(n)) }
+            if let n = await p.node(for: id) { ingest(n) }
+        }
+    }
+
+    /// Cache a node, and the records of everything else it is.
+    ///
+    /// Without those, an action's predicate asking "is this a directory?"
+    /// about an identity it was handed would find nothing to answer with.
+    /// Identities are not followed recursively: a node says what it also is,
+    /// and that is where it stops.
+    private func ingest(_ node: Node) {
+        context._ingest(decorate(node))
+        for identity in node.identities where context.node(identity) == nil {
+            guard let provider = provider(for: identity) else { continue }
+            Task { @MainActor in
+                if let other = await provider.node(for: identity) {
+                    context._ingest(decorate(other))
+                }
+            }
         }
     }
 

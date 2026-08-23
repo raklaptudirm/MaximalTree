@@ -129,11 +129,17 @@ struct GitProvider: NodeProvider {
         let name: String
         let icon: NodeIcon
         var hasChildren = false
+        var identities: [NodeID] = []
         switch ref.kind {
         case .repo:
             name = URL(fileURLWithPath: ref.repo).lastPathComponent
             icon = NodeIcon("arrow.triangle.branch", tint: .orange)
             hasChildren = true
+            // A repository *is* the working tree's directory. Saying so is
+            // what gets it rename, trash, reveal, New File — everything the
+            // FileSystem plugin knows how to do to a folder.
+            identities = [NodeID(URL(fileURLWithPath: ref.repo)
+                .standardizedFileURL.absoluteString)].compactMap { $0 }
         case .branches:
             name = "Branches"; icon = NodeIcon("arrow.triangle.branch", tint: .green); hasChildren = true
         case .commits:
@@ -148,7 +154,8 @@ struct GitProvider: NodeProvider {
             name = ref.commitAndPath?.path ?? (ref.id ?? "")
             icon = NodeIcon("doc.text", tint: .secondary)
         }
-        return Node(id: id, type: ref.typeID, label: name, icon: icon, hasChildren: hasChildren)
+        return Node(id: id, type: ref.typeID, label: name, icon: icon,
+                    hasChildren: hasChildren, identities: identities)
     }
 
     /// Icon for a changed file, by its git status letter.
