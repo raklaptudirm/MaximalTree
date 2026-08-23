@@ -135,6 +135,19 @@ final class GhosttyApp {
                     TerminalSessions.shared.surfaceReported(view: view, background: color)
                 }
                 return true
+            case GHOSTTY_ACTION_MOUSE_SHAPE:
+                // An I-beam over text, a hand over a link: the terminal knows
+                // what the pointer is on, and only the view can show it.
+                let shape = action.action.mouse_shape
+                MainActor.assumeIsolated { view.setMouseShape(shape) }
+                return true
+            case GHOSTTY_ACTION_OPEN_URL:
+                let payload = action.action.open_url
+                guard let url = payload.url.map({ String(cString: $0) }),
+                      let target = URL(string: url)
+                else { return false }
+                MainActor.assumeIsolated { NSWorkspace.shared.open(target) }
+                return true
             case GHOSTTY_ACTION_PWD:
                 let pwd = action.action.pwd.pwd.map { String(cString: $0) }
                 MainActor.assumeIsolated {
@@ -148,10 +161,51 @@ final class GhosttyApp {
                 return false
             }
         }
-        runtime.read_clipboard_cb = { _, _, _ in false }
-        runtime.confirm_read_clipboard_cb = { _, _, _, _ in }
-        runtime.write_clipboard_cb = { _, _, _, _, _ in }
-        runtime.close_surface_cb = { _, _ in }
+        // The terminal asking for the clipboard — a paste, or an OSC 52 read.
+        // The answer goes back through complete_clipboard_request rather than
+        // a return value, since a host may need to ask the user first.
+        runtime.read_clipboard_cb = { userdata, location, state in
+            guard let userdata else { return false }
+            let view = Unmanaged<TerminalSurfaceView>.fromOpaque(userdata)
+                .takeUnretainedValue()
+            let text = MainActor.assumeIsolated { GhosttyApp.readClipboard(location) }
+            MainActor.assumeIsolated { view.completeClipboardRequest(text, state: state) }
+            return true
+        }
+        // Reading the clipboard into the *terminal* can be a security matter:
+        // a paste carrying a newline runs whatever it holds. libghostty asks
+        // when it judges the content unsafe.
+        runtime.confirm_read_clipboard_cb = { userdata, text, state, _ in
+            guard let userdata, let text else { return }
+            let view = Unmanaged<TerminalSurfaceView>.fromOpaque(userdata)
+                .takeUnretainedValue()
+            let contents = String(cString: text)
+            MainActor.assumeIsolated { view.confirmUnsafePaste(contents, state: state) }
+        }
+        runtime.write_clipboard_cb = { _, location, contents, count, _ in
+            guard let contents, count > 0 else { return }
+            var text = ""
+            for index in 0..<Int(count) {
+                guard let data = contents[index].data else { continue }
+                text += String(cString: data)
+            }
+            MainActor.assumeIsolated { GhosttyApp.writeClipboard(text, to: location) }
+        }
+        // The shell exited, or something asked the terminal to close. A
+        // surface with nothing running behind it is not a terminal any more,
+        // so the node goes too — leaving it would be a row that looks alive
+        // and answers nothing.
+        runtime.close_surface_cb = { userdata, _ in
+            guard let userdata else { return }
+            let view = Unmanaged<TerminalSurfaceView>.fromOpaque(userdata)
+                .takeUnretainedValue()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let id = view.sessionID else { return }
+                    TerminalSessions.shared.close(id)
+                }
+            }
+        }
 
         guard let app = ghostty_app_new(&runtime, config) else {
             failure = "libghostty failed to create its app"
@@ -194,6 +248,24 @@ final class GhosttyApp {
     /// here inherits.
     static func scrubHostEnvironment() {
         for name in hostOnlyVariables { unsetenv(name) }
+    }
+
+    // MARK: Clipboard
+
+    /// macOS has one pasteboard; ghostty also models a "selection" clipboard,
+    /// which X11 has and macOS doesn't. Both map to the general pasteboard so
+    /// a terminal asking for either gets something sensible.
+    static func pasteboard(_ location: ghostty_clipboard_e) -> NSPasteboard { .general }
+
+    static func readClipboard(_ location: ghostty_clipboard_e) -> String {
+        pasteboard(location).string(forType: .string) ?? ""
+    }
+
+    static func writeClipboard(_ text: String, to location: ghostty_clipboard_e) {
+        guard !text.isEmpty else { return }
+        let board = pasteboard(location)
+        board.declareTypes([.string], owner: nil)
+        board.setString(text, forType: .string)
     }
 
     /// Read the user's config the way ghostty itself would.

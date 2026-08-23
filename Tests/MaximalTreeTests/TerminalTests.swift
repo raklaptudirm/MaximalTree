@@ -350,6 +350,141 @@ import Foundation
         ghostty_app_set_color_scheme(app, current)
     }
 
+    /// Which keys carry text, and which speak for themselves.
+    ///
+    /// This is what made arrow keys type garbage: AppKit reports an arrow's
+    /// `characters` as a private-use codepoint (0xF700 and up), and passing
+    /// that through as text inserts it instead of moving the cursor. Control
+    /// combinations are the mirror image — their `characters` is already the
+    /// control byte, which libghostty derives from the keycode itself, so
+    /// sending it too encodes it twice.
+    @Test func onlyRealTextIsSentAsText() throws {
+        func event(_ characters: String, _ type: NSEvent.EventType = .keyDown) throws -> NSEvent {
+            try #require(NSEvent.keyEvent(
+                with: type, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: 0, context: nil, characters: characters,
+                charactersIgnoringModifiers: characters, isARepeat: false, keyCode: 0))
+        }
+
+        #expect(TerminalSurfaceView.textToSend(for: try event("a")) == "a")
+        #expect(TerminalSurfaceView.textToSend(for: try event("é")) == "é")
+        #expect(TerminalSurfaceView.textToSend(for: try event("👋")) == "👋")
+
+        // Arrows, function keys, Home/End: private use area.
+        for arrow in [NSUpArrowFunctionKey, NSDownArrowFunctionKey,
+                      NSLeftArrowFunctionKey, NSRightArrowFunctionKey,
+                      NSHomeFunctionKey, NSF1FunctionKey] {
+            let key = String(UnicodeScalar(UInt32(arrow))!)
+            #expect(TerminalSurfaceView.textToSend(for: try event(key)) == nil,
+                    "0x\(String(arrow, radix: 16)) would be typed into the terminal")
+        }
+
+        // Control characters: ctrl-c, tab, return, escape, delete.
+        for control in ["\u{03}", "\u{09}", "\u{0D}", "\u{1B}", "\u{7F}"] {
+            #expect(TerminalSurfaceView.textToSend(for: try event(control)) == nil)
+        }
+
+        // A key going *up* carries no text at all.
+        #expect(TerminalSurfaceView.textToSend(for: try event("a", .keyUp)) == nil)
+    }
+
+    /// Copy and paste go through the host: libghostty has no clipboard of its
+    /// own, it asks. Both directions are checked against the real pasteboard.
+    @Test func theTerminalCanReadAndWriteTheClipboard() {
+        let marker = "mt-clipboard-\(UUID().uuidString)"
+        let saved = NSPasteboard.general.string(forType: .string)
+        defer {
+            if let saved {
+                NSPasteboard.general.declareTypes([.string], owner: nil)
+                NSPasteboard.general.setString(saved, forType: .string)
+            }
+        }
+
+        GhosttyApp.writeClipboard(marker, to: GHOSTTY_CLIPBOARD_STANDARD)
+        #expect(GhosttyApp.readClipboard(GHOSTTY_CLIPBOARD_STANDARD) == marker)
+        #expect(NSPasteboard.general.string(forType: .string) == marker,
+                "the terminal's copy never reached the system pasteboard")
+
+        // The selection clipboard is an X11 idea macOS lacks; it must still
+        // answer rather than come back empty.
+        #expect(GhosttyApp.readClipboard(GHOSTTY_CLIPBOARD_SELECTION) == marker)
+
+        // Writing nothing must not wipe what's there.
+        GhosttyApp.writeClipboard("", to: GHOSTTY_CLIPBOARD_STANDARD)
+        #expect(GhosttyApp.readClipboard(GHOSTTY_CLIPBOARD_STANDARD) == marker)
+    }
+
+    /// End to end: what the shell prints, copied out of the terminal, lands on
+    /// the pasteboard the way a person would expect ⌘C to leave it.
+    @Test func copyingFromTheTerminalReachesThePasteboard() async throws {
+        try #require(GhosttyApp.shared.app != nil)
+        let saved = NSPasteboard.general.string(forType: .string)
+        defer {
+            if let saved {
+                NSPasteboard.general.declareTypes([.string], owner: nil)
+                NSPasteboard.general.setString(saved, forType: .string)
+            }
+        }
+        let marker = "mt-copy-\(UUID().uuidString.prefix(8))"
+
+        let store = TerminalSessions()
+        let session = store.create(directory: NSTemporaryDirectory(),
+                                   initialInput: "echo \(marker)\n")
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 400),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = session.view
+        window.orderFrontRegardless()
+        defer { store.close(session.id); window.orderOut(nil) }
+
+        var screen = ""
+        for _ in 0..<40 {
+            try? await Task.sleep(for: .milliseconds(200))
+            screen = session.view.visibleText() ?? ""
+            if screen.contains(marker) { break }
+        }
+        try #require(screen.contains(marker), "the shell never echoed it")
+
+        // select_all then copy_to_clipboard, the same bindings ⌘A/⌘C invoke.
+        session.view.perform(binding: "select_all")
+        session.view.perform(binding: "copy_to_clipboard")
+        var pasteboard = ""
+        for _ in 0..<20 {
+            try? await Task.sleep(for: .milliseconds(100))
+            pasteboard = NSPasteboard.general.string(forType: .string) ?? ""
+            if pasteboard.contains(marker) { break }
+        }
+        #expect(pasteboard.contains(marker),
+                "copying out of the terminal put nothing on the pasteboard")
+    }
+
+    /// A shell that exits takes its terminal with it. Left alone, the node
+    /// stays in the sidebar looking alive while answering nothing.
+    @Test func exitingTheShellClosesTheTerminal() async throws {
+        try #require(GhosttyApp.shared.app != nil)
+        // Not an immediate exit: a command that dies within
+        // `abnormal-command-exit-runtime-ms` is reported as a failure and the
+        // surface deliberately stays open to show why. This is the ordinary
+        // case — a shell someone finished with.
+        let session = TerminalSessions.shared.create(directory: NSTemporaryDirectory(),
+                                                     initialInput: "sleep 1; exit\n")
+        let id = session.id
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 400),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = session.view
+        window.orderFrontRegardless()
+        defer { TerminalSessions.shared.close(id); window.orderOut(nil) }
+
+        // Generous: the first `login` in a process can take several seconds
+        // before the shell is even up to run `exit`.
+        var closed = false
+        for _ in 0..<100 {
+            try? await Task.sleep(for: .milliseconds(200))
+            if TerminalSessions.shared.session(for: id) == nil { closed = true; break }
+        }
+        let screen = session.view.visibleText()?.suffix(200) ?? "<no screen>"
+        #expect(closed, "the shell exited and its terminal stayed behind: \(screen)")
+    }
+
     /// The host's environment is not the user's.
     ///
     /// Whatever launches the app — an IDE, a build tool, an agent — may set

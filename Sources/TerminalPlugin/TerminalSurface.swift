@@ -158,26 +158,62 @@ final class TerminalSurfaceView: NSView {
     override func flagsChanged(with event: NSEvent) {
         // A modifier press and release look identical to AppKit; which one it
         // is depends on whether the flag is now set.
-        let mods = Self.mods(event.modifierFlags)
-        let pressed = mods.rawValue & Self.modBit(for: event.keyCode) != 0
-        _ = send(event, action: pressed ? GHOSTTY_ACTION_PRESS : GHOSTTY_ACTION_RELEASE,
-                 text: nil)
+        let pressed = Self.mods(event.modifierFlags).rawValue
+            & Self.modBit(for: event.keyCode) != 0
+        _ = send(event, action: pressed ? GHOSTTY_ACTION_PRESS : GHOSTTY_ACTION_RELEASE)
     }
 
+    /// Hand a key to the terminal.
+    ///
+    /// The physical key and its modifiers always go; the *text* only goes when
+    /// there is real text. That distinction is the whole game:
+    ///
+    /// - An arrow or a function key has `characters` in Unicode's private use
+    ///   area (0xF700 and up). Passing that along types garbage instead of
+    ///   moving the cursor, which is what made history and line editing look
+    ///   broken.
+    /// - A control combination has `characters` that *is* the control byte
+    ///   already. libghostty encodes those itself from the keycode, so that
+    ///   the physical key stays visible to protocols that want it — passing
+    ///   the byte too gets it encoded twice.
     @discardableResult
-    private func send(_ event: NSEvent, action: ghostty_input_action_e,
-                      text: String? = nil) -> Bool {
+    private func send(_ event: NSEvent, action: ghostty_input_action_e) -> Bool {
         guard let surface else { return false }
-        let characters = text ?? event.characters ?? ""
-        return characters.withCString { cString in
-            var key = ghostty_input_key_s()
-            key.action = action
-            key.mods = Self.mods(event.modifierFlags)
-            key.keycode = UInt32(event.keyCode)
-            key.text = characters.isEmpty ? nil : cString
-            key.composing = false
+        var key = ghostty_input_key_s()
+        key.action = action
+        key.keycode = UInt32(event.keyCode)
+        key.mods = Self.mods(event.modifierFlags)
+        // No way to ask macOS which modifiers went into producing the text, so
+        // take Ghostty's own heuristic: control and command never do.
+        key.consumed_mods = Self.mods(
+            event.modifierFlags.subtracting([.control, .command]))
+        key.composing = false
+        key.unshifted_codepoint = 0
+        if event.type == .keyDown || event.type == .keyUp,
+           let bare = event.characters(byApplyingModifiers: [])?.unicodeScalars.first {
+            key.unshifted_codepoint = bare.value
+        }
+
+        guard let text = Self.textToSend(for: event) else {
             return ghostty_surface_key(surface, key)
         }
+        return text.withCString { pointer in
+            key.text = pointer
+            return ghostty_surface_key(surface, key)
+        }
+    }
+
+    /// The characters worth sending as text, or nil when the key speaks for
+    /// itself.
+    static func textToSend(for event: NSEvent) -> String? {
+        guard event.type == .keyDown, let characters = event.characters,
+              let first = characters.unicodeScalars.first
+        else { return nil }
+        // C0 controls and DEL: libghostty derives these from the keycode.
+        if first.value < 0x20 || first.value == 0x7F { return nil }
+        // Arrows, function keys, Home/End and friends all live here.
+        if (0xF700...0xF8FF).contains(first.value) { return nil }
+        return characters
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -211,6 +247,66 @@ final class TerminalSurfaceView: NSView {
         let precision: Int32 = event.hasPreciseScrollingDeltas ? 1 : 0
         ghostty_surface_mouse_scroll(surface, event.scrollingDeltaX, event.scrollingDeltaY,
                                      ghostty_input_scroll_mods_t(precision))
+    }
+
+    // MARK: Pointer
+
+    /// What the pointer should look like over the terminal right now.
+    private var mouseShape: NSCursor = .iBeam
+
+    func setMouseShape(_ shape: ghostty_action_mouse_shape_e) {
+        switch shape {
+        case GHOSTTY_MOUSE_SHAPE_TEXT: mouseShape = .iBeam
+        case GHOSTTY_MOUSE_SHAPE_POINTER: mouseShape = .pointingHand
+        default: mouseShape = .arrow
+        }
+        window?.invalidateCursorRects(for: self)
+    }
+
+    override func resetCursorRects() {
+        // The terminal's own idea of the cursor, not the view's: it changes
+        // as the pointer moves over text, links, and the like.
+        addCursorRect(bounds, cursor: mouseShape)
+    }
+
+    /// Run one of ghostty's own actions by name — "copy_to_clipboard",
+    /// "paste_from_clipboard", "select_all". The same vocabulary its
+    /// keybindings use, which is what a menu item should drive rather than
+    /// synthesising keystrokes.
+    @discardableResult
+    func perform(binding action: String) -> Bool {
+        guard let surface else { return false }
+        return action.withCString {
+            ghostty_surface_binding_action(surface, $0, UInt(strlen($0)))
+        }
+    }
+
+    // MARK: Clipboard
+
+    /// Hand back what the terminal asked for. `state` is libghostty's, and
+    /// must be passed through untouched.
+    func completeClipboardRequest(_ text: String, state: UnsafeMutableRawPointer?) {
+        guard let surface else { return }
+        text.withCString { ghostty_surface_complete_clipboard_request(surface, $0, state, true) }
+    }
+
+    /// libghostty judged this paste unsafe — text with newlines in it, which
+    /// would run as commands the moment it lands. Ask before allowing it.
+    func confirmUnsafePaste(_ text: String, state: UnsafeMutableRawPointer?) {
+        guard let surface else { return }
+        let alert = NSAlert()
+        alert.messageText = "Paste this text?"
+        alert.informativeText = """
+            The text on the clipboard contains line breaks, so pasting it will \
+            run it as commands rather than leave it at the prompt.
+            """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Paste")
+        alert.addButton(withTitle: "Cancel")
+        let allowed = alert.runModal() == .alertFirstButtonReturn
+        text.withCString {
+            ghostty_surface_complete_clipboard_request(surface, $0, state, allowed)
+        }
     }
 
     /// Everything the terminal is currently showing.
