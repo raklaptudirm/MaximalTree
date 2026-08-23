@@ -275,8 +275,10 @@ final class NavigationModel {
         return false
     }
 
-    /// Pin every tab currently showing `id` — called when its document is
-    /// edited, so the next thing opened can't take its place.
+    /// Pin every tab currently showing `id`, so the next thing opened can't
+    /// take its place. Editing a document asks for this; so does anything
+    /// else that is work rather than a glance — a terminal, from the moment
+    /// it opens.
     func pinTabs(showing id: NodeID) {
         for index in tabs.indices where tabs[index].current == id {
             tabs[index].isPinned = true

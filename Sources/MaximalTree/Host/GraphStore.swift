@@ -119,8 +119,8 @@ final class GraphStore: GraphBackend {
         }
     }
 
-    /// A plugin reported unsaved edits: keep the tab showing that document.
-    func markEdited(_ id: NodeID) { nav.pinTabs(showing: id) }
+    /// A plugin asked to keep the tab showing this node.
+    func pin(_ id: NodeID) { nav.pinTabs(showing: id) }
 
     func select(_ ids: [NodeID]) { context._setSelection(ids) }
 

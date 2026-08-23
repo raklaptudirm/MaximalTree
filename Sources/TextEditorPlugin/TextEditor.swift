@@ -110,7 +110,7 @@ struct TextEditorCanvas: View {
         // reason a reload isn't: taking the disk version leaves text == saved.
         .onChange(of: text) {
             guard loadedNode == nodeID, dirty else { return }
-            host.markEdited(nodeID)   // this tab is work now, not a preview
+            host.pin(nodeID)          // this tab is work now, not a preview
         }
         .onChange(of: host.externalEdit) { _, notice in
             guard let notice, notice.node == nodeID else { return }

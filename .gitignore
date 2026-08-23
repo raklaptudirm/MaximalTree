@@ -6,3 +6,8 @@
 xcuserdata/
 DerivedData/
 Vendor/typst-ffi/target/
+
+# libghostty: built by Scripts/build-ghostty.sh, not committed (129MB).
+Vendor/ghostty/GhosttyKit.xcframework/
+Vendor/ghostty/src/
+Vendor/ghostty/resources/

@@ -1,0 +1,1 @@
+ls Scripts/; tail -1 /tmp/metal-toolchain.log | tr '\r' '\n' | tail -1

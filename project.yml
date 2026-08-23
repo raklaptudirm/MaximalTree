@@ -143,6 +143,10 @@ targets:
         OTHER_LDFLAGS:
           - "-L$(SRCROOT)/Vendor/typst-ffi/target/release"
           - "-ltypst_ffi"
+          # libghostty's C++ and its keyboard-layout lookup (see TerminalPlugin).
+          - "-lstdc++"
+          - "-framework"
+          - "Carbon"
         LD_RUNPATH_SEARCH_PATHS:
           - "@loader_path/../../../../Frameworks"
 
@@ -159,6 +163,49 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.plugin.git
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_NSPrincipalClass: GitPlugin
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@loader_path/../../../../Frameworks"
+
+  TerminalPlugin:
+    type: bundle
+    platform: macOS
+    sources:
+      - Sources/TerminalPlugin
+      # Ghostty's shell-integration scripts and terminfo. Without these the
+      # shell never reports its title or working directory, so a terminal node
+      # can't follow what its shell is doing — see GhosttyApp.
+      #
+      # Folder references, not groups: these are opaque data, and left to
+      # Xcode's file-type guessing a fish config named `vendor_conf.d` is
+      # compiled as a DTrace script.
+      - path: Vendor/ghostty/resources/ghostty
+        type: folder
+        buildPhase: resources
+      - path: Vendor/ghostty/resources/terminfo
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - target: MaximalTreeKit
+        embed: false
+      # libghostty, built from source by Scripts/build-ghostty.sh. It is a
+      # static library inside the xcframework, so it links into this bundle
+      # rather than needing to be embedded and signed separately.
+      - framework: Vendor/ghostty/GhosttyKit.xcframework
+        embed: false
+    settings:
+      base:
+        PRODUCT_NAME: Terminal
+        PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.plugin.terminal
+        # libghostty carries C++ (glslang, among others) inside its static
+        # library, so the C++ runtime has to come from here — Ghostty's own
+        # Xcode project does exactly the same.
+        OTHER_LDFLAGS:
+          - "-lstdc++"
+          # Text Input Services (keyboard layout) lives in Carbon.
+          - "-framework"
+          - "Carbon"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSPrincipalClass: TerminalPlugin
         LD_RUNPATH_SEARCH_PATHS:
           - "@loader_path/../../../../Frameworks"
 
@@ -209,6 +256,12 @@ targets:
         copy:
           destination: plugins
           codeSign: true
+      - target: TerminalPlugin
+        embed: true
+        link: false
+        copy:
+          destination: plugins
+          codeSign: true
       - target: TypstPlugin
         embed: true
         link: false
@@ -243,9 +296,12 @@ targets:
       - path: Sources/TypstPlugin/TypstServices.swift
       - path: Sources/TypstPlugin/TypstUIState.swift
       - path: Sources/WebPlugin/WebCore.swift
+      - Sources/TerminalPlugin
     dependencies:
       - target: MaximalTree          # hosts the tests; wires TEST_HOST/BUNDLE_LOADER
       - target: MaximalEditorKit
+      - framework: Vendor/ghostty/GhosttyKit.xcframework
+        embed: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.tests
@@ -256,6 +312,10 @@ targets:
         OTHER_LDFLAGS:
           - "-L$(SRCROOT)/Vendor/typst-ffi/target/release"
           - "-ltypst_ffi"
+          # libghostty's C++ and its keyboard-layout lookup (see TerminalPlugin).
+          - "-lstdc++"
+          - "-framework"
+          - "Carbon"
 
 schemes:
   MaximalTree:

@@ -124,13 +124,16 @@ public final class HostContext {
     /// affordance — one UI, any renamable node, whoever owns it.
     public func beginRename(_ id: NodeID) { backend?.beginRename(id) }
 
-    /// Tell the host this node has unsaved edits.
+    /// Keep the tab showing this node.
     ///
-    /// Editing is what separates "I glanced at this" from "I'm working here",
-    /// so the host pins the tab showing it: the next thing opened starts its
-    /// own tab instead of replacing your work. Cheap and idempotent — call it
-    /// on every keystroke if that's simplest.
-    public func markEdited(_ id: NodeID) { backend?.markEdited(id) }
+    /// A pinned tab isn't reused: the next thing opened starts its own tab
+    /// instead of replacing it. Editing is the usual reason — that's what
+    /// separates "I glanced at this" from "I'm working here" — but it isn't
+    /// the only one. A terminal is work from the moment it exists, whether or
+    /// not anything has been typed into it.
+    ///
+    /// Cheap and idempotent: call it on every keystroke if that's simplest.
+    public func pin(_ id: NodeID) { backend?.pin(id) }
 
     /// Report changes that happened outside the mutation path — an action created a
     /// file, an editor saved bytes, a provider observed an external edit. The host
@@ -218,7 +221,7 @@ public protocol GraphBackend: AnyObject {
     func canApply(_ mutation: GraphMutation) -> Bool
     func beginRename(_ id: NodeID)
     func notify(_ changes: [NodeChange])
-    func markEdited(_ id: NodeID)
+    func pin(_ id: NodeID)
     func requestChildren(of id: NodeID)
     func requestMoreChildren(of id: NodeID)
     func requestRelated(of id: NodeID)

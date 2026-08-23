@@ -175,7 +175,7 @@ struct TypstCanvas: View {
             // Taking the disk version leaves text == saved, and following a
             // file is not editing it.
             guard dirty else { return }
-            host.markEdited(nodeID)   // this tab is work now, not a preview
+            host.pin(nodeID)          // this tab is work now, not a preview
             if mode.autosaves { scheduleAutosave() }
         }
     }
