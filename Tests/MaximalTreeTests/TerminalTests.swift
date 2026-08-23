@@ -67,11 +67,45 @@ import Foundation
         #expect(store.ordered.isEmpty)
     }
 
-    /// A session node from a previous run names a shell that no longer
-    /// exists; the provider must say so rather than inventing one.
-    @Test func aStaleSessionNodeResolvesToNothing() async throws {
-        let id = try #require(NodeID(TerminalRef.sessionURI(id: UUID(), directory: "/tmp")))
-        #expect(await TerminalProvider().node(for: id) == nil)
+    /// A terminal the workspace remembered from a previous run comes back.
+    ///
+    /// The shell itself cannot outlive the app, but the node can: its uri
+    /// names a directory, which is all that is needed to put the same terminal
+    /// back. It keeps its id, because the workspace remembers this node as one
+    /// of its roots and a fresh id would leave that entry pointing at nothing.
+    @Test func aTerminalFromAPreviousRunIsRestored() async throws {
+        let id = try #require(NodeID(TerminalRef.sessionURI(id: UUID(),
+                                                            directory: "/tmp")))
+        let node = await TerminalProvider().node(for: id)
+
+        #expect(node?.id == id, "the restored terminal changed identity")
+        #expect(node?.type == TypeID("terminal.session"))
+        let session = try #require(TerminalSessions.shared.session(for: id))
+        #expect(session.directory == "/tmp")
+        TerminalSessions.shared.close(id)
+    }
+
+    /// Restoring is cheap on purpose: a workspace full of terminals must not
+    /// spawn a screenful of shells at launch. The shell starts when the
+    /// terminal is first shown.
+    @Test func restoringDoesNotStartAShell() throws {
+        let store = makeStore()
+        let id = try #require(NodeID(TerminalRef.sessionURI(id: UUID(),
+                                                            directory: "/tmp")))
+        let session = store.restore(id: id, directory: "/tmp")
+        #expect(!session.view.hasLiveSurface, "restoring started a shell")
+    }
+
+    /// Restoring the same node twice is one terminal, not two — the provider
+    /// is asked for a node far more often than once.
+    @Test func restoringIsIdempotent() throws {
+        let store = makeStore()
+        let id = try #require(NodeID(TerminalRef.sessionURI(id: UUID(),
+                                                            directory: "/tmp")))
+        let first = store.restore(id: id, directory: "/tmp")
+        let second = store.restore(id: id, directory: "/tmp")
+        #expect(first === second)
+        #expect(store.ordered == [id])
     }
 
     /// The terminal reports its own title and pwd as programs run and the

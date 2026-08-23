@@ -24,11 +24,15 @@ struct TerminalProvider: NodeProvider {
                         hasChildren: !TerminalSessions.shared.ordered.isEmpty)
         }
         guard TerminalRef.isSession(id) else { return nil }
-        guard let session = TerminalSessions.shared.session(for: id) else {
-            // The shell is gone (closed, or this is a stale id from a previous
-            // run). The host drops the node rather than showing a dead one.
-            return nil
-        }
+        // Not in the store: either this is the first look at a node the
+        // workspace remembered from a previous run, or the terminal was
+        // closed. The uri carries the directory, so the first case can be put
+        // back — no shell starts until it is shown.
+        let session = TerminalSessions.shared.session(for: id)
+            ?? TerminalRef.directory(of: id).map {
+                TerminalSessions.shared.restore(id: id, directory: $0)
+            }
+        guard let session else { return nil }
         var attributes = Attributes()
         attributes["directory"] = .string(session.directory)
         attributes["started"] = .date(session.created)

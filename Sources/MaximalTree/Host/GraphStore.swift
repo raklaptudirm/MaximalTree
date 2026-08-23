@@ -273,8 +273,12 @@ final class GraphStore: GraphBackend {
                 context._invalidateChildren(of: to)   // descendant URIs changed
                 ingestNode(to)
             case .removed(let id):
+                // A removed *root* has to leave the workspace too, or it comes
+                // back on the next launch having been closed on this one.
+                let wasRoot = context.roots.contains(id)
                 nav.remove(id)
                 context._remove(id)
+                if wasRoot { onRootsChanged?() }
             case .childrenChanged(let parent):
                 context._invalidateChildren(of: parent)
             case .modified(let id):

@@ -224,6 +224,26 @@ private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider
         try await waitUntil { provider.continuationBox.terminated }
     }
 
+    /// A root that is removed has to leave the workspace as well, or closing
+    /// it on one run brings it back on the next.
+    @Test func removingARootReportsThatRootsChanged() async throws {
+        let context = HostContext()
+        let registry = Registry()
+        registry.register(provider: PagingProvider())
+        let store = GraphStore(context: context, registry: registry, nav: NavigationModel())
+        var changes = 0
+        store.onRootsChanged = { changes += 1 }
+
+        store.mount("stub://root")
+        let root = try #require(NodeID("stub://root"))
+        let afterMount = changes
+
+        store.notify([.removed(root)])
+
+        #expect(!context.roots.contains(root))
+        #expect(changes > afterMount, "the workspace was never told the root went away")
+    }
+
     @Test func nonStreamingRootsAreSimplyNotWatched() throws {
         let context = HostContext()
         let registry = Registry()

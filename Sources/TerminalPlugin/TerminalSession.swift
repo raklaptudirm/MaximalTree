@@ -136,6 +136,26 @@ final class TerminalSessions {
         return session
     }
 
+    /// Bring back a terminal the app used to have.
+    ///
+    /// A shell can't outlive the process that spawned it, but a terminal *node*
+    /// can: its uri names a directory, and that is enough to put the same
+    /// terminal back where it was after a relaunch. The identity is kept
+    /// deliberately — the workspace remembers this node as one of its roots,
+    /// and a new id would leave that entry pointing at nothing.
+    ///
+    /// No shell starts here. The surface — and with it the process — comes up
+    /// when the terminal is first shown, so restoring a workspace full of them
+    /// costs a few objects rather than a screenful of shells.
+    @discardableResult
+    func restore(id: NodeID, directory: String) -> TerminalSession {
+        if let existing = sessions[id] { return existing }
+        let session = TerminalSession(id: id, directory: directory)
+        sessions[id] = session
+        ordered.append(id)
+        return session
+    }
+
     /// End a terminal: the surface is freed, which is what kills the shell.
     func close(_ id: NodeID) {
         guard let session = sessions.removeValue(forKey: id) else { return }
