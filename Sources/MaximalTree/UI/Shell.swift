@@ -184,32 +184,13 @@ struct InspectorPane: View {
     var body: some View {
         if let id = subject, let node = host.node(id) {
             let sections = model.store?.inspectors(for: node) ?? []
-            let actions = model.actionGroups(for: .inspector).flatMap(\.actions)
-            if sections.isEmpty && actions.isEmpty {
+            if sections.isEmpty {
                 ContentUnavailableView("No Inspector", systemImage: "sidebar.right")
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(sections.enumerated()), id: \.offset) { _, section in
                             section.contribution.make(section.id, host)
-                        }
-                        // Host-provided: what you can *do* with this node belongs next
-                        // to what it *is*.
-                        if !actions.isEmpty {
-                            Form {
-                                Section("Actions") {
-                                    ForEach(actions) { action in
-                                        Button { model.run(action) } label: {
-                                            if let image = action.systemImage {
-                                                Label(action.title, systemImage: image)
-                                            } else {
-                                                Text(action.title)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            .formStyle(.grouped)
                         }
                     }
                 }
