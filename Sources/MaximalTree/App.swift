@@ -294,6 +294,18 @@ final class AppModel {
     /// model case: any provider that supports `.rename` (filesystem today,
     /// bookmarks or branches tomorrow) gets the sidebar's inline-rename UI, the
     /// menu item, the shortcut, and the palette entry without writing any UI.
+    /// The host's own inspector section, shown for every node. High priority
+    /// so it leads: what a thing *is* comes before what any one plugin has to
+    /// say about it.
+    private func registerCoreInspector(with registry: Registry) {
+        registry.register(inspector: InspectorContribution(
+            priority: 1000,
+            matches: { _ in true }
+        ) { id, host in
+            AnyView(NodeInspector(nodeID: id).environment(host))
+        })
+    }
+
     private func registerCoreActions(with registry: Registry) {
         registry.register(action: Action(
             id: "core.rename",
@@ -316,6 +328,7 @@ final class AppModel {
         guard store == nil else { return }
         // Host-owned actions register first so they lead every action list.
         registerCoreActions(with: pluginHost.registry)
+        registerCoreInspector(with: pluginHost.registry)
         // Under XCTest the test bundle compiles the plugin's sources directly; don't
         // also dlopen the .bundle into the same process, or the @objc principal class
         // collides. Tests exercise provider logic without the running host.

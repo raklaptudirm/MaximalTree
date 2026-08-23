@@ -60,6 +60,48 @@ import Foundation
     }
 }
 
+/// Every node gets an inspector, whoever provides it.
+@MainActor
+@Suite struct NodeInspectorTests {
+    private func makeApp() -> (AppModel, HostContext) {
+        let host = HostContext()
+        let model = AppModel(host: host, workspaceFile: FileManager.default
+            .temporaryDirectory
+            .appendingPathComponent("mt-workspace-\(UUID().uuidString).json"))
+        model.start()
+        return (model, host)
+    }
+
+    /// The bug: name, kind and identity lived in the FileSystem plugin, so a
+    /// node from any other plugin — or from one that wrote no inspector at all
+    /// — had nothing to show.
+    @Test func aNodeWithNoPluginInspectorStillHasOne() throws {
+        let (model, host) = makeApp()
+        // A type no plugin claims: nothing but the host can describe it.
+        let node = Node(id: try #require(NodeID("stub://thing")),
+                        type: TypeID("nobody.owns.this"), label: "Thing")
+        host._ingest(node)
+
+        let sections = try #require(model.store?.inspectors(for: node))
+        #expect(!sections.isEmpty, "a node with no plugin section shows nothing at all")
+        #expect(sections.allSatisfy { $0.id == node.id })
+    }
+
+    /// And it leads: what a thing is comes before what one plugin says about it.
+    @Test func theHostsSectionComesFirst() throws {
+        let (model, host) = makeApp()
+        FileSystemPlugin().register(with: model.pluginHost.registry)
+        let file = Node(id: try #require(NodeID("file:///tmp/a.txt")),
+                        type: TypeID("file.item"), label: "a.txt")
+        host._ingest(file)
+
+        let sections = try #require(model.store?.inspectors(for: file))
+        #expect(sections.count >= 2, "the file plugin's own section is missing")
+        #expect(sections.first?.contribution.priority == 1000,
+                "a plugin section came before the node's own identity")
+    }
+}
+
 /// The point of it all: a repository is a directory, and gets to act like one.
 @MainActor
 @Suite struct NodeIdentityTests {

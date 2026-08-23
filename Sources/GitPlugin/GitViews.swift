@@ -213,14 +213,6 @@ struct GitInspector: View {
                 if let date = gitDate(node) { LabeledContent("Date", value: date) }
                 if let status = gitString(node, "status") { LabeledContent("Status", value: status) }
             }
-            let related = host.related(of: nodeID)
-            if !related.isEmpty {
-                Section("References") {
-                    ForEach(related) { r in
-                        Button(r.label) { host.openURI(r.target) }
-                    }
-                }
-            }
         }
         .formStyle(.grouped)
     }

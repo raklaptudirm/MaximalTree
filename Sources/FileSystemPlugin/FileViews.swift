@@ -100,19 +100,14 @@ private struct QuickLookPreview: NSViewRepresentable {
 struct FileInspector: View {
     let nodeID: NodeID
     @Environment(HostContext.self) private var host
-    @State private var draftName = ""
-    @FocusState private var nameFocused: Bool
 
     var body: some View {
         let node = host.node(nodeID)
         Form {
-            Section("Node") {
-                // Editable: committing a new name applies a rename mutation. The
-                // inspector doubles as the manipulation surface.
-                TextField("Name", text: $draftName)
-                    .focused($nameFocused)
-                    .onSubmit(commitRename)
-                LabeledContent("Type", value: node?.type.raw ?? "—")
+            // Name, kind, identity and references belong to every node and
+            // are the host's section now (see NodeInspector). What's left is
+            // what only a file has.
+            Section("File") {
                 if let uti = node?.uti { LabeledContent("Content Type", value: uti) }
                 if let url = nodeID.fileURL {
                     LabeledContent("Location") {
@@ -132,36 +127,15 @@ struct FileInspector: View {
                         }
                     }
                 }
-            }
-            if let size = sizeString(node) {
-                Section("File") {
+                if let size = sizeString(node) {
                     LabeledContent("Size", value: size)
-                    if let modified = modifiedString(node) {
-                        LabeledContent("Modified", value: modified)
-                    }
                 }
-            }
-            let related = host.related(of: nodeID)
-            if !related.isEmpty {
-                Section("References") {
-                    ForEach(related) { r in
-                        Button(r.label) { host.openURI(r.target) }
-                    }
+                if let modified = modifiedString(node) {
+                    LabeledContent("Modified", value: modified)
                 }
             }
         }
         .formStyle(.grouped)
-        .onAppear { draftName = host.node(nodeID)?.label ?? "" }
-        .onChange(of: nodeID) { draftName = host.node(nodeID)?.label ?? "" }
-        .onChange(of: host.node(nodeID)?.label) { _, newValue in
-            if !nameFocused { draftName = newValue ?? "" }   // don't clobber while editing
-        }
-    }
-
-    private func commitRename() {
-        let trimmed = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != host.node(nodeID)?.label else { return }
-        host.apply(.rename(nodeID, to: trimmed))
     }
 
     private func sizeString(_ node: Node?) -> String? {
