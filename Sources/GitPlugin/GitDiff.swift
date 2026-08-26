@@ -55,6 +55,27 @@ enum GitDiff {
         return parse(output)
     }
 
+    /// What staging this file recorded: HEAD against the index.
+    static func staged(repo: String, path: String? = nil) -> [File] {
+        diff(repo: repo, arguments: ["--cached"], path: path)
+    }
+
+    /// What staging *missed*: the index against the file on disk.
+    ///
+    /// This is the diff between the version `git commit` would record and the
+    /// one in front of you — edits made after staging, which are easy to lose
+    /// track of and are exactly what a staged-file view should be able to show.
+    static func unstaged(repo: String, path: String? = nil) -> [File] {
+        diff(repo: repo, arguments: [], path: path)
+    }
+
+    private static func diff(repo: String, arguments: [String], path: String?) -> [File] {
+        var command = ["diff", "--no-color", "--no-ext-diff", "-M"] + arguments
+        if let path { command += ["--", path] }
+        guard let output = Git.run(repo, command) else { return [] }
+        return parse(output)
+    }
+
     /// Parse `git diff`/`git show` output. Unknown lines are skipped rather
     /// than guessed at: this runs on whatever the installed git prints, and a
     /// diff that renders a bit less is better than one that renders wrong.

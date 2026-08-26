@@ -129,6 +129,85 @@ struct DiffStat: View {
     }
 }
 
+/// Canvas for a file on one side of the index.
+///
+/// Which diff is shown follows from which node was opened, rather than from a
+/// control inside the canvas: a staged file shows HEAD against the index —
+/// what committing would record — and an unstaged one shows the index against
+/// the file on disk, what committing would miss. A file staged and then edited
+/// again appears in both places, which is the clearest way to say that it has
+/// two different sets of changes.
+struct WorkingCopyFileCanvas: View {
+    let nodeID: NodeID
+    @Environment(HostContext.self) private var host
+
+    @State private var file: GitDiff.File?
+    @State private var loaded: NodeID?
+
+    private var isStaged: Bool { GitRef(uri: nodeID.uri)?.kind == .stagedFile }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            Divider()
+            if loaded != nodeID {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let file {
+                ScrollView(.vertical) {
+                    DiffView(file: file).padding(.vertical, 4)
+                }
+            } else {
+                ContentUnavailableView(
+                    isStaged ? "Nothing Staged" : "No Unstaged Changes",
+                    systemImage: "equal.circle",
+                    description: Text(explanation))
+            }
+        }
+        .task(id: nodeID) {
+            loaded = nil
+            file = await Self.load(nodeID)
+            loaded = nodeID
+        }
+    }
+
+    private var explanation: String {
+        isStaged
+            ? "What committing would record — HEAD against the index."
+            : "What committing would miss — the index against the file on disk."
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            NodeIconView(host.node(nodeID)?.icon).frame(width: 16)
+            Text(host.node(nodeID)?.label ?? nodeID.uri)
+                .font(.headline)
+                .lineLimit(1)
+                .truncationMode(.head)
+            Text(isStaged ? "Staged" : "Unstaged")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(.quaternary, in: Capsule())
+            Spacer(minLength: 8)
+            if let file { DiffStat(file: file) }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .help(explanation)
+    }
+
+    static func load(_ nodeID: NodeID) async -> GitDiff.File? {
+        guard let ref = GitRef(uri: nodeID.uri), let path = ref.id else { return nil }
+        let staged = ref.kind == .stagedFile
+        return await Task.detached(priority: .userInitiated) {
+            staged
+                ? GitDiff.staged(repo: ref.repo, path: path).first
+                : GitDiff.unstaged(repo: ref.repo, path: path).first
+        }.value
+    }
+}
+
 /// Canvas for one file inside a commit: what this commit did to it.
 ///
 /// This is where a changed file wants to lead. Before, opening one landed on

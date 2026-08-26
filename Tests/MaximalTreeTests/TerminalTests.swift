@@ -498,23 +498,31 @@ import Foundation
         defer { unsetenv("GIT_EDITOR") }
         GhosttyApp.scrubHostEnvironment()
 
+        // The terminal echoes what is typed, and that echo contains the
+        // literal `$GIT_EDITOR`. Marking the *output* differently is what lets
+        // the answer be told apart from the question.
         let store = TerminalSessions()
         let session = store.create(directory: NSTemporaryDirectory(),
-                                   initialInput: "echo \"seen=[$GIT_EDITOR]\"\n")
+                                   initialInput: "echo \"seen<$GIT_EDITOR>end\"\n")
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 400),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = session.view
         window.orderFrontRegardless()
         defer { store.close(session.id); window.orderOut(nil) }
 
-        var screen = ""
-        for _ in 0..<40 {
+        var answers: [String] = []
+        for _ in 0..<75 {
             try? await Task.sleep(for: .milliseconds(200))
-            screen = session.view.visibleText() ?? ""
-            if screen.contains("seen=[") { break }
+            let screen = session.view.visibleText() ?? ""
+            answers = screen.split(separator: "\n")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                // The command as typed still mentions the variable; the shell's
+                // answer never does.
+                .filter { $0.contains("seen<") && !$0.contains("$") }
+            if !answers.isEmpty { break }
         }
-        #expect(screen.contains("seen=[]"),
-                "the shell inherited it:\n\(screen.suffix(400))")
+        let answer = try #require(answers.first, "the shell never answered")
+        #expect(answer.contains("seen<>end"), "the shell inherited it: \(answer)")
     }
 
     /// A real terminal has to run full-screen programs, not just echo text:

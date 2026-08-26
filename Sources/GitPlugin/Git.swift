@@ -12,8 +12,12 @@ import MaximalTreeKit
 /// exactly what `NodeID` canonicalization uses — so the form is stable/idempotent.
 struct GitRef: Equatable {
     enum Kind: String {
-        case repo, branches, commits, branch, commit
+        case repo, branches, commits, branch, commit, staged, unstaged
         case commitFile = "commitfile"
+        /// A file with staged changes: what committing would record.
+        case stagedFile = "stagedfile"
+        /// A file changed since it was staged: what committing would miss.
+        case unstagedFile = "unstagedfile"
     }
 
     let repo: String
@@ -144,6 +148,15 @@ struct GitProvider: NodeProvider {
             name = "Branches"; icon = NodeIcon("arrow.triangle.branch", tint: .green); hasChildren = true
         case .commits:
             name = "Commits"; icon = NodeIcon("clock", tint: .blue); hasChildren = true
+        case .staged:
+            name = "Staged"
+            icon = NodeIcon("tray.full", tint: .yellow)
+            // Cheap and honest: nothing staged means no disclosure triangle.
+            hasChildren = !changedPaths(ref.repo, staged: true).isEmpty
+        case .unstaged:
+            name = "Unstaged"
+            icon = NodeIcon("pencil.circle", tint: .orange)
+            hasChildren = !changedPaths(ref.repo, staged: false).isEmpty
         case .branch:
             name = ref.id ?? "branch"; icon = NodeIcon("arrow.triangle.branch", tint: .green)
         case .commit:
@@ -152,6 +165,9 @@ struct GitProvider: NodeProvider {
             hasChildren = true    // changed files
         case .commitFile:
             name = ref.commitAndPath?.path ?? (ref.id ?? "")
+            icon = NodeIcon("doc.text", tint: .secondary)
+        case .stagedFile, .unstagedFile:
+            name = ref.id ?? ""
             icon = NodeIcon("doc.text", tint: .secondary)
         }
         return Node(id: id, type: ref.typeID, label: name, icon: icon,
@@ -172,9 +188,15 @@ struct GitProvider: NodeProvider {
     static func children(_ ref: GitRef, cursor: Cursor? = nil) -> Page<Node> {
         switch ref.kind {
         case .repo:
-            let nodes = [GitRef(repo: ref.repo, kind: .branches),
+            let nodes = [GitRef(repo: ref.repo, kind: .staged),
+                         GitRef(repo: ref.repo, kind: .unstaged),
+                         GitRef(repo: ref.repo, kind: .branches),
                          GitRef(repo: ref.repo, kind: .commits)].compactMap(makeNode)
             return Page(items: nodes)
+        case .staged:
+            return Page(items: changedFiles(ref.repo, staged: true))
+        case .unstaged:
+            return Page(items: changedFiles(ref.repo, staged: false))
         case .commits:
             // The cursor is our own token: the offset into the log.
             return logCommits(ref.repo, skip: cursor.flatMap { Int($0.token) } ?? 0)
@@ -182,7 +204,7 @@ struct GitProvider: NodeProvider {
             return Page(items: branches(ref.repo))
         case .commit:
             return Page(items: changedFiles(ref.repo, sha: ref.id ?? ""))
-        case .branch, .commitFile:
+        case .branch, .commitFile, .stagedFile, .unstagedFile:
             return Page(items: [])
         }
     }
@@ -268,8 +290,56 @@ struct GitProvider: NodeProvider {
             let fileURL = URL(fileURLWithPath: ref.repo).appendingPathComponent(path)
             return [Related(label: "working tree file", target: fileURL.absoluteString)]
 
+        case .stagedFile, .unstagedFile:
+            guard let path = ref.id else { return [] }
+            let fileURL = URL(fileURLWithPath: ref.repo).appendingPathComponent(path)
+            var references = [Related(label: "working tree file",
+                                      target: fileURL.absoluteString)]
+            // The file's other side of the index, when it has one: staged and
+            // then edited again is the case worth being able to cross to.
+            let otherKind: GitRef.Kind = ref.kind == .stagedFile ? .unstagedFile : .stagedFile
+            let otherStaged = otherKind == .stagedFile
+            if changedPaths(ref.repo, staged: otherStaged).contains(where: { $0.path == path }) {
+                references.append(Related(
+                    label: otherStaged ? "staged version" : "unstaged changes",
+                    target: GitRef(repo: ref.repo, kind: otherKind, id: path).uri))
+            }
+            return references
+
         default:
             return []
+        }
+    }
+
+    /// The two sides of the index.
+    ///
+    /// Staged is HEAD against the index — what `git commit` would record.
+    /// Unstaged is the index against the files on disk — what it would miss.
+    /// The same file can appear in both, having been staged and then edited
+    /// again, which is exactly why they are separate lists.
+    static func changedPaths(_ repo: String,
+                             staged: Bool) -> [(status: String, path: String)] {
+        var arguments = ["diff", "--name-status", "-M"]
+        if staged { arguments.append("--cached") }
+        guard let out = Git.run(repo, arguments) else { return [] }
+        return out.split(separator: "\n").compactMap { line in
+            let parts = line.components(separatedBy: "\t")
+            guard parts.count >= 2, let path = parts.last else { return nil }
+            return (String(parts[0].prefix(1)), path)
+        }
+    }
+
+    static func changedFiles(_ repo: String, staged: Bool) -> [Node] {
+        let kind: GitRef.Kind = staged ? .stagedFile : .unstagedFile
+        return changedPaths(repo, staged: staged).compactMap { entry in
+            guard let id = GitRef(repo: repo, kind: kind, id: entry.path).nodeID
+            else { return nil }
+            var attrs = Attributes()
+            attrs["status"] = .string(entry.status)
+            return Node(id: id, type: TypeID("git.\(kind.rawValue)"),
+                        label: entry.path,
+                        icon: statusIcon(entry.status),
+                        attributes: attrs, hasChildren: false)
         }
     }
 
@@ -319,6 +389,11 @@ final class GitPlugin: NSObject, Plugin {
         registry.register(canvas: CanvasContribution(priority: 10,
             matches: { $0.type == TypeID("git.commit") }) { id, host in
                 AnyView(CommitCanvas(nodeID: id).environment(host))
+        })
+        registry.register(canvas: CanvasContribution(priority: 10,
+            matches: { $0.type == TypeID("git.stagedfile")
+                    || $0.type == TypeID("git.unstagedfile") }) { id, host in
+                AnyView(WorkingCopyFileCanvas(nodeID: id).environment(host))
         })
         // A changed file's canvas is its diff. Without this it fell through to
         // the generic list canvas, which had nothing to list.

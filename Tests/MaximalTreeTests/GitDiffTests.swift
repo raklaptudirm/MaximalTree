@@ -233,3 +233,140 @@ import Foundation
         #expect(added.deletions == 0)
     }
 }
+
+/// The index, as nodes and as two diffs.
+@Suite struct GitStagedTests {
+    /// A repo with `a.txt` committed, then edited and staged, then edited
+    /// *again* without staging — so the index and the working tree differ, and
+    /// each of the two diffs has something different to say.
+    private func makeRepo() throws -> (path: String, directory: URL)? {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mt-staged-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let repo = directory.path
+        let identity = ["-c", "user.email=t@e.com", "-c", "user.name=T"]
+        guard Git.run(repo, ["init", "-q"]) != nil else { return nil }
+
+        let file = directory.appendingPathComponent("a.txt")
+        try "one\ntwo\n".write(to: file, atomically: true, encoding: .utf8)
+        _ = Git.run(repo, ["add", "."])
+        _ = Git.run(repo, identity + ["commit", "-q", "-m", "first"])
+
+        try "one\nSTAGED\n".write(to: file, atomically: true, encoding: .utf8)
+        _ = Git.run(repo, ["add", "a.txt"])
+        // Edited after staging: this is the part that is easy to lose.
+        try "one\nSTAGED\nWORKING\n".write(to: file, atomically: true, encoding: .utf8)
+        return (repo, directory)
+    }
+
+    /// The same file, staged and then edited again, belongs in both lists —
+    /// it has two different sets of changes, and merging them would hide one.
+    @Test func aFileEditedAfterStagingIsInBothSections() throws {
+        guard let repo = try makeRepo() else { return }
+        defer { try? FileManager.default.removeItem(at: repo.directory) }
+
+        let staged = GitProvider.changedFiles(repo.path, staged: true)
+        #expect(staged.map(\.label) == ["a.txt"])
+        #expect(staged.first?.type == TypeID("git.stagedfile"))
+
+        let unstaged = GitProvider.changedFiles(repo.path, staged: false)
+        #expect(unstaged.map(\.label) == ["a.txt"])
+        #expect(unstaged.first?.type == TypeID("git.unstagedfile"))
+        #expect(staged.first?.id != unstaged.first?.id,
+                "the two sides of the index share a node id")
+    }
+
+    /// A repo offers both sections, and each says whether it has anything.
+    @Test func theSectionsReportWhetherTheyreEmpty() throws {
+        guard let repo = try makeRepo() else { return }
+        defer { try? FileManager.default.removeItem(at: repo.directory) }
+
+        let staged = try #require(GitProvider.makeNode(
+            GitRef(repo: repo.path, kind: .staged)))
+        let unstaged = try #require(GitProvider.makeNode(
+            GitRef(repo: repo.path, kind: .unstaged)))
+        #expect(staged.label == "Staged" && staged.hasChildren)
+        #expect(unstaged.label == "Unstaged" && unstaged.hasChildren)
+
+        // Stage everything: the unstaged side empties, the staged side doesn't.
+        _ = Git.run(repo.path, ["add", "a.txt"])
+        #expect(GitProvider.changedFiles(repo.path, staged: false).isEmpty)
+        #expect(!GitProvider.changedFiles(repo.path, staged: true).isEmpty)
+        #expect(try #require(GitProvider.makeNode(
+            GitRef(repo: repo.path, kind: .unstaged))).hasChildren == false)
+    }
+
+    /// A file with changes on both sides can be crossed to from either.
+    @Test func eachSidePointsAtTheOther() throws {
+        guard let repo = try makeRepo() else { return }
+        defer { try? FileManager.default.removeItem(at: repo.directory) }
+
+        let fromStaged = GitProvider.related(
+            GitRef(repo: repo.path, kind: .stagedFile, id: "a.txt"))
+        #expect(fromStaged.contains { $0.label == "unstaged changes" },
+                "\(fromStaged.map(\.label))")
+
+        let fromUnstaged = GitProvider.related(
+            GitRef(repo: repo.path, kind: .unstagedFile, id: "a.txt"))
+        #expect(fromUnstaged.contains { $0.label == "staged version" },
+                "\(fromUnstaged.map(\.label))")
+    }
+
+    @Test func nothingStagedIsNoChildren() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mt-staged-empty-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        guard Git.run(directory.path, ["init", "-q"]) != nil else { return }
+
+        #expect(GitProvider.changedFiles(directory.path, staged: true).isEmpty)
+        let node = try #require(GitProvider.makeNode(
+            GitRef(repo: directory.path, kind: .staged)))
+        #expect(!node.hasChildren, "an empty index still offered a disclosure triangle")
+    }
+
+    /// The two diffs must not be the same diff. Staged is HEAD → index;
+    /// unstaged is index → working tree.
+    @Test func stagedAndUnstagedShowDifferentChanges() throws {
+        guard let repo = try makeRepo() else { return }
+        defer { try? FileManager.default.removeItem(at: repo.directory) }
+
+        let staged = try #require(GitDiff.staged(repo: repo.path, path: "a.txt").first)
+        #expect(staged.hunks.flatMap(\.lines).contains {
+            $0.kind == .added && $0.text == "STAGED"
+        }, "the staged diff doesn't show what was staged")
+        #expect(!staged.hunks.flatMap(\.lines).contains { $0.text == "WORKING" },
+                "the staged diff leaked an edit that was never staged")
+
+        let unstaged = try #require(GitDiff.unstaged(repo: repo.path, path: "a.txt").first)
+        #expect(unstaged.hunks.flatMap(\.lines).contains {
+            $0.kind == .added && $0.text == "WORKING"
+        }, "the unstaged diff doesn't show the edit made after staging")
+        #expect(!unstaged.hunks.flatMap(\.lines).contains {
+            $0.kind == .added && $0.text == "STAGED"
+        }, "the unstaged diff repeated what is already staged")
+    }
+
+    /// A file staged and left alone has nothing unstaged to show — the case
+    /// where the canvas should say so rather than draw an empty diff.
+    @Test func aCleanlyStagedFileHasNoUnstagedChanges() throws {
+        guard let repo = try makeRepo() else { return }
+        defer { try? FileManager.default.removeItem(at: repo.directory) }
+        // Stage the later edit too, so index and working tree agree.
+        _ = Git.run(repo.path, ["add", "a.txt"])
+
+        #expect(GitDiff.unstaged(repo: repo.path, path: "a.txt").isEmpty)
+        #expect(!GitDiff.staged(repo: repo.path, path: "a.txt").isEmpty)
+    }
+
+    /// Both kinds point at the file on disk, which is a different thing from
+    /// either version git is holding.
+    @Test func aStagedFilePointsAtTheWorkingTreeFile() throws {
+        guard let repo = try makeRepo() else { return }
+        defer { try? FileManager.default.removeItem(at: repo.directory) }
+
+        let related = GitProvider.related(GitRef(repo: repo.path, kind: .stagedFile, id: "a.txt"))
+        #expect(related.first?.label == "working tree file")
+        #expect(related.first?.target.hasSuffix("a.txt") == true)
+    }
+}
