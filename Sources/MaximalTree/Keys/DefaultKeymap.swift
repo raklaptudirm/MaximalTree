@@ -32,8 +32,12 @@ enum DefaultKeymap {
         map.bind("g g", to: "explorer.first")
         map.bind("G", to: "explorer.last")
 
-        // Modes and the palette.
-        map.bind("i", to: "mode.insert")
+        // Focus, the way Vim moves between windows.
+        map.bind("i", to: "editor.focus")
+        map.bind("SPC w l", to: "editor.focus")
+        map.bind("SPC w h", to: "explorer.focus")
+        map.bind("C-w l", to: "editor.focus")
+        map.bind("C-w h", to: "explorer.focus")
         map.bind("SPC SPC", to: "palette.toggle")
         map.bind("M-x", to: "palette.toggle")
         map.bind("/", to: "palette.toggle")

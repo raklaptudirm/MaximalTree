@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import MaximalEditorKit
 
 /// Feeds every key press to the modal layer before AppKit sees it.
 ///
@@ -54,8 +55,24 @@ struct KeyCapture: ViewModifier {
 
             @MainActor
             private static func handle(_ chord: KeyChord, model: AppModel) -> Bool {
-                // While a text view has the keyboard, typing is typing.
-                let editing = NSApp.keyWindow?.firstResponder is NSTextView
+                let responder = NSApp.keyWindow?.firstResponder
+                // Not just text: a terminal, a web page, anything with its own
+                // idea about the keyboard.
+                let editing = KeyFocus.takesKeys(responder)
+
+                // The leader reaches through the editor. In the editor's own
+                // normal mode SPC is barely a motion, and giving it up there
+                // is what lets one leader key drive the whole app rather than
+                // everywhere except the place the work happens.
+                if let editor = KeyFocus.focusedEditor(), editor.vim.mode == .normal,
+                   chord.key == "SPC" || !model.keys.pending.isEmpty {
+                    switch model.keys.handle(chord, editing: false) {
+                    case .consumed, .pendingSequence: return true
+                    case .passed: return false
+                    }
+                }
+
+                // Otherwise, while something is taking text, typing is typing.
                 switch model.keys.handle(chord, editing: editing) {
                 case .consumed, .pendingSequence: return true
                 case .passed: return false
@@ -85,11 +102,12 @@ struct KeyHUD: View {
     var body: some View {
         let keys = model.keys
         HStack(alignment: .bottom, spacing: 10) {
-            Text(keys.mode.label)
+            Text(displayedMode)
                 .font(.caption.monospaced().weight(.bold))
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
-                .background(keys.mode == .normal ? Color.accentColor : Color.orange,
+                .background(displayedMode == "NORMAL" ? Color.accentColor
+                                : displayedMode == "VISUAL" ? Color.purple : Color.orange,
                             in: RoundedRectangle(cornerRadius: 5))
                 .foregroundStyle(.white)
 
@@ -126,6 +144,19 @@ struct KeyHUD: View {
             }
         }
         .padding(12)
+    }
+
+    /// The mode actually in force.
+    ///
+    /// When the editor has the keyboard it is the one deciding what keys mean,
+    /// so its mode is the true one — an indicator that said NORMAL while the
+    /// editor was inserting would be worse than none.
+    private var displayedMode: String {
+        if let editor = NSApp.keyWindow?.firstResponder as? MaximalEditor.EditorTextView,
+           editor.vimEnabled {
+            return editor.vim.mode.label
+        }
+        return model.keys.mode.label
     }
 
     private func label(for binding: KeyBinding) -> String {

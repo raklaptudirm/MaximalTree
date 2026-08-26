@@ -172,6 +172,9 @@ public struct MaximalEditor: NSViewRepresentable {
     private let mathRenderer: EditorMathRenderer?
     private let completionProvider: EditorCompletionProvider?
     private let controller: EditorController?
+    /// Modal editing (see `VimEngine`). The mode is reported back so the app
+    /// can show which one is in force.
+    private let modalEditing: Bool
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -186,6 +189,7 @@ public struct MaximalEditor: NSViewRepresentable {
     public init(text: Binding<String>, fileURL: URL? = nil,
                 style: EditorStyle = .code(),
                 initialCursorLine: Int? = nil,
+                modalEditing: Bool = true,
                 tokenizer: EditorTokenizer? = nil,
                 mathRenderer: EditorMathRenderer? = nil,
                 completionProvider: EditorCompletionProvider? = nil,
@@ -198,6 +202,7 @@ public struct MaximalEditor: NSViewRepresentable {
         self.mathRenderer = mathRenderer
         self.completionProvider = completionProvider
         self.controller = controller
+        self.modalEditing = modalEditing
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -211,6 +216,7 @@ public struct MaximalEditor: NSViewRepresentable {
 
         textView.textDelegate = context.coordinator
         context.coordinator.textView = textView
+        (textView as? EditorTextView)?.vimEnabled = modalEditing
         context.coordinator.isDark = colorScheme == .dark
         context.coordinator.lastStyle = style
         controller?.textView = textView
@@ -307,8 +313,59 @@ public struct MaximalEditor: NSViewRepresentable {
     /// style closes that circuit (its layout leaves the editor's width
     /// negotiable, and math line heights land mid-flush), and AppKit's
     /// feedback-loop detector aborts the app. No intrinsic size, no circuit.
-    final class EditorTextView: STTextView {
-        override var intrinsicContentSize: NSSize {
+    /// Public so the app can ask the focused editor which mode it is in —
+    /// while it has the keyboard, its mode is the one that matters.
+    public final class EditorTextView: STTextView {
+        /// Modal editing. Present but idle until `vimEnabled` is set, so a
+        /// plain text field stays a plain text field.
+        public let vim = VimEngine()
+        public var vimEnabled = false
+        /// Told whenever the mode changes, so the app's indicator agrees with
+        /// what the editor is actually doing.
+        var onModeChange: ((VimMode) -> Void)?
+
+        /// Keys reach the modal layer before AppKit turns them into text. In
+        /// insert mode the engine declines them and typing is typing.
+        public override func keyDown(with event: NSEvent) {
+            guard vimEnabled, let key = Self.vimKey(for: event) else {
+                super.keyDown(with: event)
+                return
+            }
+            let caret = textSelection.location
+            let before = vim.mode
+            guard let outcome = vim.handle(key, text: text ?? "", caret: caret) else {
+                // In insert mode the engine declines everything, and typing is
+                // typing. In normal mode an unhandled key is swallowed rather
+                // than typed — otherwise every unbound press would leave a
+                // stray character in the buffer.
+                if vim.mode == .insert { super.keyDown(with: event) }
+                return
+            }
+            apply(outcome)
+            if vim.mode != before { onModeChange?(vim.mode) }
+        }
+
+        private func apply(_ outcome: VimOutcome) {
+            if let edit = outcome.edit {
+                // Through the text view, so undo and the highlighter see it.
+                insertText(edit.replacement, replacementRange: edit.range)
+            }
+            let length = (text as NSString?)?.length ?? 0
+            let caret = min(max(outcome.caret, 0), length)
+            textSelection = outcome.selection ?? NSRange(location: caret, length: 0)
+            scrollRangeToVisible(NSRange(location: caret, length: 0))
+        }
+
+        private static func vimKey(for event: NSEvent) -> VimKey? {
+            if event.keyCode == 53 { return VimKey("ESC") }
+            guard let characters = event.charactersIgnoringModifiers,
+                  !characters.isEmpty,
+                  !event.modifierFlags.contains(.command)
+            else { return nil }
+            return VimKey(characters, control: event.modifierFlags.contains(.control))
+        }
+
+        public override var intrinsicContentSize: NSSize {
             NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
         }
 
@@ -326,7 +383,7 @@ public struct MaximalEditor: NSViewRepresentable {
         /// laid out, which is the number the engine's `intrinsicContentSize`
         /// reports and the right floor here. Growth only, and only when
         /// wrapping is off — a wrapping editor must stay the width it's given.
-        override func setFrameSize(_ newSize: NSSize) {
+        public override func setFrameSize(_ newSize: NSSize) {
             var size = newSize
             if isHorizontallyResizable {
                 let content = textLayoutManager.usageBoundsForTextContainer.maxX

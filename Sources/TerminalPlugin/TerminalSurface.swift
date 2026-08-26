@@ -66,7 +66,18 @@ final class TerminalSurfaceView: NSView {
     /// `teardown` does that.
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        guard surface == nil, window != nil, let app = GhosttyApp.shared.app else { return }
+        createSurfaceIfReady()
+    }
+
+    /// A surface needs a real size before it exists.
+    ///
+    /// SwiftUI hands a view a zero frame before laying it out, and libghostty
+    /// given a zero-sized surface has no grid to render into — it dies rather
+    /// than draws. Waiting for a size costs nothing: the shell starts a
+    /// fraction later, when there is somewhere to show it.
+    private func createSurfaceIfReady() {
+        guard surface == nil, window != nil, bounds.width >= 1, bounds.height >= 1,
+              let app = GhosttyApp.shared.app else { return }
 
         var config = ghostty_surface_config_new()
         config.userdata = Unmanaged.passUnretained(self).toOpaque()
@@ -105,6 +116,9 @@ final class TerminalSurfaceView: NSView {
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
+        // First real size is also when a surface deferred for want of one
+        // can finally be made.
+        createSurfaceIfReady()
         syncSize()
     }
 

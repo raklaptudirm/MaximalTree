@@ -1,5 +1,7 @@
 import Testing
 import AppKit
+import SwiftUI
+@testable import MaximalEditorKit
 @testable import MaximalTreeKit
 @testable import MaximalTree
 
@@ -189,5 +191,119 @@ import AppKit
         _ = engine.handle(chord("f"), editing: false)
         #expect(engine.prefixLabel == "file")
         #expect(engine.continuations.map(\.chord.description) == ["s"])
+    }
+}
+
+
+/// Who has the keyboard.
+///
+/// The bug this exists for: the editor is not an NSTextView. STTextView is an
+/// NSView that implements text input itself, so the obvious check —
+/// `firstResponder is NSTextView` — is false while the caret is in the
+/// document, and the modal layer went on treating every `j` as a sidebar
+/// motion no matter where focus was.
+@MainActor
+@Suite struct KeyFocusTests {
+    @Test func theEditorCountsAsTakingText() {
+        let editor = MaximalEditor.EditorTextView(frame: .zero)
+        #expect(!(editor is NSTextView), "the premise of the bug: it is not an NSTextView")
+        #expect(KeyFocus.isTextInput(editor), "the editor was not recognised as text input")
+    }
+
+    @Test func ordinaryTextViewsAndFieldsCountToo() {
+        #expect(KeyFocus.isTextInput(NSTextView(frame: .zero)))
+        // A text field hands editing to a field editor, which is an NSTextView.
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 60),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        let field = NSTextField(string: "hi")
+        window.contentView = field
+        window.makeFirstResponder(field)
+        defer { window.orderOut(nil) }
+        #expect(KeyFocus.isTextInput(window.firstResponder))
+    }
+
+    @Test func nothingElseCounts() {
+        #expect(!KeyFocus.isTextInput(NSView(frame: .zero)))
+        #expect(!KeyFocus.isTextInput(nil))
+    }
+
+    /// The wider rule: anything focused that isn't the app's own chrome wants
+    /// the keyboard. Naming classes could never cover this — a terminal is a
+    /// plain NSView in a plugin the app cannot see, and typing into it was
+    /// impossible while the modal layer assumed it was chrome.
+    @Test func aFocusedCanvasViewKeepsItsKeys() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 200),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        let content = NSView(frame: .zero)
+        window.contentView = content
+        defer { window.orderOut(nil) }
+
+        // A real terminal surface: no text view, no protocol, no cooperation.
+        // Deliberately not put in the window — this is about how the view is
+        // classified, and attaching one would start a shell for no reason.
+        let terminal = TerminalSurfaceView(frame: NSRect(x: 0, y: 0, width: 80, height: 24))
+        #expect(KeyFocus.takesKeys(terminal, in: window),
+                "the terminal was treated as chrome, so its keys were stolen")
+
+        // The editor too, which is also not an NSTextView.
+        #expect(KeyFocus.takesKeys(MaximalEditor.EditorTextView(frame: .zero), in: window))
+    }
+
+    /// With nothing in particular focused, the keys are the app's — this is
+    /// what makes j and k move the tree.
+    @Test func chromeAndNothingLeaveTheKeysToTheApp() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 200),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        let content = NSHostingView(rootView: Text("chrome"))
+        window.contentView = content
+        defer { window.orderOut(nil) }
+
+        #expect(!KeyFocus.takesKeys(nil, in: window))
+        #expect(!KeyFocus.takesKeys(window, in: window))
+        #expect(!KeyFocus.takesKeys(content, in: window), "the content view is chrome")
+        // A SwiftUI hosting view anywhere in the tree is chrome as well.
+        let nested = NSHostingView(rootView: Text("row"))
+        content.addSubview(nested)
+        #expect(!KeyFocus.takesKeys(nested, in: window))
+    }
+
+    /// And anything can say so outright, for a view the shape rule would
+    /// otherwise call chrome.
+    @Test func aViewCanClaimTheKeyboardOutright() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 200),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = NSHostingView(rootView: Text("chrome"))
+        defer { window.orderOut(nil) }
+
+        let hosted = NSHostingView(rootView: Text("special"))
+        window.contentView?.addSubview(hosted)
+        #expect(!KeyFocus.takesKeys(hosted, in: window))
+        hosted.takesKeyboardInput = true
+        #expect(KeyFocus.takesKeys(hosted, in: window))
+    }
+
+    /// "Focus the editor" has to be able to find it in the view tree the
+    /// canvas built, however deeply it is nested.
+    @Test func theEditorIsFoundWhereverItIsNested() {
+        let editor = MaximalEditor.EditorTextView(frame: .zero)
+        let inner = NSView(frame: .zero)
+        inner.addSubview(editor)
+        let outer = NSView(frame: .zero)
+        outer.addSubview(NSView(frame: .zero))
+        outer.addSubview(inner)
+
+        #expect(KeyFocus.firstEditor(in: outer) === editor)
+        #expect(KeyFocus.firstEditor(in: NSView(frame: .zero)) == nil)
+    }
+
+    /// Focus moves have to be bound, or there is no way into the editor at all.
+    @Test func focusMovesAreBound() {
+        let map = DefaultKeymap.make()
+        func chords(_ text: String) -> [KeyChord] {
+            text.split(separator: " ").compactMap { KeyChord(parsing: String($0)) }
+        }
+        #expect(map.lookup(chords("i")) == .command("editor.focus"))
+        #expect(map.lookup(chords("C-w l")) == .command("editor.focus"))
+        #expect(map.lookup(chords("C-w h")) == .command("explorer.focus"))
     }
 }

@@ -11,9 +11,12 @@ import MaximalTreeKit
 extension AppModel {
     func runCommand(_ id: String, count: Int = 1) {
         switch id {
-        case "mode.insert":
-            keys.setMode(.insert)
+        case "editor.focus":
             focusEditor()
+        case "explorer.focus":
+            // Letting the editor go is enough: with no text taking the
+            // keyboard, the modal layer has it again.
+            NSApp.keyWindow?.makeFirstResponder(nil)
         case "palette.toggle":
             paletteVisible.toggle()
 
@@ -144,10 +147,13 @@ extension AppModel {
 
     // MARK: Focus
 
-    /// Hand the keyboard to whatever the canvas put on screen.
+    /// Hand the keyboard to the editor, leaving it in whichever mode it was
+    /// in — normal, like stepping into another window in Vim. `i` there then
+    /// starts inserting.
     private func focusEditor() {
-        guard let window = NSApp.keyWindow else { return }
-        window.makeFirstResponder(window.contentView?.firstTextResponder)
+        guard let window = NSApp.keyWindow,
+              let editor = KeyFocus.firstEditor(in: window.contentView) else { return }
+        window.makeFirstResponder(editor)
     }
 
     private func sendCommandKey(_ key: String) {
