@@ -12,10 +12,10 @@ import MaximalTreeKit
 struct ContentView: View {
     @Environment(AppModel.self) private var model
     @Environment(HostContext.self) private var host
-    @State private var inspectorVisible = true
     @State private var workspaceNameDraft = ""
     @State private var folderNameDraft = ""
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    /// Mirrors `model.sidebarVisible`, which is what the keyboard toggles.
     /// The inspector state to restore when zen mode ends.
     @State private var inspectorVisibleBeforeZen = true
     /// The hosting window, for zen title-bar styling.
@@ -23,9 +23,17 @@ struct ContentView: View {
 
     var body: some View {
         @Bindable var model = model
-        // Two columns + a real trailing inspector. (A three-column split view makes
-        // the *detail* column the flexible one, which handed the inspector all the
-        // slack; `.inspector` keeps the canvas flexible and the inspector sized.)
+        shell(model: model)
+            // Every key press goes through the modal layer first, and the HUD
+            // says which mode is in force and what a half-typed sequence can
+            // still become.
+            .keyCapture(model)
+            .overlay(alignment: .bottomLeading) { KeyHUD() }
+    }
+
+    @ViewBuilder
+    private func shell(model: AppModel) -> some View {
+        @Bindable var model = model
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarTree()
                 .navigationSplitViewColumnWidth(min: 180, ideal: 240)
@@ -67,13 +75,13 @@ struct ContentView: View {
             // Zen: without this the hidden title bar leaves a 52pt dead strip —
             // SwiftUI keeps laying the canvas out below the top safe area.
             .ignoresSafeArea(.container, edges: host.isZenMode ? .top : [])
-            .inspector(isPresented: $inspectorVisible) {
+            .inspector(isPresented: $model.inspectorVisible) {
                 InspectorPane()
                     .inspectorColumnWidth(min: 200, ideal: 260, max: 420)
             }
             .toolbar {
                 ToolbarItem {
-                    Button { inspectorVisible.toggle() } label: {
+                    Button { model.inspectorVisible.toggle() } label: {
                         Label("Inspector", systemImage: "sidebar.trailing")
                     }
                     .help("Toggle inspector")
@@ -91,11 +99,11 @@ struct ContentView: View {
         .onChange(of: host.isZenMode) { _, zen in
             withAnimation {
                 if zen {
-                    inspectorVisibleBeforeZen = inspectorVisible
-                    inspectorVisible = false
+                    inspectorVisibleBeforeZen = model.inspectorVisible
+                    model.inspectorVisible = false
                     columnVisibility = .detailOnly
                 } else {
-                    inspectorVisible = inspectorVisibleBeforeZen
+                    model.inspectorVisible = inspectorVisibleBeforeZen
                     columnVisibility = .all
                 }
             }

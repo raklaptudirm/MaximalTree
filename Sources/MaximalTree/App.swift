@@ -46,6 +46,18 @@ final class AppModel {
 
     /// Whether the command palette overlay is showing.
     var paletteVisible = false
+    /// Chrome visibility lives here rather than in the view, because the
+    /// keyboard layer has to be able to toggle it (see KeyCommands).
+    var sidebarVisible = true
+    var inspectorVisible = true
+    /// The modal keyboard layer. Built here so every surface shares one mode.
+    @ObservationIgnored lazy var keys: KeyEngine = {
+        let engine = KeyEngine(keymap: DefaultKeymap.make())
+        engine.perform = { [weak self] id, count in
+            self?.runCommand(id, count: count)
+        }
+        return engine
+    }()
     /// Canvas-only view; see `HostContext.isZenMode` for the canvas contract.
     var isZenMode: Bool { host.isZenMode }
     /// Prompt state for the workspace name alerts, settable from any surface
