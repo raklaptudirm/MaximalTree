@@ -227,61 +227,6 @@ import SwiftUI
         #expect(!KeyFocus.isTextInput(nil))
     }
 
-    /// The wider rule: anything focused that isn't the app's own chrome wants
-    /// the keyboard. Naming classes could never cover this — a terminal is a
-    /// plain NSView in a plugin the app cannot see, and typing into it was
-    /// impossible while the modal layer assumed it was chrome.
-    @Test func aFocusedCanvasViewKeepsItsKeys() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 200),
-                              styleMask: [.titled], backing: .buffered, defer: false)
-        let content = NSView(frame: .zero)
-        window.contentView = content
-        defer { window.orderOut(nil) }
-
-        // A real terminal surface: no text view, no protocol, no cooperation.
-        // Deliberately not put in the window — this is about how the view is
-        // classified, and attaching one would start a shell for no reason.
-        let terminal = TerminalSurfaceView(frame: NSRect(x: 0, y: 0, width: 80, height: 24))
-        #expect(KeyFocus.takesKeys(terminal, in: window),
-                "the terminal was treated as chrome, so its keys were stolen")
-
-        // The editor too, which is also not an NSTextView.
-        #expect(KeyFocus.takesKeys(MaximalEditor.EditorTextView(frame: .zero), in: window))
-    }
-
-    /// With nothing in particular focused, the keys are the app's — this is
-    /// what makes j and k move the tree.
-    @Test func chromeAndNothingLeaveTheKeysToTheApp() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 200),
-                              styleMask: [.titled], backing: .buffered, defer: false)
-        let content = NSHostingView(rootView: Text("chrome"))
-        window.contentView = content
-        defer { window.orderOut(nil) }
-
-        #expect(!KeyFocus.takesKeys(nil, in: window))
-        #expect(!KeyFocus.takesKeys(window, in: window))
-        #expect(!KeyFocus.takesKeys(content, in: window), "the content view is chrome")
-        // A SwiftUI hosting view anywhere in the tree is chrome as well.
-        let nested = NSHostingView(rootView: Text("row"))
-        content.addSubview(nested)
-        #expect(!KeyFocus.takesKeys(nested, in: window))
-    }
-
-    /// And anything can say so outright, for a view the shape rule would
-    /// otherwise call chrome.
-    @Test func aViewCanClaimTheKeyboardOutright() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 200),
-                              styleMask: [.titled], backing: .buffered, defer: false)
-        window.contentView = NSHostingView(rootView: Text("chrome"))
-        defer { window.orderOut(nil) }
-
-        let hosted = NSHostingView(rootView: Text("special"))
-        window.contentView?.addSubview(hosted)
-        #expect(!KeyFocus.takesKeys(hosted, in: window))
-        hosted.takesKeyboardInput = true
-        #expect(KeyFocus.takesKeys(hosted, in: window))
-    }
-
     /// "Focus the editor" has to be able to find it in the view tree the
     /// canvas built, however deeply it is nested.
     @Test func theEditorIsFoundWhereverItIsNested() {
@@ -302,8 +247,74 @@ import SwiftUI
         func chords(_ text: String) -> [KeyChord] {
             text.split(separator: " ").compactMap { KeyChord(parsing: String($0)) }
         }
-        #expect(map.lookup(chords("i")) == .command("editor.focus"))
+        // `i` means start typing (see KeyRoutingTests); the explicit window
+        // moves are what put focus somewhere without typing.
+        #expect(map.lookup(chords("i")) == .command("mode.insert"))
         #expect(map.lookup(chords("C-w l")) == .command("editor.focus"))
         #expect(map.lookup(chords("C-w h")) == .command("explorer.focus"))
+    }
+}
+
+
+/// Who gets a key.
+///
+/// Decided by mode, not by view. Deciding by view was wrong twice: the editor
+/// went unrecognised and received nothing, then every canvas was recognised
+/// and the leader key stopped working anywhere. A view cannot answer "is this
+/// a command or a character" — only the mode can.
+@Suite struct KeyRoutingTests {
+    private func chord(_ text: String) -> KeyChord { KeyChord(parsing: text)! }
+
+    private func route(_ key: String, mode: KeyMode, editorFocused: Bool = false,
+                       pending: Bool = false) -> KeyRouting.Destination {
+        KeyRouting.destination(for: chord(key), mode: mode,
+                               editorFocused: editorFocused, appHasPending: pending)
+    }
+
+    /// Insert mode is typing, wherever the keyboard happens to be — a
+    /// terminal, a web page, a field. This is the case that was broken: keys
+    /// meant for a shell were being taken as commands.
+    @Test func insertModeGivesEveryKeyToWhateverHasFocus() {
+        for key in ["j", "SPC", "d", "3", "/"] {
+            #expect(route(key, mode: .insert) == .focusedView,
+                    "\(key) was taken from the thing being typed into")
+        }
+        #expect(route("SPC", mode: .insert, editorFocused: true) == .focusedView)
+    }
+
+    /// Normal mode is commands, wherever the keyboard happens to be.
+    @Test func normalModeGivesKeysToTheApp() {
+        for key in ["j", "SPC", "g", "3"] {
+            #expect(route(key, mode: .normal) == .app)
+        }
+    }
+
+    /// Except in the editor, where normal-mode keys are its own motions: `j`
+    /// there means the caret, not the file tree.
+    @Test func theEditorOwnsItsMotionsInNormalMode() {
+        #expect(route("j", mode: .normal, editorFocused: true) == .focusedView)
+        #expect(route("d", mode: .normal, editorFocused: true) == .focusedView)
+    }
+
+    /// The leader still reaches through the editor, and so does the rest of a
+    /// sequence already begun — otherwise half a command would disappear into
+    /// the document.
+    @Test func theLeaderReachesThroughTheEditor() {
+        #expect(route("SPC", mode: .normal, editorFocused: true) == .app)
+        #expect(route("f", mode: .normal, editorFocused: true, pending: true) == .app)
+    }
+
+    /// Escape belongs to nobody else: it is the way back to normal.
+    @Test func escapeIsAlwaysTheApps() {
+        #expect(route("ESC", mode: .insert) == .app)
+        #expect(route("ESC", mode: .insert, editorFocused: true) == .app)
+        #expect(route("ESC", mode: .normal) == .app)
+    }
+
+    /// `i` has to mean "start typing" rather than "focus the editor", or a
+    /// terminal could never be typed into.
+    @Test func iEntersInsertMode() {
+        let map = DefaultKeymap.make()
+        #expect(map.lookup([chord("i")]) == .command("mode.insert"))
     }
 }

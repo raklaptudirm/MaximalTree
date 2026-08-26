@@ -55,25 +55,19 @@ struct KeyCapture: ViewModifier {
 
             @MainActor
             private static func handle(_ chord: KeyChord, model: AppModel) -> Bool {
-                let responder = NSApp.keyWindow?.firstResponder
-                // Not just text: a terminal, a web page, anything with its own
-                // idea about the keyboard.
-                let editing = KeyFocus.takesKeys(responder)
+                let editor = KeyFocus.focusedEditor()
+                // One mode, wherever it is being shown: the editor keeps its
+                // own so that its motions work, and it is the truth while it
+                // has the keyboard.
+                let mode = editor.map { $0.vim.mode == .insert ? KeyMode.insert : .normal }
+                    ?? model.keys.mode
+                let destination = KeyRouting.destination(
+                    for: chord, mode: mode, editorFocused: editor != nil,
+                    appHasPending: !model.keys.pending.isEmpty)
 
-                // The leader reaches through the editor. In the editor's own
-                // normal mode SPC is barely a motion, and giving it up there
-                // is what lets one leader key drive the whole app rather than
-                // everywhere except the place the work happens.
-                if let editor = KeyFocus.focusedEditor(), editor.vim.mode == .normal,
-                   chord.key == "SPC" || !model.keys.pending.isEmpty {
-                    switch model.keys.handle(chord, editing: false) {
-                    case .consumed, .pendingSequence: return true
-                    case .passed: return false
-                    }
-                }
-
-                // Otherwise, while something is taking text, typing is typing.
-                switch model.keys.handle(chord, editing: editing) {
+                guard destination == .app else { return false }
+                if chord.key == "ESC" { editor?.vim.setMode(.normal) }
+                switch model.keys.handle(chord, editing: false) {
                 case .consumed, .pendingSequence: return true
                 case .passed: return false
                 }

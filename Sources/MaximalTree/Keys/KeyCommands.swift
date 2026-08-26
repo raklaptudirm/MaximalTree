@@ -11,6 +11,14 @@ import MaximalTreeKit
 extension AppModel {
     func runCommand(_ id: String, count: Int = 1) {
         switch id {
+        case "mode.insert":
+            // Typing has to land somewhere: if the keyboard is still with the
+            // app, hand it to the canvas first.
+            if KeyFocus.focusedEditor() == nil, NSApp.keyWindow?.firstResponder is NSWindow {
+                focusCanvas()
+            }
+            keys.setMode(.insert)
+            KeyFocus.focusedEditor()?.vim.setMode(.insert)
         case "editor.focus":
             focusEditor()
         case "explorer.focus":
@@ -154,6 +162,19 @@ extension AppModel {
         guard let window = NSApp.keyWindow,
               let editor = KeyFocus.firstEditor(in: window.contentView) else { return }
         window.makeFirstResponder(editor)
+    }
+
+    /// Give the keyboard to whatever the canvas is showing — an editor, a
+    /// terminal, a page — so that insert mode has something to type into.
+    private func focusCanvas() {
+        guard let window = NSApp.keyWindow, let content = window.contentView else { return }
+        if let editor = KeyFocus.firstEditor(in: content) {
+            window.makeFirstResponder(editor)
+            return
+        }
+        if let responder = KeyFocus.firstKeyTaker(in: content) {
+            window.makeFirstResponder(responder)
+        }
     }
 
     private func sendCommandKey(_ key: String) {

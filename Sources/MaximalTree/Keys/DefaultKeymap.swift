@@ -33,7 +33,7 @@ enum DefaultKeymap {
         map.bind("G", to: "explorer.last")
 
         // Focus, the way Vim moves between windows.
-        map.bind("i", to: "editor.focus")
+        map.bind("i", to: "mode.insert")
         map.bind("SPC w l", to: "editor.focus")
         map.bind("SPC w h", to: "explorer.focus")
         map.bind("C-w l", to: "editor.focus")
