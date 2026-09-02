@@ -243,12 +243,14 @@ struct PaneView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()                       // same containment guarantee, per pane
             // So `C-w l` can put the keyboard in the surface it moved to.
-            .background(PaneSurfaceAccessor(pane: pane.id))
+            .background(SurfaceAccessor(.pane(pane.id)))
             .overlay {
                 if isMultiPane && isActive {
-                    Rectangle()
-                        .strokeBorder(Color.accentColor.opacity(0.7), lineWidth: 2)
-                        .allowsHitTesting(false)
+                    // Accent while this surface has the keyboard, grey when it
+                    // doesn't — the same thing the sidebar's selection says.
+                    // Its own view, so a focus change redraws the border and
+                    // not the pane hosting the canvas.
+                    SurfaceFocusRing(surface: .pane(pane.id), dimWhenUnfocused: true)
                 }
             }
             .overlay {

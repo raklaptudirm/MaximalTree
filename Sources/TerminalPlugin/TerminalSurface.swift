@@ -418,8 +418,16 @@ struct TerminalCanvas: NSViewRepresentable {
             view.topAnchor.constraint(equalTo: container.topAnchor),
             view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
-        // Typing should go to the terminal as soon as it is on screen.
-        DispatchQueue.main.async { view.window?.makeFirstResponder(view) }
+        // Typing should go to the terminal as soon as it is on screen — but
+        // only if nothing else has claimed the keyboard. Taking it outright
+        // meant a terminal merely *appearing* (a split, a tab switch, a
+        // background pane) pulled the keyboard out of wherever you were
+        // working, and left the sidebar looking focused while your typing
+        // went somewhere else entirely.
+        DispatchQueue.main.async {
+            guard let window = view.window, window.firstResponder is NSWindow else { return }
+            window.makeFirstResponder(view)
+        }
     }
 
     /// The host sizes canvases through SwiftUI; without this the view reports

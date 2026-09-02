@@ -114,6 +114,13 @@ private struct RowChrome<Content: View>: View {
     let selected: Bool
     let toggle: () -> Void
     @ViewBuilder let content: Content
+    @Environment(AppModel.self) private var model
+
+    /// A selection in the surface holding the keyboard is drawn in the accent
+    /// colour; one in a surface that doesn't goes grey. Standard for every
+    /// list on the platform, and here it is also the only thing that says
+    /// where the keyboard is.
+    private var emphasized: Bool { selected && model.focusedSurface == .sidebar }
 
     var body: some View {
         HStack(spacing: 4) {
@@ -123,7 +130,7 @@ private struct RowChrome<Content: View>: View {
                     Button(action: toggle) {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(selected ? .white : Color.secondary)
+                            .foregroundStyle(emphasized ? .white : Color.secondary)
                             .rotationEffect(.degrees(expanded ? 90 : 0))
                     }
                     .buttonStyle(.plain)
@@ -138,10 +145,15 @@ private struct RowChrome<Content: View>: View {
         .padding(.trailing, 8)
         .frame(height: 24)
         .contentShape(Rectangle())
-        .background(selected ? Color(nsColor: .selectedContentBackgroundColor) : .clear,
-                    in: RoundedRectangle(cornerRadius: 5))
-        .foregroundStyle(selected ? Color.white : Color.primary)
+        .background(selectionColor, in: RoundedRectangle(cornerRadius: 5))
+        .foregroundStyle(emphasized ? Color.white : Color.primary)
         .padding(.horizontal, 8)
+    }
+
+    private var selectionColor: Color {
+        guard selected else { return .clear }
+        return Color(nsColor: emphasized ? .selectedContentBackgroundColor
+                                         : .unemphasizedSelectedContentBackgroundColor)
     }
 }
 

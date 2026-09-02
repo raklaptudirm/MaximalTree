@@ -123,7 +123,8 @@ import SwiftUI
     /// is dead and nothing says so.
     @Test func everyBoundCommandIsOneTheAppKnows() {
         let known: Set<String> = [
-            "mode.insert", "editor.focus", "explorer.focus", "palette.toggle",
+            "mode.insert", "editor.focus", "explorer.focus", "inspector.focus",
+            "palette.toggle",
             "explorer.down", "explorer.up", "explorer.expand", "explorer.collapse",
             "explorer.open", "explorer.first", "explorer.last",
             "node.nextSibling", "node.previousSibling", "node.parent",

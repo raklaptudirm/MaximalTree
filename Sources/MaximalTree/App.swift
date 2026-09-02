@@ -50,6 +50,25 @@ final class AppModel {
     /// keyboard layer has to be able to toggle it (see KeyCommands).
     var sidebarVisible = true
     var inspectorVisible = true
+
+    /// The surface holding the keyboard.
+    ///
+    /// Derived from the first responder, but kept here because the answer has
+    /// to be *observed*: a surface showing whether it is focused — the
+    /// sidebar's selection, the inspector's ring — has to redraw when focus
+    /// moves, and asking AppKit at draw time never redraws anything.
+    private(set) var focusedSurface: SurfaceID = .sidebar
+
+    /// Recompute after anything that could have moved the keyboard: a key, a
+    /// click, a focus this app asked for. Deferred a turn because AppKit sets
+    /// the first responder while handling the event, after the monitor has
+    /// already seen it.
+    func refreshFocusedSurface() {
+        DispatchQueue.main.async { [self] in
+            let now = Surfaces.focused()
+            if now != focusedSurface { focusedSurface = now }
+        }
+    }
     /// The modal keyboard layer. Built here so every surface shares one mode.
     @ObservationIgnored lazy var keys: KeyEngine = {
         let engine = KeyEngine(keymap: DefaultKeymap.make())

@@ -21,26 +21,37 @@ extension AppModel {
         case "editor.focus":
             focusEditor()
         case "explorer.focus":
-            // Letting the editor go is enough: with no text taking the
-            // keyboard, the modal layer has it again.
-            NSApp.keyWindow?.makeFirstResponder(nil)
+            focus(.sidebar)
+        case "inspector.focus":
+            focus(.inspector)
         case "palette.toggle":
             paletteVisible.toggle()
 
+        // Motions belong to the surface holding the keyboard. In a canvas they
+        // never arrive here at all — it was offered them first and took them —
+        // so reaching this means the sidebar has the keyboard, or nothing does
+        // and the sidebar stands in.
         case "explorer.down":
-            moveExplorerSelection(down: true, times: count)
+            inSidebar { moveExplorerSelection(down: true, times: count) }
         case "explorer.up":
-            moveExplorerSelection(down: false, times: count)
+            inSidebar { moveExplorerSelection(down: false, times: count) }
         case "explorer.expand":
-            expandSelectedNode(true)
+            inSidebar { expandSelectedNode(true) }
         case "explorer.collapse":
-            expandSelectedNode(false)
+            inSidebar { expandSelectedNode(false) }
         case "explorer.open":
-            if let node = host.selection.first ?? host.focusedNode { store?.open(node) }
+            inSidebar {
+                guard let node = host.selection.first ?? host.focusedNode else { return }
+                store?.open(node)
+                // Opening something is going to it. Staying put left the
+                // keyboard in the sidebar while the thing you just opened sat
+                // there waiting, which was only ever confusing.
+                focusActiveSurface()
+            }
         case "explorer.first":
-            selectExplorerEdge(last: false)
+            inSidebar { selectExplorerEdge(last: false) }
         case "explorer.last":
-            selectExplorerEdge(last: true)
+            inSidebar { selectExplorerEdge(last: true) }
 
         case "nav.back":
             for _ in 0..<count { goBack() }
@@ -82,11 +93,11 @@ extension AppModel {
             selectTab(max(navigation.tabs.count - 1, 0))
 
         case "node.nextSibling":
-            moveToSibling(down: true, times: count)
+            inSidebar { moveToSibling(down: true, times: count) }
         case "node.previousSibling":
-            moveToSibling(down: false, times: count)
+            inSidebar { moveToSibling(down: false, times: count) }
         case "node.parent":
-            selectParentOfSelection()
+            inSidebar { selectParentOfSelection() }
 
         case "workspace.next":
             cycleWorkspace(by: count)
@@ -117,6 +128,18 @@ extension AppModel {
     }
 
     // MARK: Explorer motions
+
+    /// Run `body` only when the sidebar is the surface with the keyboard.
+    ///
+    /// These keys used to move the explorer from wherever you were, which read
+    /// as the app having one list and every other surface being scenery. The
+    /// sidebar is a surface like the rest, so its motions are its own — and a
+    /// terminal that declines `j` now does nothing with it rather than
+    /// scrolling a tree you aren't looking at.
+    private func inSidebar(_ body: () -> Void) {
+        guard Surfaces.focused() == .sidebar else { return }
+        body()
+    }
 
     /// The nodes the sidebar is showing, top to bottom — the order `j` and `k`
     /// move through. Recomputed rather than remembered: the tree changes under
@@ -177,53 +200,44 @@ extension AppModel {
 
     // MARK: Surfaces
 
-    /// Step between surfaces, with the sidebar standing in as the one off the
-    /// left edge.
+    /// Step to the neighbouring surface, whatever kind it is.
     ///
-    /// That is what makes `C-w h` mean one thing rather than two: from any
-    /// canvas it walks left through the splits, and from the leftmost one it
-    /// keeps going and lands in the explorer — which is where "further left"
-    /// visibly is. `C-w l` comes back the same way.
+    /// One rule over the sidebar, the canvases, and the inspector alike. It
+    /// used to carry two special cases — the sidebar reached by a branch that
+    /// fired when nothing had the keyboard, and the inspector not reachable at
+    /// all — and both are gone: the sidebar is simply the surface left of the
+    /// leftmost pane, and the inspector the one right of the rightmost.
     private func moveSurface(_ direction: PaneDirection) {
-        // "With the app rather than a canvas" is the window holding the
-        // keyboard itself, which is what `explorer.focus` leaves behind and
-        // what `mode.insert` already tests for. Asking instead whether an
-        // *editor* had focus — as this did — made the whole feature dead
-        // over a terminal, a web page, or anything else that isn't one.
-        if NSApp.keyWindow?.firstResponder is NSWindow {
-            // Only rightward means anything from here: back into the canvas.
-            if direction == .right { focusActiveSurface() }
-            return
-        }
-        if movePane(direction) != nil {
-            focusActiveSurface()
-        } else if direction == .left {
-            // Out of the panes entirely.
-            NSApp.keyWindow?.makeFirstResponder(nil)
+        let from = Surfaces.focused()
+        guard let target = Surfaces.neighbour(of: from, moving: direction) else { return }
+        // A pane is also the thing navigation acts on, so stepping into one
+        // makes it active. The sidebar and inspector have no such state.
+        if case .pane(let id) = target { activatePane(id) }
+        focus(target)
+    }
+
+    /// Put the keyboard in a surface.
+    ///
+    /// After the update the move set going, not during it: activating a pane
+    /// re-lays out the panes, and the editor defers its first scroll a turn
+    /// for the same reason.
+    ///
+    /// Never clears the responder on failure. Doing that handed the keyboard
+    /// to the window, which used to read as "you are in the sidebar" — so one
+    /// surface with nothing focusable in it and every later step became a
+    /// no-op until you clicked back in.
+    private func focus(_ surface: SurfaceID) {
+        guard let window = NSApp.keyWindow else { return }
+        DispatchQueue.main.async { [self] in
+            guard let target = Surfaces.focusTarget(of: surface, in: window) else { return }
+            window.makeFirstResponder(target)
+            refreshFocusedSurface()
         }
     }
 
-    /// Put the keyboard in whatever the active surface is showing, so that
-    /// having moved there is the same thing as being there.
-    /// Put the keyboard in whatever the active surface is showing.
-    ///
-    /// After the update the move itself set going, not during it: activating a
-    /// pane re-lays out both panes, and a responder installed first was being
-    /// undone by that pass — the border moved and the keyboard didn't. The
-    /// editor defers its first scroll a turn for the same reason.
-    ///
-    /// Never clears the responder on failure. Doing that used to hand the
-    /// keyboard to the window, which `moveSurface` reads as "you are in the
-    /// sidebar" — so one surface with nothing focusable in it, or one focus
-    /// that didn't take, and every later step became a no-op until you
-    /// clicked back in. Leaving the keyboard where it was keeps moving
-    /// working regardless.
     private func focusActiveSurface() {
-        guard let window = NSApp.keyWindow, let pane = navigation.activePane?.id else { return }
-        DispatchQueue.main.async {
-            guard let target = PaneSurfaces.focusTarget(of: pane, in: window) else { return }
-            window.makeFirstResponder(target)
-        }
+        guard let pane = navigation.activePane?.id else { return }
+        focus(.pane(pane))
     }
 
     // MARK: Nodes

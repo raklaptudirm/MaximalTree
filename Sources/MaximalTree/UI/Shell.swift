@@ -40,6 +40,7 @@ struct ContentView: View {
         @Bindable var model = model
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarTree()
+                .background(SurfaceAccessor(.sidebar))
                 .navigationSplitViewColumnWidth(min: 180, ideal: 240)
                 .toolbar {
                     ToolbarItem {
@@ -81,6 +82,12 @@ struct ContentView: View {
             .ignoresSafeArea(.container, edges: host.isZenMode ? .top : [])
             .inspector(isPresented: $model.inspectorVisible) {
                 InspectorPane()
+                    .background(SurfaceAccessor(.inspector))
+                    // Nothing in here is selected, so the surface itself has
+                    // to be what shows it holds the keyboard. In its own view:
+                    // read here, every focus change would rebuild the shell
+                    // and tear down the markers focus is derived from.
+                    .overlay { SurfaceFocusRing(surface: .inspector) }
                     .inspectorColumnWidth(min: 200, ideal: 260, max: 420)
             }
             .toolbar {

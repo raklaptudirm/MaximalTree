@@ -3,8 +3,9 @@ import Foundation
 /// The keys the app ships with.
 ///
 /// Doom-flavoured: `SPC` is the leader and groups are mnemonic — `f` files,
-/// `b` buffers (tabs), `w` windows (panes), `g` git, `t` toggles. Motions in
-/// normal mode move the *explorer*, since that is the app's list of things.
+/// `b` buffers (tabs), `w` windows (surfaces), `g` git, `t` toggles. Motions
+/// belong to the surface holding the keyboard: `j` walks the tree in the
+/// sidebar and moves the caret in an editor, and the binding is the same one.
 ///
 /// Bindings name commands by id, and a plugin's actions are ids too
 /// (`file.newFile`, `git.open`), so binding a key to a plugin command needs
@@ -22,7 +23,7 @@ enum DefaultKeymap {
         map.describe("SPC n", as: "new")
         map.describe("g", as: "goto")
 
-        // Getting around the explorer.
+        // Getting around the sidebar, when the sidebar has the keyboard.
         map.bind("j", to: "explorer.down")
         map.bind("k", to: "explorer.up")
         map.bind("h", to: "explorer.collapse")
@@ -81,6 +82,7 @@ enum DefaultKeymap {
         map.bind("SPC w k", to: "surface.up")
         map.bind("SPC w l", to: "surface.right")
         map.bind("SPC w w", to: "surface.next")
+        map.bind("SPC w i", to: "inspector.focus")
 
         // Workspaces.
         map.describe("SPC p", as: "workspace")

@@ -36,9 +36,16 @@ struct KeyCapture: ViewModifier {
 
         final class Coordinator: @unchecked Sendable {
             private var monitor: Any?
+            /// Clicks move the keyboard too, and nothing else tells us.
+            private var clicks: Any?
 
             func install(model: AppModel) {
                 guard monitor == nil else { return }
+                clicks = NSEvent.addLocalMonitorForEvents(
+                    matching: [.leftMouseUp, .rightMouseUp]) { event in
+                    MainActor.assumeIsolated { model.refreshFocusedSurface() }
+                    return event
+                }
                 monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                     // The chord is read out here, because an NSEvent can't
                     // cross into the main actor — everything past this point
@@ -48,7 +55,9 @@ struct KeyCapture: ViewModifier {
                     // ate ⌘Q or ⌘W would be a trap.
                     if event.modifierFlags.contains(.command) { return event }
                     let handled = MainActor.assumeIsolated {
-                        Self.handle(chord, model: model)
+                        let handled = Self.handle(chord, model: model)
+                        model.refreshFocusedSurface()
+                        return handled
                     }
                     return handled ? nil : event
                 }
@@ -62,7 +71,9 @@ struct KeyCapture: ViewModifier {
 
             func remove() {
                 if let monitor { NSEvent.removeMonitor(monitor) }
+                if let clicks { NSEvent.removeMonitor(clicks) }
                 monitor = nil
+                clicks = nil
             }
         }
     }
