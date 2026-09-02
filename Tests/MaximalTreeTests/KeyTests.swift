@@ -368,4 +368,27 @@ import SwiftUI
         let plain = NSView(frame: .zero)
         #expect(!(plain is CanvasKeyHandling))
     }
+
+    /// A canvas that never overrides `isInsertMode` defaults to false, so it
+    /// never claims a mode it has no notion of.
+    @Test func aCanvasWithNoModeOfItsOwnReportsNotInsert() {
+        let canvas = StubCanvas(frame: .zero)
+        #expect(!canvas.isInsertMode)
+    }
+
+    /// The editor can slip into insert on its own — `i`, `o`, a visual `c` —
+    /// without the app ever seeing a key named "enter insert mode". Whatever
+    /// drives KeyCapture has to ask, after the fact, whether the canvas is
+    /// now in insert, rather than track it by which commands ran.
+    @Test func theEditorReportsItsOwnSlideIntoInsert() {
+        let editor = MaximalEditor.EditorTextView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
+        editor.vimEnabled = true
+        editor.text = "alpha"
+        editor.textSelection = NSRange(location: 0, length: 0)
+        let canvas = editor as CanvasKeyHandling
+
+        #expect(!canvas.isInsertMode)
+        #expect(canvas.handleNormalModeKey("i", control: false))
+        #expect(canvas.isInsertMode, "the editor entered insert on its own recognizance")
+    }
 }

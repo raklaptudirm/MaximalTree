@@ -70,6 +70,12 @@ struct KeyCapture: ViewModifier {
                 if !reserved, chord.key != "ESC",
                    let canvas = KeyFocus.focusedCanvas(),
                    canvas.handleNormalModeKey(chord.key, control: chord.control) {
+                    // A canvas can enter insert on its own (`i`, `o`, a visual
+                    // `c`, …) without the app ever seeing the key that did it.
+                    // Without this the app kept thinking it was still in
+                    // normal mode and went on treating letters as commands —
+                    // which is why ordinary text landed on the floor.
+                    if canvas.isInsertMode { model.keys.setMode(.insert) }
                     return true
                 }
 

@@ -321,9 +321,6 @@ public struct MaximalEditor: NSViewRepresentable {
         /// plain text field stays a plain text field.
         public let vim = VimEngine()
         public var vimEnabled = false
-        /// Told whenever the mode changes, so the app's indicator agrees with
-        /// what the editor is actually doing.
-        var onModeChange: ((VimMode) -> Void)?
 
         /// Insert mode is plain typing; the app never sends keys here in
         /// normal mode (see `handleNormalModeKey`).

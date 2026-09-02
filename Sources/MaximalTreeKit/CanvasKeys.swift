@@ -22,8 +22,18 @@ public protocol CanvasKeyHandling: AnyObject {
     /// Told when the app switches modes, so a canvas showing its own state —
     /// a caret shape, a selection — can follow.
     func canvasModeChanged(toInsert: Bool)
+
+    /// Whether the canvas now considers itself in insert mode — queried right
+    /// after it handles a normal-mode key, so the app's own mode follows a
+    /// transition the canvas made on its own (`i`, `o`, a visual `c`, …)
+    /// without being told about each one by name. Without this the app kept
+    /// routing keys as commands after the canvas had already moved to insert,
+    /// so ordinary letters that happened to be bound (`g`, `h`, `o`) were
+    /// swallowed instead of typed.
+    var isInsertMode: Bool { get }
 }
 
 public extension CanvasKeyHandling {
     func canvasModeChanged(toInsert: Bool) {}
+    var isInsertMode: Bool { false }
 }

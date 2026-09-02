@@ -305,7 +305,6 @@ extension MaximalEditor.EditorTextView: CanvasKeyHandling {
     /// every global binding keep working with the caret in a document.
     public func handleNormalModeKey(_ key: String, control: Bool) -> Bool {
         guard vimEnabled else { return false }
-        let before = vim.mode
         guard let outcome = vim.handle(VimKey(key, control: control),
                                        text: text ?? "", caret: textSelection.location)
         else {
@@ -315,11 +314,12 @@ extension MaximalEditor.EditorTextView: CanvasKeyHandling {
             return false
         }
         applyVim(outcome)
-        if vim.mode != before { onModeChange?(vim.mode) }
         return true
     }
 
     public func canvasModeChanged(toInsert insert: Bool) {
         vim.setMode(insert ? .insert : .normal)
     }
+
+    public var isInsertMode: Bool { vim.mode == .insert }
 }
