@@ -258,63 +258,114 @@ import SwiftUI
 
 /// Who gets a key.
 ///
-/// Decided by mode, not by view. Deciding by view was wrong twice: the editor
-/// went unrecognised and received nothing, then every canvas was recognised
-/// and the leader key stopped working anywhere. A view cannot answer "is this
-/// a command or a character" — only the mode can.
+/// Decided by mode, not by view, and the same for every canvas. Deciding by
+/// view was wrong twice: the editor went unrecognised and received nothing,
+/// then every canvas was recognised and the leader key stopped working
+/// anywhere.
 @Suite struct KeyRoutingTests {
     private func chord(_ text: String) -> KeyChord { KeyChord(parsing: text)! }
 
-    private func route(_ key: String, mode: KeyMode, editorFocused: Bool = false,
-                       pending: Bool = false) -> KeyRouting.Destination {
-        KeyRouting.destination(for: chord(key), mode: mode,
-                               editorFocused: editorFocused, appHasPending: pending)
+    private func route(_ key: String, mode: KeyMode) -> KeyRouting.Destination {
+        KeyRouting.destination(for: chord(key), mode: mode)
     }
 
-    /// Insert mode is typing, wherever the keyboard happens to be — a
-    /// terminal, a web page, a field. This is the case that was broken: keys
-    /// meant for a shell were being taken as commands.
+    /// Insert mode is typing, wherever the keyboard is — a terminal, a page,
+    /// an editor, a field. This is what was broken for the terminal.
     @Test func insertModeGivesEveryKeyToWhateverHasFocus() {
         for key in ["j", "SPC", "d", "3", "/"] {
             #expect(route(key, mode: .insert) == .focusedView,
                     "\(key) was taken from the thing being typed into")
         }
-        #expect(route("SPC", mode: .insert, editorFocused: true) == .focusedView)
     }
 
-    /// Normal mode is commands, wherever the keyboard happens to be.
-    @Test func normalModeGivesKeysToTheApp() {
-        for key in ["j", "SPC", "g", "3"] {
+    /// Normal mode is commands — the canvas gets first refusal, then the app.
+    @Test func normalModeGoesToTheModalLayer() {
+        for key in ["j", "SPC", "g", "3", "d"] {
             #expect(route(key, mode: .normal) == .app)
         }
-    }
-
-    /// Except in the editor, where normal-mode keys are its own motions: `j`
-    /// there means the caret, not the file tree.
-    @Test func theEditorOwnsItsMotionsInNormalMode() {
-        #expect(route("j", mode: .normal, editorFocused: true) == .focusedView)
-        #expect(route("d", mode: .normal, editorFocused: true) == .focusedView)
-    }
-
-    /// The leader still reaches through the editor, and so does the rest of a
-    /// sequence already begun — otherwise half a command would disappear into
-    /// the document.
-    @Test func theLeaderReachesThroughTheEditor() {
-        #expect(route("SPC", mode: .normal, editorFocused: true) == .app)
-        #expect(route("f", mode: .normal, editorFocused: true, pending: true) == .app)
     }
 
     /// Escape belongs to nobody else: it is the way back to normal.
     @Test func escapeIsAlwaysTheApps() {
         #expect(route("ESC", mode: .insert) == .app)
-        #expect(route("ESC", mode: .insert, editorFocused: true) == .app)
         #expect(route("ESC", mode: .normal) == .app)
     }
 
-    /// `i` has to mean "start typing" rather than "focus the editor", or a
-    /// terminal could never be typed into.
+    /// `i` means start typing, whatever is focused — otherwise a terminal
+    /// could never be typed into.
     @Test func iEntersInsertMode() {
-        let map = DefaultKeymap.make()
-        #expect(map.lookup([chord("i")]) == .command("mode.insert"))
+        #expect(DefaultKeymap.make().lookup([chord("i")]) == .command("mode.insert"))
+    }
+}
+
+/// A canvas's own normal-mode keys.
+///
+/// The editor is not a special case: it adopts the same protocol any canvas
+/// can, and what it declines falls through to the app exactly like anyone
+/// else's.
+@MainActor
+@Suite struct CanvasKeyTests {
+    /// Stands in for any canvas — a diff stepping between hunks, a preview
+    /// paging. It consumes `n` and declines everything else.
+    private final class StubCanvas: NSView, CanvasKeyHandling {
+        var consumed: [String] = []
+        var insertModeAnnouncements: [Bool] = []
+
+        func handleNormalModeKey(_ key: String, control: Bool) -> Bool {
+            guard key == "n" else { return false }
+            consumed.append(key)
+            return true
+        }
+
+        func canvasModeChanged(toInsert insert: Bool) {
+            insertModeAnnouncements.append(insert)
+        }
+    }
+
+    @Test func aCanvasHandlesTheKeysItClaims() {
+        let canvas = StubCanvas(frame: .zero)
+        #expect(canvas.handleNormalModeKey("n", control: false))
+        #expect(canvas.consumed == ["n"])
+    }
+
+    @Test func whatItDeclinesIsLeftForTheApp() {
+        let canvas = StubCanvas(frame: .zero)
+        #expect(!canvas.handleNormalModeKey("j", control: false),
+                "a canvas that swallows everything would take the app's bindings with it")
+    }
+
+    /// The editor is reached the same way, through the same protocol.
+    @Test func theEditorIsJustAnotherCanvas() {
+        let editor = MaximalEditor.EditorTextView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
+        editor.vimEnabled = true
+        editor.text = "alpha beta"
+        editor.textSelection = NSRange(location: 0, length: 0)
+
+        #expect(editor is CanvasKeyHandling, "the editor should adopt the canvas protocol")
+        let canvas = editor as CanvasKeyHandling
+        #expect(canvas.handleNormalModeKey("l", control: false), "the editor declined a motion")
+        #expect(editor.textSelection.location == 1)
+    }
+
+    /// Mode changes are announced to whatever is focused, so a canvas showing
+    /// its own state can follow.
+    @Test func modeChangesReachTheCanvas() {
+        let canvas = StubCanvas(frame: .zero)
+        canvas.canvasModeChanged(toInsert: true)
+        canvas.canvasModeChanged(toInsert: false)
+        #expect(canvas.insertModeAnnouncements == [true, false])
+
+        let editor = MaximalEditor.EditorTextView(frame: .zero)
+        editor.canvasModeChanged(toInsert: true)
+        #expect(editor.vim.mode == .insert)
+        editor.canvasModeChanged(toInsert: false)
+        #expect(editor.vim.mode == .normal)
+    }
+
+    /// Not adopting the protocol is allowed and means "normal mode is the
+    /// app's" — which is what a terminal wants.
+    @Test func aCanvasNeedNotHandleAnything() {
+        let plain = NSView(frame: .zero)
+        #expect(!(plain is CanvasKeyHandling))
     }
 }

@@ -95,6 +95,10 @@ targets:
       - path: Vendor/highlight-js/highlight.min.js
         buildPhase: resources
     dependencies:
+      # For the canvas key protocol: a canvas that handles keys in normal mode
+      # says so the same way every other canvas does.
+      - target: MaximalTreeKit
+        embed: false
       - package: STTextView
         product: STTextView
       - package: STTextKitPlus

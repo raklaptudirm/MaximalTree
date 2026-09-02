@@ -1,4 +1,5 @@
 import SwiftUI
+import MaximalTreeKit
 import AppKit
 import STTextView
 import STTextKitPlus
@@ -324,28 +325,13 @@ public struct MaximalEditor: NSViewRepresentable {
         /// what the editor is actually doing.
         var onModeChange: ((VimMode) -> Void)?
 
-        /// Keys reach the modal layer before AppKit turns them into text. In
-        /// insert mode the engine declines them and typing is typing.
+        /// Insert mode is plain typing; the app never sends keys here in
+        /// normal mode (see `handleNormalModeKey`).
         public override func keyDown(with event: NSEvent) {
-            guard vimEnabled, let key = Self.vimKey(for: event) else {
-                super.keyDown(with: event)
-                return
-            }
-            let caret = textSelection.location
-            let before = vim.mode
-            guard let outcome = vim.handle(key, text: text ?? "", caret: caret) else {
-                // In insert mode the engine declines everything, and typing is
-                // typing. In normal mode an unhandled key is swallowed rather
-                // than typed — otherwise every unbound press would leave a
-                // stray character in the buffer.
-                if vim.mode == .insert { super.keyDown(with: event) }
-                return
-            }
-            apply(outcome)
-            if vim.mode != before { onModeChange?(vim.mode) }
+            super.keyDown(with: event)
         }
 
-        private func apply(_ outcome: VimOutcome) {
+        func applyVim(_ outcome: VimOutcome) {
             if let edit = outcome.edit {
                 // Through the text view, so undo and the highlighter see it.
                 insertText(edit.replacement, replacementRange: edit.range)
@@ -356,14 +342,7 @@ public struct MaximalEditor: NSViewRepresentable {
             scrollRangeToVisible(NSRange(location: caret, length: 0))
         }
 
-        private static func vimKey(for event: NSEvent) -> VimKey? {
-            if event.keyCode == 53 { return VimKey("ESC") }
-            guard let characters = event.charactersIgnoringModifiers,
-                  !characters.isEmpty,
-                  !event.modifierFlags.contains(.command)
-            else { return nil }
-            return VimKey(characters, control: event.modifierFlags.contains(.control))
-        }
+
 
         public override var intrinsicContentSize: NSSize {
             NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)

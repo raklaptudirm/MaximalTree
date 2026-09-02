@@ -393,12 +393,22 @@ struct TerminalCanvas: NSViewRepresentable {
     }
 
     func updateNSView(_ container: NSView, context: Context) {
-        if session.view.superview !== container {
-            attach(session.view, to: container)
-        }
+        // The container is reused across nodes — SwiftUI keeps the same
+        // NSViewRepresentable slot when a pane switches which terminal it
+        // shows, so this runs instead of makeNSView. A session's view stays
+        // attached (that's the point: the shell keeps running), which meant
+        // switching *back* to it saw its superview already set and did
+        // nothing — leaving whatever was last freshly attached on top no
+        // matter which node was actually selected. Checking "on top", not
+        // just "attached", is what makes switching back work.
+        guard container.subviews.last !== session.view else { return }
+        attach(session.view, to: container)
     }
 
     private func attach(_ view: TerminalSurfaceView, to container: NSView) {
+        for other in container.subviews where other !== view {
+            other.removeFromSuperview()
+        }
         view.removeFromSuperview()
         view.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(view)

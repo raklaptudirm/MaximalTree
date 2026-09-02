@@ -1,4 +1,5 @@
 import Foundation
+import MaximalTreeKit
 
 /// Modal editing over text and a caret.
 ///
@@ -295,5 +296,30 @@ public final class VimEngine {
 private extension String {
     var trimmingTrailingNewline: String {
         hasSuffix("\n") ? String(dropLast()) : self
+    }
+}
+
+extension MaximalEditor.EditorTextView: CanvasKeyHandling {
+    /// The editor's share of normal mode: motions, operators, counts. What it
+    /// doesn't understand goes back to the app, which is how the leader and
+    /// every global binding keep working with the caret in a document.
+    public func handleNormalModeKey(_ key: String, control: Bool) -> Bool {
+        guard vimEnabled else { return false }
+        let before = vim.mode
+        guard let outcome = vim.handle(VimKey(key, control: control),
+                                       text: text ?? "", caret: textSelection.location)
+        else {
+            // Nothing to do with it — but a bare character must not fall
+            // through and be *typed*: in normal mode the app decides, and if
+            // the app has no binding either, nothing happens.
+            return false
+        }
+        applyVim(outcome)
+        if vim.mode != before { onModeChange?(vim.mode) }
+        return true
+    }
+
+    public func canvasModeChanged(toInsert insert: Bool) {
+        vim.setMode(insert ? .insert : .normal)
     }
 }

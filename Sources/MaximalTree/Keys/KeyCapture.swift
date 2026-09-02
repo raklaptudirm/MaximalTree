@@ -55,18 +55,24 @@ struct KeyCapture: ViewModifier {
 
             @MainActor
             private static func handle(_ chord: KeyChord, model: AppModel) -> Bool {
-                let editor = KeyFocus.focusedEditor()
-                // One mode, wherever it is being shown: the editor keeps its
-                // own so that its motions work, and it is the truth while it
-                // has the keyboard.
-                let mode = editor.map { $0.vim.mode == .insert ? KeyMode.insert : .normal }
-                    ?? model.keys.mode
-                let destination = KeyRouting.destination(
-                    for: chord, mode: mode, editorFocused: editor != nil,
-                    appHasPending: !model.keys.pending.isEmpty)
-
+                let destination = KeyRouting.destination(for: chord, mode: model.keys.mode)
                 guard destination == .app else { return false }
-                if chord.key == "ESC" { editor?.vim.setMode(.normal) }
+
+                if chord.key == "ESC" {
+                    KeyFocus.focusedCanvas()?.canvasModeChanged(toInsert: false)
+                }
+
+                // The focused canvas gets first refusal — its own motions, its
+                // own operators — but never the leader or the rest of a
+                // sequence already begun, which belong to the app wherever the
+                // keyboard is.
+                let reserved = chord.key == "SPC" || !model.keys.pending.isEmpty
+                if !reserved, chord.key != "ESC",
+                   let canvas = KeyFocus.focusedCanvas(),
+                   canvas.handleNormalModeKey(chord.key, control: chord.control) {
+                    return true
+                }
+
                 switch model.keys.handle(chord, editing: false) {
                 case .consumed, .pendingSequence: return true
                 case .passed: return false

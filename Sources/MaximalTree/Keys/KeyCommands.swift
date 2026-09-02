@@ -18,7 +18,7 @@ extension AppModel {
                 focusCanvas()
             }
             keys.setMode(.insert)
-            KeyFocus.focusedEditor()?.vim.setMode(.insert)
+            KeyFocus.focusedCanvas()?.canvasModeChanged(toInsert: true)
         case "editor.focus":
             focusEditor()
         case "explorer.focus":
