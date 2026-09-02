@@ -92,6 +92,58 @@ import SwiftUI
             Issue.record("SPC b should be a group")
         }
     }
+
+    /// Movement at each scale the app has one: between surfaces, tabs, nodes,
+    /// and workspaces. Bound twice over where Vim and Doom disagree about the
+    /// prefix, since both sets of fingers show up here.
+    @Test func everyScaleOfMovementIsBound() {
+        let map = DefaultKeymap.make()
+        let expected = [
+            "C-w h": "surface.left", "C-w j": "surface.down",
+            "C-w k": "surface.up", "C-w l": "surface.right",
+            "C-w w": "surface.next", "C-w W": "surface.previous",
+            "SPC w h": "surface.left", "SPC w l": "surface.right",
+            "SPC b n": "tab.next", "SPC b p": "tab.previous",
+            "SPC b h": "tab.first", "SPC b l": "tab.last",
+            "g t": "tab.next", "g T": "tab.previous",
+            "j": "explorer.down", "k": "explorer.up",
+            "}": "node.nextSibling", "{": "node.previousSibling",
+            "g p": "node.parent",
+            "g g": "explorer.first", "G": "explorer.last",
+            "g w": "workspace.next", "g W": "workspace.previous",
+            "SPC p n": "workspace.next", "SPC p p": "workspace.previous",
+        ]
+        for (keys, command) in expected {
+            #expect(map.lookup(chords(keys)) == .command(command),
+                    "\(keys) should run \(command)")
+        }
+    }
+
+    /// Every command a key names has to be one the app answers to, or the key
+    /// is dead and nothing says so.
+    @Test func everyBoundCommandIsOneTheAppKnows() {
+        let known: Set<String> = [
+            "mode.insert", "editor.focus", "explorer.focus", "palette.toggle",
+            "explorer.down", "explorer.up", "explorer.expand", "explorer.collapse",
+            "explorer.open", "explorer.first", "explorer.last",
+            "node.nextSibling", "node.previousSibling", "node.parent",
+            "nav.back", "nav.forward",
+            "tab.next", "tab.previous", "tab.close", "tab.first", "tab.last",
+            "pane.splitRight", "pane.splitDown", "pane.close",
+            "surface.left", "surface.right", "surface.up", "surface.down",
+            "surface.next", "surface.previous",
+            "workspace.next", "workspace.previous", "workspace.addFolder",
+            "toggle.sidebar", "toggle.inspector", "toggle.zen", "file.save",
+        ]
+        // The rest are plugin action ids, which the registry resolves at run
+        // time and this test can't see.
+        let pluginPrefixes = ["git.", "terminal.", "typst.", "web.", "file.", "core."]
+        for command in DefaultKeymap.make().allCommands {
+            guard !known.contains(command) else { continue }
+            #expect(pluginPrefixes.contains { command.hasPrefix($0) },
+                    "\(command) is bound but nothing runs it")
+        }
+    }
 }
 
 /// The modal layer itself.
@@ -247,11 +299,15 @@ import SwiftUI
         func chords(_ text: String) -> [KeyChord] {
             text.split(separator: " ").compactMap { KeyChord(parsing: String($0)) }
         }
-        // `i` means start typing (see KeyRoutingTests); the explicit window
-        // moves are what put focus somewhere without typing.
+        // `i` means start typing (see KeyRoutingTests); the window moves are
+        // what put focus somewhere without typing.
         #expect(map.lookup(chords("i")) == .command("mode.insert"))
-        #expect(map.lookup(chords("C-w l")) == .command("editor.focus"))
-        #expect(map.lookup(chords("C-w h")) == .command("explorer.focus"))
+        // These used to name the explorer and the editor directly. They are
+        // directions now, and reaching the explorer is what moving left off
+        // the leftmost surface does — one rule instead of two, and it holds
+        // wherever the keyboard happens to be.
+        #expect(map.lookup(chords("C-w l")) == .command("surface.right"))
+        #expect(map.lookup(chords("C-w h")) == .command("surface.left"))
     }
 }
 

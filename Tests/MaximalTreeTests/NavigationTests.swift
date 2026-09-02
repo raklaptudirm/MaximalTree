@@ -234,6 +234,98 @@ import Foundation
     }
 }
 
+/// Stepping between surfaces. The tree is the only thing that knows where
+/// anything is, so these check the geometry it implies.
+@MainActor
+@Suite struct SurfaceMovementTests {
+    private func id(_ s: String) -> NodeID { NodeID(s)! }
+
+    /// Two side by side: right lands on the other, left comes back, and up
+    /// and down cross nothing.
+    @Test func stepsAcrossASideBySideSplit() throws {
+        let nav = NavigationModel()
+        nav.navigate(to: id("file:///a"))
+        let left = try #require(nav.activePane?.id)
+        nav.splitActivePane(horizontal: true)
+        let right = try #require(nav.activePane?.id)
+
+        #expect(nav.movePane(.left) == left)
+        #expect(nav.activePane?.id == left)
+        #expect(nav.movePane(.right) == right)
+        #expect(nav.movePane(.up) == nil, "nothing is stacked here")
+        #expect(nav.movePane(.down) == nil)
+    }
+
+    @Test func stepsAcrossAStackedSplit() throws {
+        let nav = NavigationModel()
+        nav.navigate(to: id("file:///a"))
+        let top = try #require(nav.activePane?.id)
+        nav.splitActivePane(horizontal: false)
+        let bottom = try #require(nav.activePane?.id)
+
+        #expect(nav.movePane(.up) == top)
+        #expect(nav.movePane(.down) == bottom)
+        #expect(nav.movePane(.left) == nil, "nothing is beside it")
+    }
+
+    /// The edge of the tree is the edge of the window: there is nothing
+    /// further that way, and saying so is what lets the caller fall through
+    /// to the sidebar.
+    @Test func theOutermostSurfaceHasNothingBeyondIt() {
+        let nav = NavigationModel()
+        nav.navigate(to: id("file:///a"))
+        for direction in [PaneDirection.left, .right, .up, .down] {
+            #expect(nav.movePane(direction) == nil, "a lone surface has no neighbours")
+        }
+    }
+
+    /// Left out of a pane stacked inside the right-hand column lands on the
+    /// column beside it, not on some pane further away — this is the part a
+    /// flat list of panes gets wrong.
+    @Test func stepsToTheNeighbourItActuallyTouches() throws {
+        let nav = NavigationModel()
+        nav.navigate(to: id("file:///a"))
+        let left = try #require(nav.activePane?.id)
+        nav.splitActivePane(horizontal: true)      // left | right
+        nav.splitActivePane(horizontal: false)     // right becomes top / bottom
+        let bottomRight = try #require(nav.activePane?.id)
+
+        #expect(nav.movePane(.left) == left, "left out of the lower right pane")
+        #expect(nav.activePane?.id == left)
+        // And back in: from the left column, right hugs the boundary it
+        // crossed, so it lands on the top of the two rather than the bottom.
+        let backIn = try #require(nav.movePane(.right))
+        #expect(backIn != bottomRight, "right should land on the pane against the divider")
+    }
+
+    /// Cycling ignores geometry, which is the point of having it as well.
+    @Test func cyclingVisitsEverySurfaceAndWrapsRound() throws {
+        let nav = NavigationModel()
+        nav.navigate(to: id("file:///a"))
+        nav.splitActivePane(horizontal: true)
+        nav.splitActivePane(horizontal: false)
+
+        let seen = (0..<3).map { _ -> UUID in
+            nav.cyclePane(by: 1)
+            return nav.activePane!.id
+        }
+        #expect(Set(seen).count == 3, "cycling should reach all three")
+        nav.cyclePane(by: 1)
+        #expect(nav.activePane?.id == seen[0], "and come back round")
+    }
+
+    @Test func cyclingBackwardsWrapsTheOtherWay() throws {
+        let nav = NavigationModel()
+        nav.navigate(to: id("file:///a"))
+        let first = try #require(nav.activePane?.id)
+        nav.splitActivePane(horizontal: true)
+        nav.activatePane(first)
+
+        nav.cyclePane(by: -1)
+        #expect(nav.activePane?.id != first, "stepping back from the first wraps to the last")
+    }
+}
+
 /// Preview tabs and session snapshots — the two behaviours that make tabs feel
 /// like an editor's rather than a browser's.
 @MainActor

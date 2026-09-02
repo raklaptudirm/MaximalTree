@@ -242,6 +242,8 @@ struct PaneView: View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()                       // same containment guarantee, per pane
+            // So `C-w l` can put the keyboard in the surface it moved to.
+            .background(PaneSurfaceAccessor(pane: pane.id))
             .overlay {
                 if isMultiPane && isActive {
                     Rectangle()

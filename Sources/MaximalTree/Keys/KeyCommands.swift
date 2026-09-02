@@ -61,6 +61,38 @@ extension AppModel {
         case "pane.close":
             closeActivePane()
 
+        case "surface.left":
+            moveSurface(.left)
+        case "surface.right":
+            moveSurface(.right)
+        case "surface.up":
+            moveSurface(.up)
+        case "surface.down":
+            moveSurface(.down)
+        case "surface.next":
+            cyclePane(by: count)
+            focusActiveSurface()
+        case "surface.previous":
+            cyclePane(by: -count)
+            focusActiveSurface()
+
+        case "tab.first":
+            selectTab(0)
+        case "tab.last":
+            selectTab(max(navigation.tabs.count - 1, 0))
+
+        case "node.nextSibling":
+            moveToSibling(down: true, times: count)
+        case "node.previousSibling":
+            moveToSibling(down: false, times: count)
+        case "node.parent":
+            selectParentOfSelection()
+
+        case "workspace.next":
+            cycleWorkspace(by: count)
+        case "workspace.previous":
+            cycleWorkspace(by: -count)
+
         case "toggle.sidebar":
             sidebarVisible.toggle()
         case "toggle.inspector":
@@ -141,6 +173,102 @@ extension AppModel {
 
     private func parentOfNode(_ node: NodeID) -> NodeID? {
         orderedExplorerNodes().first { host.cachedChildren(of: $0)?.contains(node) == true }
+    }
+
+    // MARK: Surfaces
+
+    /// Step between surfaces, with the sidebar standing in as the one off the
+    /// left edge.
+    ///
+    /// That is what makes `C-w h` mean one thing rather than two: from any
+    /// canvas it walks left through the splits, and from the leftmost one it
+    /// keeps going and lands in the explorer — which is where "further left"
+    /// visibly is. `C-w l` comes back the same way.
+    private func moveSurface(_ direction: PaneDirection) {
+        // "With the app rather than a canvas" is the window holding the
+        // keyboard itself, which is what `explorer.focus` leaves behind and
+        // what `mode.insert` already tests for. Asking instead whether an
+        // *editor* had focus — as this did — made the whole feature dead
+        // over a terminal, a web page, or anything else that isn't one.
+        if NSApp.keyWindow?.firstResponder is NSWindow {
+            // Only rightward means anything from here: back into the canvas.
+            if direction == .right { focusActiveSurface() }
+            return
+        }
+        if movePane(direction) != nil {
+            focusActiveSurface()
+        } else if direction == .left {
+            // Out of the panes entirely.
+            NSApp.keyWindow?.makeFirstResponder(nil)
+        }
+    }
+
+    /// Put the keyboard in whatever the active surface is showing, so that
+    /// having moved there is the same thing as being there.
+    /// Put the keyboard in whatever the active surface is showing.
+    ///
+    /// After the update the move itself set going, not during it: activating a
+    /// pane re-lays out both panes, and a responder installed first was being
+    /// undone by that pass — the border moved and the keyboard didn't. The
+    /// editor defers its first scroll a turn for the same reason.
+    ///
+    /// Never clears the responder on failure. Doing that used to hand the
+    /// keyboard to the window, which `moveSurface` reads as "you are in the
+    /// sidebar" — so one surface with nothing focusable in it, or one focus
+    /// that didn't take, and every later step became a no-op until you
+    /// clicked back in. Leaving the keyboard where it was keeps moving
+    /// working regardless.
+    private func focusActiveSurface() {
+        guard let window = NSApp.keyWindow, let pane = navigation.activePane?.id else { return }
+        DispatchQueue.main.async {
+            guard let target = PaneSurfaces.focusTarget(of: pane, in: window) else { return }
+            window.makeFirstResponder(target)
+        }
+    }
+
+    // MARK: Nodes
+
+    /// The next node at the same depth, stepping over an expanded subtree
+    /// rather than down into it — how you get through a big folder.
+    ///
+    /// Stops at the end of the parent: a sibling is only a sibling while the
+    /// rows stay at least as deep, and the first shallower row is the parent's
+    /// next sibling, which belongs to a different list.
+    private func moveToSibling(down: Bool, times: Int) {
+        let rows = SidebarRows.flatten(
+            entries: rootLayout.entries,
+            expandedNodes: sidebar.expandedNodes,
+            graph: SidebarGraph(
+                children: { [host] in host.children(of: $0) },
+                isExpandable: { [host] in host.node($0)?.hasChildren ?? false },
+                hasMore: { [host] in host.hasMoreChildren($0) }))
+        guard let current = host.selection.first ?? host.focusedNode,
+              var index = rows.firstIndex(where: { $0.nodeID == current }) else { return }
+        let depth = rows[index].depth
+        var target: NodeID?
+
+        for _ in 0..<max(times, 1) {
+            var step = index
+            while true {
+                step += down ? 1 : -1
+                guard rows.indices.contains(step), rows[step].depth >= depth else { break }
+                if rows[step].depth == depth, let node = rows[step].nodeID {
+                    target = node
+                    index = step
+                    break
+                }
+            }
+        }
+        guard let target else { return }
+        host.select([target])
+        sidebar.anchor = target
+    }
+
+    private func selectParentOfSelection() {
+        guard let node = host.selection.first ?? host.focusedNode,
+              let parent = parentOfNode(node) else { return }
+        host.select([parent])
+        sidebar.anchor = parent
     }
 
     // MARK: Tabs

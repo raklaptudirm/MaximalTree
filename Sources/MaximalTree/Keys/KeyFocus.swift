@@ -41,19 +41,24 @@ enum KeyFocus {
         window?.firstResponder as? MaximalEditor.EditorTextView
     }
 
+    /// Whether this view is somewhere typing could usefully go.
+    ///
+    /// A leaf that will take focus: the terminal's surface, a web view.
+    /// Containers and SwiftUI's own backing views are skipped — they accept
+    /// focus without doing anything useful with it.
+    @MainActor
+    static func isKeyTaker(_ view: NSView) -> Bool {
+        let name = String(describing: type(of: view))
+        return view.acceptsFirstResponder && !(view is NSScrollView) && !name.contains("Hosting")
+            && (view.subviews.isEmpty || view is MaximalEditor.EditorTextView)
+    }
+
     /// The first view in a tree that will accept the keyboard — where typing
     /// goes when the canvas isn't an editor. A terminal, a web page.
     @MainActor
     static func firstKeyTaker(in view: NSView?) -> NSView? {
         guard let view else { return nil }
-        // A leaf that will take focus: the terminal's surface, a web view.
-        // Containers and SwiftUI's own backing views are skipped — they accept
-        // focus without doing anything useful with it.
-        let name = String(describing: type(of: view))
-        if view.acceptsFirstResponder, !(view is NSScrollView), !name.contains("Hosting"),
-           view.subviews.isEmpty || view is MaximalEditor.EditorTextView {
-            return view
-        }
+        if isKeyTaker(view) { return view }
         for subview in view.subviews {
             if let found = firstKeyTaker(in: subview) { return found }
         }

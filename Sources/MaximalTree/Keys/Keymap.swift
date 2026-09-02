@@ -39,6 +39,21 @@ struct Keymap {
         }
     }
 
+    /// Every command any sequence in this map names.
+    ///
+    /// For checking that a key names something real: a binding whose command
+    /// nothing runs is a key that silently does nothing, which is worse than
+    /// one that isn't bound at all.
+    var allCommands: Set<String> {
+        var found: Set<String> = []
+        var stack = [root]
+        while let node = stack.popLast() {
+            if case .command(let id) = node.binding { found.insert(id) }
+            stack.append(contentsOf: node.children.values)
+        }
+        return found
+    }
+
     /// Bind a sequence written as `"SPC g s"`. Intermediate chords become
     /// prefixes; `label` names the group they form.
     mutating func bind(_ sequence: String, to command: String, group: String? = nil) {

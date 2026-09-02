@@ -90,6 +90,12 @@ public final class VimEngine {
             return VimOutcome(edit: nil, caret: caret, mode: .normal, selection: nil)
         }
         guard mode != .insert else { return nil }
+        // A control chord is a different key from the letter in it, and this
+        // engine binds none of them. Without this `motion` compares only the
+        // letter, so `C-w` read as the word motion and the editor swallowed
+        // the app's window prefix — along with `C-o` and `C-i`, which is to
+        // say the whole of navigation history — before the keymap saw it.
+        guard !key.control else { return nil }
 
         // Counts, Vim's multiplier. `0` is a motion unless a count is running.
         if pending.isEmpty, let digit = Int(key.key), key.key.count == 1,

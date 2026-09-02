@@ -198,6 +198,13 @@ final class GraphStore: GraphBackend {
     func splitActivePane(horizontal: Bool) { nav.splitActivePane(horizontal: horizontal); didNavigate() }
     func closeActivePane() { nav.closeActivePane(); didNavigate() }
     func activatePane(_ id: UUID) { nav.activatePane(id); didNavigate() }
+    @discardableResult
+    func movePane(_ direction: PaneDirection) -> UUID? {
+        let moved = nav.movePane(direction)
+        if moved != nil { didNavigate() }
+        return moved
+    }
+    func cyclePane(by offset: Int) { nav.cyclePane(by: offset); didNavigate() }
 
     private func didNavigate() {
         // Any navigation invalidates a pending phony-node jump; an anchored open

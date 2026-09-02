@@ -204,6 +204,24 @@ import Foundation
         #expect(buffer.mode == .normal)
     }
 
+    /// A control chord is not the letter inside it. The engine binds none of
+    /// them, so it must decline them rather than match on the letter alone —
+    /// it read `C-w` as the word motion and ate the app's window prefix, and
+    /// `C-o`/`C-i` as `o`/`i`, which opened a line and started inserting
+    /// instead of stepping through history.
+    @Test func controlChordsBelongToTheApp() {
+        let engine = VimEngine()
+        for letter in ["w", "o", "i", "h", "j", "k", "l", "d", "g"] {
+            #expect(engine.handle(VimKey(letter, control: true), mode: .normal,
+                                  text: "alpha beta", caret: 0) == nil,
+                    "C-\(letter) should fall through to the app")
+        }
+        // And the plain letter still works, so this declines the chord and
+        // not the key.
+        #expect(engine.handle(VimKey("w"), mode: .normal,
+                              text: "alpha beta", caret: 0) != nil)
+    }
+
     /// In insert mode the engine must keep its hands off: everything except
     /// Escape belongs to the text view.
     @Test func insertModePassesKeysThrough() {

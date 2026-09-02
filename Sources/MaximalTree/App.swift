@@ -263,6 +263,24 @@ final class AppModel {
     func splitPaneDown() { store?.splitActivePane(horizontal: false) }
     func closeActivePane() { store?.closeActivePane() }
     func activatePane(_ id: UUID) { store?.activatePane(id) }
+    @discardableResult
+    func movePane(_ direction: PaneDirection) -> UUID? { store?.movePane(direction) }
+    func cyclePane(by offset: Int) { store?.cyclePane(by: offset) }
+
+    /// Step to the next or previous workspace, wrapping. The workspace list is
+    /// the order the switcher shows, so this and the menu agree.
+    func cycleWorkspace(by offset: Int) {
+        guard workspaces.count > 1, let active = activeWorkspaceID,
+              let index = workspaces.firstIndex(where: { $0.id == active }) else { return }
+        switchWorkspace(to: workspaces[(index + offset).wrapped(around: workspaces.count)].id)
+    }
+
+    /// The nth workspace, 1-based, as the switcher lists them.
+    func selectWorkspace(number: Int) {
+        let index = number - 1
+        guard workspaces.indices.contains(index) else { return }
+        switchWorkspace(to: workspaces[index].id)
+    }
 
     /// Actions (from any plugin) that apply to `targets`, defaulting to the current
     /// selection. One registry feeds the menu bar, the palette, the sidebar context

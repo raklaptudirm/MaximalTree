@@ -1,6 +1,16 @@
 import Foundation
 import MaximalTreeKit
 
+extension Int {
+    /// Modulo that brings negatives round the other side, which `%` doesn't:
+    /// stepping back from the first tab belongs on the last.
+    func wrapped(around count: Int) -> Int {
+        guard count > 0 else { return 0 }
+        let remainder = self % count
+        return remainder < 0 ? remainder + count : remainder
+    }
+}
+
 /// One navigation surface: a linear back/forward history shown in a single canvas
 /// pane. (Before splits existed this state lived directly on `Tab`.)
 struct Pane: Identifiable, Equatable {
@@ -45,6 +55,17 @@ struct Pane: Identifiable, Equatable {
     }
 }
 
+/// Which way to step between surfaces.
+enum PaneDirection: Equatable {
+    case left, right, up, down
+
+    /// Left and right cross a side-by-side split; up and down a stacked one.
+    var isHorizontal: Bool { self == .left || self == .right }
+    /// `first` is the leading child — left in a side-by-side split, top in a
+    /// stacked one — so these two are the ones that move towards `second`.
+    var towardsSecond: Bool { self == .right || self == .down }
+}
+
 /// A binary tree of panes. "Arbitrary splits" come from nesting: splitting a pane
 /// replaces its leaf with a split holding it and a new pane, on either axis.
 indirect enum SplitNode: Equatable {
@@ -63,6 +84,55 @@ indirect enum SplitNode: Equatable {
     }
 
     func pane(_ id: UUID) -> Pane? { panes.first { $0.id == id } }
+
+    /// The pane you reach by stepping `direction` out of `id`, or nil when
+    /// that edge of the window is the edge of the tree.
+    ///
+    /// The tree is what says where things are — panes have no coordinates —
+    /// so this walks up from the pane looking for the first split that both
+    /// runs the right way and has something on the far side, then comes back
+    /// down the sibling hugging the boundary it just crossed. That last part
+    /// is what makes stepping right out of a tall pane land on the neighbour
+    /// beside it rather than in some pane three splits away.
+    func pane(from id: UUID, moving direction: PaneDirection) -> UUID? {
+        guard var route = route(to: id) else { return nil }
+        while let step = route.popLast() {
+            guard case .split(_, let horizontal, _, let first, let second) = step.split,
+                  horizontal == direction.isHorizontal,
+                  step.tookSecond != direction.towardsSecond
+            else { continue }
+            return (direction.towardsSecond ? second : first).edgePane(facing: direction)
+        }
+        return nil
+    }
+
+    /// Descending into a neighbour, the pane against the edge you came
+    /// through. Across the other axis there is no nearer or further, so the
+    /// leading child stands in — top for a stacked split, left for a
+    /// side-by-side one.
+    private func edgePane(facing direction: PaneDirection) -> UUID {
+        switch self {
+        case .pane(let pane):
+            return pane.id
+        case .split(_, let horizontal, _, let first, let second):
+            guard horizontal == direction.isHorizontal else {
+                return first.edgePane(facing: direction)
+            }
+            return (direction.towardsSecond ? first : second).edgePane(facing: direction)
+        }
+    }
+
+    /// The splits between the root and `id`, each with the branch taken.
+    private func route(to id: UUID) -> [(split: SplitNode, tookSecond: Bool)]? {
+        switch self {
+        case .pane(let pane):
+            return pane.id == id ? [] : nil
+        case .split(_, _, _, let first, let second):
+            if let rest = first.route(to: id) { return [(self, false)] + rest }
+            if let rest = second.route(to: id) { return [(self, true)] + rest }
+            return nil
+        }
+    }
 
     /// Mutate one pane in place. Returns false when the pane isn't in this subtree.
     @discardableResult
@@ -227,6 +297,28 @@ final class NavigationModel {
     func activatePane(_ id: UUID) {
         guard tabs[activeIndex].root.pane(id) != nil else { return }
         tabs[activeIndex].activePaneID = id
+    }
+
+    /// Step to the neighbouring surface. Returns the pane now active, or nil
+    /// when there is nothing that way — which is the caller's cue to leave the
+    /// canvas entirely and hand the keyboard to the sidebar.
+    @discardableResult
+    func movePane(_ direction: PaneDirection) -> UUID? {
+        guard let from = activePane?.id,
+              let target = activeTab.root.pane(from: from, moving: direction)
+        else { return nil }
+        tabs[activeIndex].activePaneID = target
+        return target
+    }
+
+    /// The panes in layout order, for stepping through them regardless of
+    /// arrangement — `C-w w`, when you don't want to think about geometry.
+    func cyclePane(by offset: Int) {
+        let panes = activeTab.root.panes
+        guard panes.count > 1, let from = activePane?.id,
+              let index = panes.firstIndex(where: { $0.id == from }) else { return }
+        let next = (index + offset).wrapped(around: panes.count)
+        tabs[activeIndex].activePaneID = panes[next].id
     }
 
     /// Move a divider. Clamped so neither side can be dragged away entirely.
