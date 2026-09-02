@@ -1,39 +1,52 @@
 import AppKit
 
-/// A canvas that does something with keys while the app is in normal mode.
+/// Which keymap is in force.
 ///
-/// Normal mode means keys are commands, and a canvas is entitled to its own:
-/// an editor moves its caret with `j`, a diff might step between hunks, a
-/// preview might page. Whatever a canvas declines falls through to the app's
-/// keymap, so the leader and every global binding keep working over it.
+/// The app's one mode. Not a copy per canvas kept in step with the app's —
+/// that arrangement cost three bugs in a row (letters swallowed as commands
+/// because the app hadn't heard the editor enter insert; escape telling the
+/// wrong canvas to leave; the app and the editor disagreeing about which mode
+/// was even in force), because two things that must always agree eventually
+/// won't. There is one value, and it decides how a key press is read.
+/// Frozen: these three are the whole vocabulary, and the framework is built
+/// with library evolution on, so without this every caller switching over a
+/// mode has to carry an `@unknown default` for a case that never arrives.
+@frozen
+public enum KeyMode: String, Sendable {
+    /// Keys are commands. Where the app spends its time.
+    case normal
+    /// Keys are text, and belong to whatever has focus.
+    case insert
+    /// Keys are commands still, extending a selection as they go.
+    case visual
+
+    public var label: String { rawValue.capitalized }
+
+    /// Whether keys are text rather than commands — the one distinction
+    /// routing actually turns on.
+    public var isTyping: Bool { self == .insert }
+}
+
+/// A canvas that does something with keys itself.
 ///
-/// Insert mode never comes here — there, keys are text and go straight to
-/// whatever has focus. No canvas is a special case in either direction; a
-/// canvas that doesn't adopt this simply leaves normal mode to the app.
+/// A canvas is entitled to its own commands: an editor moves its caret with
+/// `j`, a diff might step between hunks, a preview might page. Whatever it
+/// declines falls through to the app's keymap, so the leader and every global
+/// binding keep working over it.
+///
+/// The mode comes in as an argument and goes back out as a return value; the
+/// canvas never stores it. A canvas that doesn't adopt this simply leaves
+/// every key to the app.
 @MainActor
 public protocol CanvasKeyHandling: AnyObject {
-    /// Handle a key press. Return false to let the app have it.
+    /// Handle a key press in the app's current mode.
     ///
     /// - Parameters:
     ///   - key: a single character, or a name like `RET`, `TAB`, `ESC`.
     ///   - control: whether Control was held.
-    func handleNormalModeKey(_ key: String, control: Bool) -> Bool
-
-    /// Told when the app switches modes, so a canvas showing its own state —
-    /// a caret shape, a selection — can follow.
-    func canvasModeChanged(toInsert: Bool)
-
-    /// Whether the canvas now considers itself in insert mode — queried right
-    /// after it handles a normal-mode key, so the app's own mode follows a
-    /// transition the canvas made on its own (`i`, `o`, a visual `c`, …)
-    /// without being told about each one by name. Without this the app kept
-    /// routing keys as commands after the canvas had already moved to insert,
-    /// so ordinary letters that happened to be bound (`g`, `h`, `o`) were
-    /// swallowed instead of typed.
-    var isInsertMode: Bool { get }
-}
-
-public extension CanvasKeyHandling {
-    func canvasModeChanged(toInsert: Bool) {}
-    var isInsertMode: Bool { false }
+    ///   - mode: the mode in force, which the canvas reads rather than keeps.
+    /// - Returns: the mode the app should be in now — usually the one that
+    ///   came in, but `i` and `o` and a visual `c` all answer `.insert` — or
+    ///   nil to decline the key and leave it to the app.
+    func handleKey(_ key: String, control: Bool, mode: KeyMode) -> KeyMode?
 }

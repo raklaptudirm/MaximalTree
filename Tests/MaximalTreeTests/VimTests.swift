@@ -13,26 +13,42 @@ import Foundation
         var text: String
         var caret: Int
         var selection: NSRange?
+        /// The mode the app would be holding — the engine has none of its own.
+        var mode: VimMode = .normal
 
         init(_ text: String, caret: Int = 0) {
             self.text = text
             self.caret = caret
         }
 
+        /// One named key — `ESC`, `RET` — which `type` can't spell.
+        @discardableResult
+        func press(_ key: String) -> Buffer { feed(key) }
+
         @discardableResult
         func type(_ keys: String) -> Buffer {
             for character in keys {
                 let key = character == " " ? "SPC" : String(character)
-                guard let outcome = engine.handle(VimKey(key), text: text, caret: caret)
-                else { continue }
-                if let edit = outcome.edit {
-                    let ns = NSMutableString(string: text)
-                    ns.replaceCharacters(in: edit.range, with: edit.replacement)
-                    text = ns as String
-                }
-                caret = min(max(outcome.caret, 0), (text as NSString).length)
-                selection = outcome.selection
+                feed(key)
             }
+            return self
+        }
+
+        @discardableResult
+        private func feed(_ key: String) -> Buffer {
+            guard let outcome = engine.handle(VimKey(key), mode: mode,
+                                              text: text, caret: caret)
+            else { return self }
+            // The mode comes back with the outcome; nothing holds a second
+            // copy of it, here or in the app.
+            mode = outcome.mode
+            if let edit = outcome.edit {
+                let ns = NSMutableString(string: text)
+                ns.replaceCharacters(in: edit.range, with: edit.replacement)
+                text = ns as String
+            }
+            caret = min(max(outcome.caret, 0), (text as NSString).length)
+            selection = outcome.selection
             return self
         }
 
@@ -116,7 +132,7 @@ import Foundation
         let buffer = Buffer("alpha beta", caret: 0)
         buffer.type("cw")
         #expect(buffer.text == "beta")
-        #expect(buffer.engine.mode == .insert, "c must leave you typing")
+        #expect(buffer.mode == .insert, "c must leave you typing")
     }
 
     /// `cc` empties the line but keeps it — and keeps its indentation, which
@@ -125,7 +141,7 @@ import Foundation
         let buffer = Buffer("def one():\n    return 1\n", caret: 15)
         buffer.type("cc")
         #expect(buffer.text == "def one():\n    \n")
-        #expect(buffer.engine.mode == .insert)
+        #expect(buffer.mode == .insert)
         #expect(buffer.marked == "def one():\n    |\n")
     }
 
@@ -168,7 +184,7 @@ import Foundation
         let buffer = Buffer("    first\nsecond", caret: 5)
         buffer.type("o")
         #expect(buffer.text == "    first\n    \nsecond")
-        #expect(buffer.engine.mode == .insert)
+        #expect(buffer.mode == .insert)
         #expect(buffer.marked == "    first\n    |\nsecond")
     }
 
@@ -183,31 +199,30 @@ import Foundation
     @Test func escapeLeavesInsertMode() {
         let buffer = Buffer("abc", caret: 0)
         buffer.type("i")
-        #expect(buffer.engine.mode == .insert)
-        buffer.engine.setMode(.insert)
-        _ = buffer.engine.handle(VimKey("ESC"), text: buffer.text, caret: 0)
-        #expect(buffer.engine.mode == .normal)
+        #expect(buffer.mode == .insert)
+        buffer.press("ESC")
+        #expect(buffer.mode == .normal)
     }
 
     /// In insert mode the engine must keep its hands off: everything except
     /// Escape belongs to the text view.
     @Test func insertModePassesKeysThrough() {
         let engine = VimEngine()
-        engine.setMode(.insert)
-        #expect(engine.handle(VimKey("d"), text: "abc", caret: 0) == nil)
-        #expect(engine.handle(VimKey("ESC"), text: "abc", caret: 0) != nil)
+        #expect(engine.handle(VimKey("d"), mode: .insert, text: "abc", caret: 0) == nil,
+                "insert mode is typing: the engine wants none of it")
+        #expect(engine.handle(VimKey("ESC"), mode: .insert, text: "abc", caret: 0)?.mode == .normal)
     }
 
     @Test func visualModeSelectsAsItMoves() {
         let buffer = Buffer("alpha beta", caret: 0)
         buffer.type("v")
-        #expect(buffer.engine.mode == .visual)
+        #expect(buffer.mode == .visual)
         buffer.type("ll")
         // Inclusive of both ends, as Vim highlights it: a, l and p.
         #expect(buffer.selection == NSRange(location: 0, length: 3))
         buffer.type("d")
         #expect(buffer.text == "ha beta", "visual delete took the wrong range")
-        #expect(buffer.engine.mode == .normal)
+        #expect(buffer.mode == .normal)
     }
 
     /// A dead end abandons the command rather than half-running it.
@@ -215,7 +230,7 @@ import Foundation
         let buffer = Buffer("alpha beta", caret: 0)
         buffer.type("dz")
         #expect(buffer.text == "alpha beta")
-        #expect(buffer.engine.mode == .normal)
+        #expect(buffer.mode == .normal)
     }
 
     @Test func editingAnEmptyBufferIsHarmless() {

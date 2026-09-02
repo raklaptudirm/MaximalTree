@@ -322,8 +322,8 @@ public struct MaximalEditor: NSViewRepresentable {
         public let vim = VimEngine()
         public var vimEnabled = false
 
-        /// Insert mode is plain typing; the app never sends keys here in
-        /// normal mode (see `handleNormalModeKey`).
+        /// Insert mode is plain typing; in a commanding mode the app never
+        /// sends keys here at all (see `handleKey`).
         public override func keyDown(with event: NSEvent) {
             super.keyDown(with: event)
         }

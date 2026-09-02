@@ -11,11 +11,11 @@ import MaximalTreeKit
 /// a second without a window on screen.
 ///
 /// Offsets are UTF-16, because that is what the text views measure in.
-public enum VimMode: String, Sendable {
-    case normal, insert, visual
 
-    public var label: String { rawValue.uppercased() }
-}
+/// The mode is the app's, not the editor's: `KeyMode` from the SDK, passed in
+/// on every key and handed back with the outcome. Aliased so the engine still
+/// reads as a Vim engine.
+public typealias VimMode = KeyMode
 
 public struct VimKey: Equatable, Sendable {
     public let key: String
@@ -44,7 +44,6 @@ public struct VimOutcome: Equatable, Sendable {
 
 @MainActor
 public final class VimEngine {
-    public private(set) var mode: VimMode = .normal
     /// The keys typed so far towards a command — `d` waiting for a motion,
     /// `g` waiting for its second half.
     public private(set) var pending: [VimKey] = []
@@ -53,27 +52,42 @@ public final class VimEngine {
     private var register: (text: String, linewise: Bool)?
     /// Where visual mode started.
     private var visualAnchor: Int?
+    /// The mode the last key arrived in, so a change made anywhere else —
+    /// escape, a command, another canvas handing focus over — abandons a
+    /// half-typed command rather than letting it finish in a mode that was
+    /// never meant to run it.
+    private var lastMode: VimMode = .normal
 
     public init() {}
 
-    public func setMode(_ mode: VimMode) {
-        self.mode = mode
-        pending = []
-        count = nil
-        if mode != .visual { visualAnchor = nil }
+    /// Feed a key in the mode it arrived in. Returns nil when the key isn't
+    /// ours — in insert mode that is everything, which is how typing stays
+    /// typing.
+    ///
+    /// The mode goes in and comes back out on the outcome; none of it is kept
+    /// here beyond noticing that it changed.
+    public func handle(_ key: VimKey, mode: VimMode, text: String,
+                       caret: Int) -> VimOutcome? {
+        // Set from anywhere else — escape, a command, focus arriving — a
+        // half-typed `d` has no business finishing in the mode that follows.
+        if mode != lastMode {
+            reset()
+            if mode != .visual { visualAnchor = nil }
+            lastMode = mode
+        }
+        guard let outcome = compute(key, mode: mode, text: text, caret: caret) else { return nil }
+        lastMode = outcome.mode
+        if outcome.mode != .visual { visualAnchor = nil }
+        return outcome
     }
 
-    /// Feed a key. Returns nil when the key isn't ours — in insert mode that
-    /// is everything except Escape, which is how typing stays typing.
-    public func handle(_ key: VimKey, text: String, caret: Int) -> VimOutcome? {
+    private func compute(_ key: VimKey, mode: VimMode, text: String,
+                         caret: Int) -> VimOutcome? {
         let ns = text as NSString
 
         if key.key == "ESC" {
-            let outcome = VimOutcome(edit: nil,
-                                     caret: mode == .insert ? max(caret - 0, 0) : caret,
-                                     mode: .normal, selection: nil)
-            setMode(.normal)
-            return outcome
+            reset()
+            return VimOutcome(edit: nil, caret: caret, mode: .normal, selection: nil)
         }
         guard mode != .insert else { return nil }
 
@@ -81,7 +95,7 @@ public final class VimEngine {
         if pending.isEmpty, let digit = Int(key.key), key.key.count == 1,
            digit > 0 || count != nil {
             count = (count ?? 0) * 10 + digit
-            return VimOutcome(edit: nil, caret: caret, mode: mode, selection: selectionNow(caret))
+            return VimOutcome(edit: nil, caret: caret, mode: mode, selection: selectionNow(caret, mode: mode))
         }
 
         let sequence = pending + [key]
@@ -120,38 +134,38 @@ public final class VimEngine {
         // A motion prefix that needs another key: `g`.
         if isMotionPrefix(sequence) {
             pending = sequence
-            return VimOutcome(edit: nil, caret: caret, mode: mode, selection: selectionNow(caret))
+            return VimOutcome(edit: nil, caret: caret, mode: mode, selection: selectionNow(caret, mode: mode))
         }
 
         defer { if pending.isEmpty { count = nil } }
-        return command(sequence, caret: caret, count: repeats, in: ns)
+        return command(sequence, mode: mode, caret: caret, count: repeats, in: ns)
     }
 
     // MARK: Commands
 
-    private func command(_ sequence: [VimKey], caret: Int, count: Int,
+    private func command(_ sequence: [VimKey], mode: VimMode, caret: Int, count: Int,
                          in ns: NSString) -> VimOutcome? {
         let key = sequence.last?.key ?? ""
 
         // Entering insert, each from its own place.
         switch key {
         case "i" where sequence.count == 1:
-            reset(); setMode(.insert)
+            reset()
             return VimOutcome(edit: nil, caret: caret, mode: .insert, selection: nil)
         case "a" where sequence.count == 1:
-            reset(); setMode(.insert)
+            reset()
             return VimOutcome(edit: nil, caret: min(caret + 1, ns.length),
                               mode: .insert, selection: nil)
         case "I" where sequence.count == 1:
-            reset(); setMode(.insert)
+            reset()
             return VimOutcome(edit: nil, caret: firstNonBlank(ofLineAt: caret, in: ns),
                               mode: .insert, selection: nil)
         case "A" where sequence.count == 1:
-            reset(); setMode(.insert)
+            reset()
             return VimOutcome(edit: nil, caret: lineEnd(at: caret, in: ns),
                               mode: .insert, selection: nil)
         case "o", "O":
-            reset(); setMode(.insert)
+            reset()
             let atEnd = key == "o"
             let insertion = atEnd ? lineEnd(at: caret, in: ns) : lineStart(at: caret, in: ns)
             let indent = leadingWhitespace(ofLineAt: caret, in: ns)
@@ -162,7 +176,6 @@ public final class VimEngine {
 
         case "v":
             visualAnchor = caret
-            setMode(.visual)
             return VimOutcome(edit: nil, caret: caret, mode: .visual,
                               selection: NSRange(location: caret, length: 0))
 
@@ -178,7 +191,6 @@ public final class VimEngine {
             let range = NSRange(location: caret, length: lineEnd(at: caret, in: ns) - caret)
             register = (ns.substring(with: range), false)
             reset()
-            if key == "C" { setMode(.insert) }
             return VimOutcome(edit: (range, ""), caret: caret,
                               mode: key == "C" ? .insert : .normal, selection: nil)
 
@@ -226,10 +238,8 @@ public final class VimEngine {
             register = (ns.substring(with: clamped), false)
             reset()
             if key == "y" {
-                setMode(.normal)
                 return VimOutcome(edit: nil, caret: clamped.location, mode: .normal, selection: nil)
             }
-            setMode(key == "c" ? .insert : .normal)
             return VimOutcome(edit: (clamped, ""), caret: clamped.location,
                               mode: key == "c" ? .insert : .normal, selection: nil)
         }
@@ -249,7 +259,6 @@ public final class VimEngine {
         case "y":
             return VimOutcome(edit: nil, caret: range.location, mode: .normal, selection: nil)
         case "c":
-            setMode(.insert)
             return VimOutcome(edit: (range, ""), caret: range.location, mode: .insert, selection: nil)
         default:
             return VimOutcome(edit: (range, ""), caret: range.location, mode: .normal, selection: nil)
@@ -271,7 +280,6 @@ public final class VimEngine {
             return VimOutcome(edit: nil, caret: range.location, mode: .normal, selection: nil)
         case "c":
             // `cc` keeps the line, empties it, and leaves you typing on it.
-            setMode(.insert)
             let indent = leadingWhitespace(ofLineAt: caret, in: ns)
             return VimOutcome(edit: (range, indent + "\n"),
                               caret: range.location + indent.count, mode: .insert, selection: nil)
@@ -287,7 +295,7 @@ public final class VimEngine {
         count = nil
     }
 
-    private func selectionNow(_ caret: Int) -> NSRange? {
+    private func selectionNow(_ caret: Int, mode: VimMode) -> NSRange? {
         guard mode == .visual, let anchor = visualAnchor else { return nil }
         return NSRange(location: min(anchor, caret), length: abs(caret - anchor) + 1)
     }
@@ -300,26 +308,21 @@ private extension String {
 }
 
 extension MaximalEditor.EditorTextView: CanvasKeyHandling {
-    /// The editor's share of normal mode: motions, operators, counts. What it
-    /// doesn't understand goes back to the app, which is how the leader and
-    /// every global binding keep working with the caret in a document.
-    public func handleNormalModeKey(_ key: String, control: Bool) -> Bool {
-        guard vimEnabled else { return false }
-        guard let outcome = vim.handle(VimKey(key, control: control),
+    /// The editor's share of the commanding modes: motions, operators, counts.
+    /// What it doesn't understand goes back to the app, which is how the
+    /// leader and every global binding keep working with the caret in a
+    /// document.
+    public func handleKey(_ key: String, control: Bool, mode: KeyMode) -> KeyMode? {
+        guard vimEnabled else { return nil }
+        guard let outcome = vim.handle(VimKey(key, control: control), mode: mode,
                                        text: text ?? "", caret: textSelection.location)
         else {
             // Nothing to do with it — but a bare character must not fall
-            // through and be *typed*: in normal mode the app decides, and if
-            // the app has no binding either, nothing happens.
-            return false
+            // through and be *typed*: in a commanding mode the app decides,
+            // and if the app has no binding either, nothing happens.
+            return nil
         }
         applyVim(outcome)
-        return true
+        return outcome.mode
     }
-
-    public func canvasModeChanged(toInsert insert: Bool) {
-        vim.setMode(insert ? .insert : .normal)
-    }
-
-    public var isInsertMode: Bool { vim.mode == .insert }
 }

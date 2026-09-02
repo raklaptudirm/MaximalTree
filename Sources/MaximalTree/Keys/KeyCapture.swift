@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import MaximalEditorKit
+import MaximalTreeKit
 
 /// Feeds every key press to the modal layer before AppKit sees it.
 ///
@@ -55,34 +56,8 @@ struct KeyCapture: ViewModifier {
 
             @MainActor
             private static func handle(_ chord: KeyChord, model: AppModel) -> Bool {
-                let destination = KeyRouting.destination(for: chord, mode: model.keys.mode)
-                guard destination == .app else { return false }
-
-                if chord.key == "ESC" {
-                    KeyFocus.focusedCanvas()?.canvasModeChanged(toInsert: false)
-                }
-
-                // The focused canvas gets first refusal — its own motions, its
-                // own operators — but never the leader or the rest of a
-                // sequence already begun, which belong to the app wherever the
-                // keyboard is.
-                let reserved = chord.key == "SPC" || !model.keys.pending.isEmpty
-                if !reserved, chord.key != "ESC",
-                   let canvas = KeyFocus.focusedCanvas(),
-                   canvas.handleNormalModeKey(chord.key, control: chord.control) {
-                    // A canvas can enter insert on its own (`i`, `o`, a visual
-                    // `c`, …) without the app ever seeing the key that did it.
-                    // Without this the app kept thinking it was still in
-                    // normal mode and went on treating letters as commands —
-                    // which is why ordinary text landed on the floor.
-                    if canvas.isInsertMode { model.keys.setMode(.insert) }
-                    return true
-                }
-
-                switch model.keys.handle(chord, editing: false) {
-                case .consumed, .pendingSequence: return true
-                case .passed: return false
-                }
+                KeyDispatch.handle(chord, keys: model.keys,
+                                   canvas: KeyFocus.focusedCanvas())
             }
 
             func remove() {
@@ -114,14 +89,14 @@ struct KeyModeIndicator: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        let mode = displayedMode
+        let mode = model.keys.mode
         HStack(spacing: 5) {
             Circle()
-                .fill(mode.tint)
+                .fill(color(of: mode))
                 .frame(width: 6, height: 6)
-            Text(mode.name)
+            Text(mode.label)
                 .font(.callout)
-                .foregroundStyle(mode.tint)
+                .foregroundStyle(color(of: mode))
 
             let keys = model.keys
             if !keys.pending.isEmpty {
@@ -141,21 +116,15 @@ struct KeyModeIndicator: View {
         .help("Keyboard mode. Escape returns to normal.")
     }
 
-    /// The mode actually in force, and the color that names it.
-    ///
-    /// When the editor has the keyboard it is the one deciding what keys mean,
-    /// so its mode is the true one — an indicator that said Normal while the
-    /// editor was inserting would be worse than none.
-    private var displayedMode: (name: String, tint: Color) {
-        if let editor = NSApp.keyWindow?.firstResponder as? MaximalEditor.EditorTextView,
-           editor.vimEnabled {
-            switch editor.vim.mode {
-            case .normal: return ("Normal", .secondary)
-            case .insert: return ("Insert", .green)
-            case .visual: return ("Visual", .purple)
-            }
+    /// There is one mode and this reads it. It used to have to ask the
+    /// focused editor for its own idea of the mode instead, because there
+    /// were two of them and the editor's was the one being typed into.
+    private func color(of mode: KeyMode) -> Color {
+        switch mode {
+        case .normal: return .secondary
+        case .insert: return .green
+        case .visual: return .purple
         }
-        return model.keys.mode == .insert ? ("Insert", .green) : ("Normal", .secondary)
     }
 }
 

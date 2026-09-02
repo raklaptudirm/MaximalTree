@@ -1,20 +1,6 @@
 import Foundation
 import Observation
-
-/// Which keymap is in force.
-enum KeyMode: String, Sendable {
-    /// Keys are commands. Where the app spends its time.
-    case normal
-    /// Keys are text. The editor has the keyboard, and only Escape is ours.
-    case insert
-
-    var label: String {
-        switch self {
-        case .normal: return "NORMAL"
-        case .insert: return "INSERT"
-        }
-    }
-}
+import MaximalTreeKit
 
 /// The modal keyboard layer.
 ///
@@ -68,7 +54,9 @@ final class KeyEngine {
             setMode(.normal)
             return wasPending || editing ? .consumed : .consumed
         }
-        guard mode == .normal, !editing else { return .passed }
+        // Visual is still a commanding mode, so the keymap applies there too:
+        // the leader has to work with a selection up, not just without one.
+        guard !mode.isTyping, !editing else { return .passed }
 
         // Counts: digits before a sequence, but `0` alone is a motion, not a
         // count, so it only counts when one is already being typed.

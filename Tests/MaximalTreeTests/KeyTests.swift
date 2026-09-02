@@ -309,29 +309,37 @@ import SwiftUI
     /// paging. It consumes `n` and declines everything else.
     private final class StubCanvas: NSView, CanvasKeyHandling {
         var consumed: [String] = []
-        var insertModeAnnouncements: [Bool] = []
+        /// The mode each handled key arrived in, which is the only way this
+        /// canvas learns of one — it keeps none.
+        var modesSeen: [KeyMode] = []
 
-        func handleNormalModeKey(_ key: String, control: Bool) -> Bool {
-            guard key == "n" else { return false }
+        func handleKey(_ key: String, control: Bool, mode: KeyMode) -> KeyMode? {
+            guard key == "n" else { return nil }
             consumed.append(key)
-            return true
-        }
-
-        func canvasModeChanged(toInsert insert: Bool) {
-            insertModeAnnouncements.append(insert)
+            modesSeen.append(mode)
+            return mode
         }
     }
 
     @Test func aCanvasHandlesTheKeysItClaims() {
         let canvas = StubCanvas(frame: .zero)
-        #expect(canvas.handleNormalModeKey("n", control: false))
+        #expect(canvas.handleKey("n", control: false, mode: .normal) == .normal)
         #expect(canvas.consumed == ["n"])
     }
 
     @Test func whatItDeclinesIsLeftForTheApp() {
         let canvas = StubCanvas(frame: .zero)
-        #expect(!canvas.handleNormalModeKey("j", control: false),
+        #expect(canvas.handleKey("j", control: false, mode: .normal) == nil,
                 "a canvas that swallows everything would take the app's bindings with it")
+    }
+
+    /// The mode reaches a canvas as an argument, so there is nothing to keep
+    /// in step and nothing to go stale.
+    @Test func theModeArrivesWithTheKey() {
+        let canvas = StubCanvas(frame: .zero)
+        _ = canvas.handleKey("n", control: false, mode: .normal)
+        _ = canvas.handleKey("n", control: false, mode: .visual)
+        #expect(canvas.modesSeen == [.normal, .visual])
     }
 
     /// The editor is reached the same way, through the same protocol.
@@ -343,52 +351,79 @@ import SwiftUI
 
         #expect(editor is CanvasKeyHandling, "the editor should adopt the canvas protocol")
         let canvas = editor as CanvasKeyHandling
-        #expect(canvas.handleNormalModeKey("l", control: false), "the editor declined a motion")
+        #expect(canvas.handleKey("l", control: false, mode: .normal) == .normal,
+                "the editor declined a motion")
         #expect(editor.textSelection.location == 1)
     }
 
-    /// Mode changes are announced to whatever is focused, so a canvas showing
-    /// its own state can follow.
-    @Test func modeChangesReachTheCanvas() {
-        let canvas = StubCanvas(frame: .zero)
-        canvas.canvasModeChanged(toInsert: true)
-        canvas.canvasModeChanged(toInsert: false)
-        #expect(canvas.insertModeAnnouncements == [true, false])
-
-        let editor = MaximalEditor.EditorTextView(frame: .zero)
-        editor.canvasModeChanged(toInsert: true)
-        #expect(editor.vim.mode == .insert)
-        editor.canvasModeChanged(toInsert: false)
-        #expect(editor.vim.mode == .normal)
-    }
-
-    /// Not adopting the protocol is allowed and means "normal mode is the
-    /// app's" — which is what a terminal wants.
+    /// Not adopting the protocol is allowed and means "keys are the app's" —
+    /// which is what a terminal wants.
     @Test func aCanvasNeedNotHandleAnything() {
         let plain = NSView(frame: .zero)
         #expect(!(plain is CanvasKeyHandling))
     }
 
-    /// A canvas that never overrides `isInsertMode` defaults to false, so it
-    /// never claims a mode it has no notion of.
-    @Test func aCanvasWithNoModeOfItsOwnReportsNotInsert() {
-        let canvas = StubCanvas(frame: .zero)
-        #expect(!canvas.isInsertMode)
+    /// The whole trip a key takes, with a real editor on the other end. Every
+    /// mode bug so far lived here, between parts that each tested clean.
+    @Test func theCanvasAnswerBecomesTheAppsMode() {
+        let keys = KeyEngine(keymap: DefaultKeymap.make())
+        let editor = makeEditor()
+
+        #expect(KeyDispatch.handle(KeyChord("i"), keys: keys, canvas: editor))
+        #expect(keys.mode == .insert, "the editor's `i` should have set the app's mode")
+
+        #expect(KeyDispatch.handle(KeyChord("ESC"), keys: keys, canvas: editor))
+        #expect(keys.mode == .normal)
     }
 
-    /// The editor can slip into insert on its own — `i`, `o`, a visual `c` —
-    /// without the app ever seeing a key named "enter insert mode". Whatever
-    /// drives KeyCapture has to ask, after the fact, whether the canvas is
-    /// now in insert, rather than track it by which commands ran.
-    @Test func theEditorReportsItsOwnSlideIntoInsert() {
-        let editor = MaximalEditor.EditorTextView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
-        editor.vimEnabled = true
-        editor.text = "alpha"
-        editor.textSelection = NSRange(location: 0, length: 0)
+    /// Escape is one assignment now, so it works with no canvas at all — and
+    /// with a different one than the key that entered insert went to. Both
+    /// were real bugs when leaving insert meant notifying an object: focus
+    /// moves while typing (a completion panel takes the key window), and the
+    /// canvas still inserting was never told.
+    @Test func escapeIsTheModesAloneAndNeedsNoCanvas() {
+        for canvas in [nil, StubCanvas(frame: .zero)] {
+            let keys = KeyEngine(keymap: DefaultKeymap.make())
+            keys.setMode(.insert)
+            #expect(KeyDispatch.handle(KeyChord("ESC"), keys: keys, canvas: canvas))
+            #expect(keys.mode == .normal)
+        }
+    }
+
+    /// The editor enters insert on its own recognizance — `i`, `o`, a visual
+    /// `c` — and says so by answering with the mode it left behind, rather
+    /// than by keeping one the app has to ask after.
+    @Test func theEditorAnswersWithTheModeItsCommandLeft() {
+        let editor = makeEditor()
         let canvas = editor as CanvasKeyHandling
 
-        #expect(!canvas.isInsertMode)
-        #expect(canvas.handleNormalModeKey("i", control: false))
-        #expect(canvas.isInsertMode, "the editor entered insert on its own recognizance")
+        #expect(canvas.handleKey("l", control: false, mode: .normal) == .normal,
+                "a motion stays in the mode it ran in")
+        #expect(canvas.handleKey("i", control: false, mode: .normal) == .insert)
+        #expect(canvas.handleKey("v", control: false, mode: .normal) == .visual)
+    }
+
+    /// The engine keeps no mode, so one set anywhere else — escape, a
+    /// command, focus arriving — abandons whatever was half-typed rather than
+    /// letting it finish under rules it was never started under.
+    @Test func aHalfTypedCommandIsAbandonedWhenTheModeChangesElsewhere() {
+        let editor = makeEditor()
+        let canvas = editor as CanvasKeyHandling
+
+        #expect(canvas.handleKey("d", control: false, mode: .normal) == .normal,
+                "`d` waits for the motion that says how far")
+        // The app went to insert and came back without the operator running.
+        _ = canvas.handleKey("i", control: false, mode: .normal)
+        #expect(canvas.handleKey("w", control: false, mode: .normal) == .normal)
+        #expect(editor.text == "alpha beta", "the abandoned `d` finished after all")
+    }
+
+    private func makeEditor() -> MaximalEditor.EditorTextView {
+        let editor = MaximalEditor.EditorTextView(
+            frame: NSRect(x: 0, y: 0, width: 100, height: 40))
+        editor.vimEnabled = true
+        editor.text = "alpha beta"
+        editor.textSelection = NSRange(location: 0, length: 0)
+        return editor
     }
 }
