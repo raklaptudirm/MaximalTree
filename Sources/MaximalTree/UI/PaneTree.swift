@@ -53,6 +53,13 @@ struct TabStrip: View {
 
             Spacer(minLength: 0)
 
+            // Status, not a control — so it sits ahead of the buttons, with a
+            // rule between. In the strip rather than the toolbar because an
+            // NSToolbar item wraps arbitrary content in a glass container it
+            // won't size to, and the label spilled out of it.
+            KeyModeIndicator()
+            Divider().frame(height: 16)
+
             Button { model.splitPaneRight() } label: { Image(systemName: "rectangle.split.2x1") }
                 .help("Split Right")
             Button { model.splitPaneDown() } label: { Image(systemName: "rectangle.split.1x2") }

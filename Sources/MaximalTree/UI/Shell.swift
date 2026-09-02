@@ -24,11 +24,15 @@ struct ContentView: View {
     var body: some View {
         @Bindable var model = model
         shell(model: model)
-            // Every key press goes through the modal layer first, and the HUD
-            // says which mode is in force and what a half-typed sequence can
-            // still become.
+            // Every key press goes through the modal layer first. Which mode
+            // is in force lives in the toolbar itself (see `shell`), so it's
+            // gone along with the rest of the window's chrome in zen mode
+            // without a separate check here.
             .keyCapture(model)
-            .overlay(alignment: .bottomLeading) { KeyHUD() }
+            .overlay(alignment: .bottomLeading) {
+                KeyWhichKey()
+                    .padding(12)
+            }
     }
 
     @ViewBuilder
