@@ -24,8 +24,16 @@ extension AppModel {
             focus(.sidebar)
         case "inspector.focus":
             focus(.inspector)
-        case "palette.toggle":
-            paletteVisible.toggle()
+        case "finder.all":
+            finderVisible ? closeFinder() : openFinder()
+        case "finder.actions":
+            openFinder(scope: "actions")
+        case "finder.files":
+            openFinder(scope: "files")
+        case "finder.buffers":
+            openFinder(scope: "buffers")
+        case "finder.workspaces":
+            openFinder(scope: "workspaces")
 
         // Motions belong to the surface holding the keyboard. In a canvas they
         // never arrive here at all — it was offered them first and took them —

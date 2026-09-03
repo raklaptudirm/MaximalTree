@@ -65,8 +65,12 @@ struct KeyCapture: ViewModifier {
 
             @MainActor
             private static func handle(_ chord: KeyChord, model: AppModel) -> Bool {
-                KeyDispatch.handle(chord, keys: model.keys,
-                                   canvas: KeyFocus.focusedCanvas())
+                // The finder is an overlay rather than a surface, and the
+                // keyboard belongs to a field editor while it is open, so its
+                // own keys have to be taken here — nothing downstream will.
+                if model.handleFinderKey(chord) { return true }
+                return KeyDispatch.handle(chord, keys: model.keys,
+                                          canvas: KeyFocus.focusedCanvas())
             }
 
             func remove() {

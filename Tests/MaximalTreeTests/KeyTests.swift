@@ -82,7 +82,7 @@ import SwiftUI
     @Test func theDefaultMapBindsWhatItPromises() {
         let map = DefaultKeymap.make()
         #expect(map.lookup(chords("j")) == .command("explorer.down"))
-        #expect(map.lookup(chords("SPC SPC")) == .command("palette.toggle"))
+        #expect(map.lookup(chords("SPC SPC")) == .command("finder.all"))
         #expect(map.lookup(chords("SPC w v")) == .command("pane.splitRight"))
         #expect(map.lookup(chords("SPC g o")) == .command("git.open"))
         #expect(map.lookup(chords("g t")) == .command("tab.next"))
@@ -111,7 +111,11 @@ import SwiftUI
             "g p": "node.parent",
             "g g": "explorer.first", "G": "explorer.last",
             "g w": "workspace.next", "g W": "workspace.previous",
-            "SPC p n": "workspace.next", "SPC p p": "workspace.previous",
+            "SPC p n": "workspace.next", "SPC p p": "finder.workspaces",
+            // The finder, reached by the keys that used to open the palette,
+            // plus one per list.
+            "SPC SPC": "finder.all", "M-x": "finder.actions",
+            "SPC f f": "finder.files", "SPC b b": "finder.buffers",
         ]
         for (keys, command) in expected {
             #expect(map.lookup(chords(keys)) == .command(command),
@@ -124,7 +128,8 @@ import SwiftUI
     @Test func everyBoundCommandIsOneTheAppKnows() {
         let known: Set<String> = [
             "mode.insert", "editor.focus", "explorer.focus", "inspector.focus",
-            "palette.toggle",
+            "finder.all", "finder.actions", "finder.files", "finder.buffers",
+            "finder.workspaces",
             "explorer.down", "explorer.up", "explorer.expand", "explorer.collapse",
             "explorer.open", "explorer.first", "explorer.last",
             "node.nextSibling", "node.previousSibling", "node.parent",

@@ -38,9 +38,12 @@ enum DefaultKeymap {
         map.bind("g p", to: "node.parent")
 
         map.bind("i", to: "mode.insert")
-        map.bind("SPC SPC", to: "palette.toggle")
-        map.bind("M-x", to: "palette.toggle")
-        map.bind("/", to: "palette.toggle")
+        // The finder. `SPC SPC` searches everything; the rest are the same
+        // picker over one list, for when you know what you are after.
+        map.bind("SPC SPC", to: "finder.all")
+        map.bind("/", to: "finder.all")
+        map.bind("M-x", to: "finder.actions")
+        map.bind(":", to: "finder.actions")
 
         // History, the way a browser does it.
         map.bind("C-o", to: "nav.back")
@@ -52,7 +55,7 @@ enum DefaultKeymap {
         map.bind("SPC b n", to: "tab.next")
         map.bind("SPC b p", to: "tab.previous")
         map.bind("SPC b d", to: "tab.close")
-        map.bind("SPC b b", to: "palette.toggle")
+        map.bind("SPC b b", to: "finder.buffers")
         map.bind("SPC b h", to: "tab.first")
         map.bind("SPC b l", to: "tab.last")
         map.bind("g t", to: "tab.next")
@@ -86,13 +89,14 @@ enum DefaultKeymap {
 
         // Workspaces.
         map.describe("SPC p", as: "workspace")
+        map.bind("SPC p p", to: "finder.workspaces")
         map.bind("SPC p n", to: "workspace.next")
-        map.bind("SPC p p", to: "workspace.previous")
         map.bind("g w", to: "workspace.next")
         map.bind("g W", to: "workspace.previous")
 
         // Files and the workspace.
-        map.bind("SPC f f", to: "workspace.addFolder")
+        map.bind("SPC f f", to: "finder.files")
+        map.bind("SPC f a", to: "workspace.addFolder")
         map.bind("SPC f s", to: "file.save")
         map.bind("SPC f n", to: "file.newFile")
         map.bind("SPC f d", to: "file.newFolder")

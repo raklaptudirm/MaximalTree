@@ -205,6 +205,21 @@ final class WebPlugin: NSObject, Plugin {
 
         // Opening a page is a mount: the start page joins the sidebar as a root,
         // and the address bar / ⌘L take it anywhere from there.
+        // Bookmarks are a list worth searching, so the finder can offer them
+        // beside files and everything else — the plugin that owns them says so.
+        registry.register(finder: FinderSource(
+            id: "web.bookmarks", title: "Bookmark", prompt: "Open a bookmark…",
+            systemImage: "bookmark", weight: 14
+        ) {
+            BookmarkStore.shared.all().map { bookmark in
+                FinderItem(id: "bookmark:\(bookmark.url)",
+                           title: bookmark.title.isEmpty ? bookmark.url : bookmark.title,
+                           subtitle: URL(string: bookmark.url)?.host(),
+                           systemImage: "bookmark",
+                           effect: .open(bookmark.url))
+            }
+        })
+
         registry.register(action: Action(
             id: "web.newPage",
             title: "New Web Page",

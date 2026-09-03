@@ -231,6 +231,8 @@ public protocol PluginRegistry: AnyObject {
     func register(inspector: InspectorContribution)
     func register(children: ChildContribution)
     func register(action: Action)
+    /// A list the finder can search — see `FinderSource`.
+    func register(finder: FinderSource)
 }
 
 public extension PluginRegistry {

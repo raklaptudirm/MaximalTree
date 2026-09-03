@@ -159,12 +159,12 @@ struct ContentView: View {
             if showing { workspaceNameDraft = model.activeWorkspaceName }
         }
         .overlay {
-            if model.paletteVisible {
+            if model.finderVisible {
                 ZStack(alignment: .top) {
                     Color.black.opacity(0.08)
                         .ignoresSafeArea()
-                        .onTapGesture { model.paletteVisible = false }
-                    CommandPalette()
+                        .onTapGesture { model.closeFinder() }
+                    Finder()
                         .padding(.top, 90)
                 }
             }

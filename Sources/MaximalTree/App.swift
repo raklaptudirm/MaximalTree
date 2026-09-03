@@ -44,8 +44,9 @@ final class AppModel {
     private let workspaceStore: WorkspaceStore
     private(set) var store: GraphStore?
 
-    /// Whether the command palette overlay is showing.
-    var paletteVisible = false
+    /// The finder: fuzzy search over everything the app knows about.
+    var finderVisible = false
+    let finder = FinderModel()
     /// Chrome visibility lives here rather than in the view, because the
     /// keyboard layer has to be able to toggle it (see KeyCommands).
     var sidebarVisible = true
@@ -58,6 +59,60 @@ final class AppModel {
     /// sidebar's selection, the inspector's ring — has to redraw when focus
     /// moves, and asking AppKit at draw time never redraws anything.
     private(set) var focusedSurface: SurfaceID = .sidebar
+
+    /// Open the finder over one list, or over everything when `scope` is nil.
+    ///
+    /// Insert mode, because the finder is a text field and in this app that is
+    /// what a text field means: keys are text, not commands. Without it the
+    /// keymap ate the query — `g`, `o`, `w`, `d` and the digits are all bound,
+    /// so typing "git" fired the goto prefix and then insert mode instead of
+    /// narrowing anything.
+    func openFinder(scope: String? = nil) {
+        finder.open(scope: scope, sources: store?.finders ?? [])
+        finderVisible = true
+        keys.setMode(.insert)
+    }
+
+    /// The picker's own keys.
+    ///
+    /// Handled here rather than in the view: the first responder while the
+    /// finder is open is the text field's *field editor*, so a SwiftUI key
+    /// handler on the field never runs — the arrows moved the insertion point
+    /// and the selection sat on the first row, which meant the only result you
+    /// could ever reach was whichever one happened to be top.
+    ///
+    /// The monitor sees every key before the field editor does, so this is the
+    /// one place that reliably can.
+    func handleFinderKey(_ chord: KeyChord) -> Bool {
+        guard finderVisible else { return false }
+        switch (chord.key, chord.control) {
+        case ("ESC", _):
+            closeFinder()
+        case ("RET", _):
+            acceptFinderSelection()
+        case ("down", _), ("n", true), ("j", true):
+            finder.move(1)
+        case ("up", _), ("p", true), ("k", true):
+            finder.move(-1)
+        default:
+            return false
+        }
+        return true
+    }
+
+    /// Open what is picked out, and put the finder away.
+    func acceptFinderSelection() {
+        guard let item = finder.selected else { return }
+        closeFinder()
+        perform(item)
+    }
+
+    func closeFinder() {
+        guard finderVisible else { return }
+        finderVisible = false
+        finder.close()
+        keys.setMode(.normal)
+    }
 
     /// Recompute after anything that could have moved the keyboard: a key, a
     /// click, a focus this app asked for. Deferred a turn because AppKit sets
@@ -335,7 +390,7 @@ final class AppModel {
             .first { action.appliesTo.matches(ActionContext(host: host, targets: $0)) }
             .map { ActionContext(host: host, targets: $0) }
         action.handler(context ?? ActionContext(host: host, targets: targets))
-        paletteVisible = false
+        closeFinder()
     }
 
     /// Actions the host contributes itself — node manipulation that belongs to no
@@ -378,6 +433,7 @@ final class AppModel {
         // Host-owned actions register first so they lead every action list.
         registerCoreActions(with: pluginHost.registry)
         registerCoreInspector(with: pluginHost.registry)
+        registerBuiltInFinders(into: pluginHost.registry)
         // Under XCTest the test bundle compiles the plugin's sources directly; don't
         // also dlopen the .bundle into the same process, or the @objc principal class
         // collides. Tests exercise provider logic without the running host.
