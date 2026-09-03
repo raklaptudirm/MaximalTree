@@ -402,7 +402,7 @@ import SwiftUI
     /// The editor is reached the same way, through the same protocol.
     @Test func theEditorIsJustAnotherCanvas() {
         let editor = MaximalEditor.EditorTextView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
-        editor.vimEnabled = true
+        editor.modalEditing = true
         editor.text = "alpha beta"
         editor.textSelection = NSRange(location: 0, length: 0)
 
@@ -478,7 +478,7 @@ import SwiftUI
     private func makeEditor() -> MaximalEditor.EditorTextView {
         let editor = MaximalEditor.EditorTextView(
             frame: NSRect(x: 0, y: 0, width: 100, height: 40))
-        editor.vimEnabled = true
+        editor.modalEditing = true
         editor.text = "alpha beta"
         editor.textSelection = NSRange(location: 0, length: 0)
         return editor

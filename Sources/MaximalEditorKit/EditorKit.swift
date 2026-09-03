@@ -173,7 +173,7 @@ public struct MaximalEditor: NSViewRepresentable {
     private let mathRenderer: EditorMathRenderer?
     private let completionProvider: EditorCompletionProvider?
     private let controller: EditorController?
-    /// Modal editing (see `VimEngine`). The mode is reported back so the app
+    /// Modal editing (see `EditEngine`). The mode is reported back so the app
     /// can show which one is in force.
     private let modalEditing: Bool
 
@@ -217,7 +217,7 @@ public struct MaximalEditor: NSViewRepresentable {
 
         textView.textDelegate = context.coordinator
         context.coordinator.textView = textView
-        (textView as? EditorTextView)?.vimEnabled = modalEditing
+        (textView as? EditorTextView)?.modalEditing = modalEditing
         context.coordinator.isDark = colorScheme == .dark
         context.coordinator.lastStyle = style
         controller?.textView = textView
@@ -317,10 +317,10 @@ public struct MaximalEditor: NSViewRepresentable {
     /// Public so the app can ask the focused editor which mode it is in —
     /// while it has the keyboard, its mode is the one that matters.
     public final class EditorTextView: STTextView {
-        /// Modal editing. Present but idle until `vimEnabled` is set, so a
+        /// Modal editing. Present but idle until `modalEditing` is set, so a
         /// plain text field stays a plain text field.
-        public let vim = VimEngine()
-        public var vimEnabled = false
+        public let editing = EditEngine()
+        public var modalEditing = false
 
         /// Insert mode is plain typing; in a commanding mode the app never
         /// sends keys here at all (see `handleKey`).
@@ -328,15 +328,16 @@ public struct MaximalEditor: NSViewRepresentable {
             super.keyDown(with: event)
         }
 
-        func applyVim(_ outcome: VimOutcome) {
+        func apply(_ outcome: EditOutcome) {
             if let edit = outcome.edit {
                 // Through the text view, so undo and the highlighter see it.
                 insertText(edit.replacement, replacementRange: edit.range)
             }
             let length = (text as NSString?)?.length ?? 0
-            let caret = min(max(outcome.caret, 0), length)
-            textSelection = outcome.selection ?? NSRange(location: caret, length: 0)
-            scrollRangeToVisible(NSRange(location: caret, length: 0))
+            let start = min(max(outcome.selection.location, 0), length)
+            textSelection = NSRange(location: start,
+                                    length: min(outcome.selection.length, length - start))
+            scrollRangeToVisible(NSRange(location: start, length: 0))
         }
 
 

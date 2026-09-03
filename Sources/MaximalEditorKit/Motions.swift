@@ -1,51 +1,10 @@
 import Foundation
 
-// Where the caret lands. Every operator is a motion plus a verb, so these are
-// the load-bearing part: `dw` is only as correct as `w`.
+// Where the boundaries are: word edges, line ends, the first non-blank. What
+// a motion *selects* is worked out from these, so `w` is only as good as
+// `wordForward` — and `wd` only as good as `w`.
 
-extension VimEngine {
-    /// Whether a sequence is the start of a longer motion (`g` before `gg`).
-    func isMotionPrefix(_ sequence: [VimKey]) -> Bool {
-        sequence.count == 1 && sequence[0].key == "g"
-    }
-
-    /// The offset a motion moves to, or nil when the keys aren't a motion.
-    func motion(_ sequence: [VimKey], from caret: Int, count: Int,
-                in ns: NSString) -> Int? {
-        let keys = sequence.map(\.key)
-        switch keys {
-        case ["h"]:
-            return max(caret - count, lineStart(at: caret, in: ns))
-        case ["l"]:
-            return min(caret + count, lineEnd(at: caret, in: ns))
-        case ["j"]:
-            return line(from: caret, by: count, in: ns)
-        case ["k"]:
-            return line(from: caret, by: -count, in: ns)
-        case ["0"]:
-            return lineStart(at: caret, in: ns)
-        case ["^"]:
-            return firstNonBlank(ofLineAt: caret, in: ns)
-        case ["$"]:
-            return lineEnd(at: caret, in: ns)
-        case ["w"]:
-            return (0..<count).reduce(caret) { position, _ in wordForward(from: position, in: ns) }
-        case ["b"]:
-            return (0..<count).reduce(caret) { position, _ in wordBackward(from: position, in: ns) }
-        case ["e"]:
-            return (0..<count).reduce(caret) { position, _ in wordEnd(from: position, in: ns) }
-        case ["g", "g"]:
-            // With a count, `5gg` is line five; without, the top.
-            return count > 1 ? offset(ofLine: count - 1, in: ns) : 0
-        case ["G"]:
-            return count > 1 ? offset(ofLine: count - 1, in: ns) : lastLineStart(in: ns)
-        default:
-            return nil
-        }
-    }
-
-    // MARK: Lines
-
+extension EditEngine {
     func lineStart(at offset: Int, in ns: NSString) -> Int {
         ns.lineRange(for: NSRange(location: min(offset, ns.length), length: 0)).location
     }

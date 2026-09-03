@@ -14,7 +14,7 @@ final class KeyEngine {
     private(set) var mode: KeyMode = .normal
     /// Keys typed towards a sequence that isn't finished. Drives which-key.
     private(set) var pending: [KeyChord] = []
-    /// Digits typed before a command, Vim-style.
+    /// Digits typed before a command — `3j` moves three rows.
     private(set) var count: Int?
 
     var keymap: Keymap
@@ -46,7 +46,7 @@ final class KeyEngine {
     /// - Parameter editing: whether the keyboard currently belongs to a text
     ///   view. Nothing is intercepted there except Escape, which is how you
     ///   get back out — an editor that swallowed every `j` would be unusable,
-    ///   and this layer doesn't emulate Vim *inside* text.
+    ///   and this layer doesn't do the editing modes *inside* text.
     func handle(_ chord: KeyChord, editing: Bool) -> Outcome {
         if chord == KeyChord("ESC") {
             // Escape always means "back to normal, forget what I was typing".
