@@ -30,6 +30,16 @@ extension AppModel {
         })
 
         registry.register(finder: FinderSource(
+            id: "nodes", title: "Sidebar", prompt: "Go to a node…",
+            systemImage: "sidebar.left",
+            // What is in front of you, so it wins ties against the thousands
+            // of files that merely exist.
+            weight: 20
+        ) { [weak self] in
+            await MainActor.run { self?.nodeItems() ?? [] }
+        })
+
+        registry.register(finder: FinderSource(
             id: "files", title: "File", prompt: "Find a file…",
             systemImage: "doc.text"
         ) { [weak self] in
@@ -52,6 +62,23 @@ extension AppModel {
             FinderItem(id: "action:\(action.id)", title: action.title,
                        subtitle: action.id, systemImage: action.systemImage ?? "command",
                        effect: .run(action.id))
+        }
+    }
+
+    /// The tree as the sidebar is showing it — roots, and whatever is
+    /// disclosed beneath them.
+    ///
+    /// Deliberately what is *on screen* rather than everything reachable:
+    /// this is the picker for going to something you can already see, where
+    /// the file search is the one for reaching what you can't. Identified by
+    /// uri, so a node that is also a file is one row rather than two.
+    private func nodeItems() -> [FinderItem] {
+        orderedExplorerNodes().compactMap { id in
+            guard let node = host.node(id) else { return nil }
+            return FinderItem(id: id.uri, title: node.label,
+                              subtitle: folder(of: id),
+                              systemImage: node.icon?.systemName ?? "doc",
+                              effect: .open(id.uri))
         }
     }
 

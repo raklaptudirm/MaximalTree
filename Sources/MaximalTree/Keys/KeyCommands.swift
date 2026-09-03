@@ -28,6 +28,8 @@ extension AppModel {
             finderVisible ? closeFinder() : openFinder()
         case "finder.actions":
             openFinder(scope: "actions")
+        case "finder.nodes":
+            openFinder(scope: "nodes")
         case "finder.files":
             openFinder(scope: "files")
         case "finder.buffers":

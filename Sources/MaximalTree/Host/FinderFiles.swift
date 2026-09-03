@@ -35,7 +35,9 @@ enum FinderFiles {
                     continue
                 }
                 found.append(FinderItem(
-                    id: "file:\(url.absoluteString)",
+                    // The uri itself, so a file the sidebar is also showing
+                    // collapses to one row rather than appearing twice.
+                    id: url.absoluteString,
                     title: url.lastPathComponent,
                     subtitle: relativePath(of: url, under: base),
                     systemImage: "doc",

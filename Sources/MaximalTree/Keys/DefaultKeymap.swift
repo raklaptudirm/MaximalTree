@@ -38,9 +38,12 @@ enum DefaultKeymap {
         map.bind("g p", to: "node.parent")
 
         map.bind("i", to: "mode.insert")
-        // The finder. `SPC SPC` searches everything; the rest are the same
-        // picker over one list, for when you know what you are after.
-        map.bind("SPC SPC", to: "finder.all")
+        // The finder. `SPC SPC` is the one you reach for without thinking, so
+        // it goes to the tree you are looking at rather than to everything the
+        // app knows — the wider search is a deliberate act and gets a key that
+        // says so.
+        map.bind("SPC SPC", to: "finder.nodes")
+        map.bind("SPC /", to: "finder.all")
         map.bind("/", to: "finder.all")
         map.bind("M-x", to: "finder.actions")
         map.bind(":", to: "finder.actions")
