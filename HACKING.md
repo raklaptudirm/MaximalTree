@@ -36,6 +36,19 @@ The host resolves the focused node's type to a `TypeRenderer` and asks the ownin
 plugin to fill the canvas and inspector. It never special-cases `file.directory` or
 any other type.
 
+Three more ideas sit above that, and together they are the whole of how the app is
+driven:
+
+- **Surfaces** — the areas the window is divided into (sidebar, each pane, inspector).
+  One of them holds the keyboard, and they are all alike: commands act on whichever
+  one does. A surface is found *geometrically*, not by view ancestry (see below).
+- **Actions** — everything the app can do, host and plugin alike, in one registry
+  under one id space. Splitting a pane and a plugin's "Export as PDF" are the same
+  kind of thing.
+- **Modes and keys** — a modal keyboard layer over that registry. In a commanding
+  mode a key names an action; in insert mode keys are text. The focused canvas gets
+  first refusal on every key before the app's own keymap sees it.
+
 ---
 
 ## Repository layout
@@ -71,7 +84,15 @@ Sources/
                                 #   layer; see its header), SidebarModel (pure row
                                 #   flatten + selection semantics), SidebarTree
                                 #   (the rendered tree; deliberately not a List),
-                                #   Commands (menu/palette)
+                                #   Commands (menus, built from actions),
+                                #   Surfaces (who has the keyboard, geometrically),
+                                #   Finder + Fuzzy (the picker and its matcher)
+    Keys/                       #   the modal layer: Keymap (trie), KeyEngine (modes,
+                                #   sequences, counts), KeyChord (Emacs notation),
+                                #   KeyRouting/KeyDispatch (who gets a key),
+                                #   KeyCapture (the event monitor + which-key),
+                                #   CoreActions (every operation the host owns),
+                                #   DefaultKeymap (the keys it ships with)
   FileSystemPlugin/             # reference provider plugin (loadable bundle)
     FileSystem.swift            #   provider, mutations, symlink anchors, FSEvents
     FileActions.swift           #   the action vocabulary (new/duplicate/trash/…)
@@ -97,7 +118,7 @@ Sources/
     WebViews.swift              #   page/bookmarks canvases + address-bar inspector
 Vendor/typst-ffi/               # Rust staticlib: typst compiler/parser/renderers (C ABI)
 Vendor/highlight-js/            # highlight.min.js (BSD-3) — ~190 grammars, run in-process
-Tests/MaximalTreeTests/         # swift-testing suite (222 tests)
+Tests/MaximalTreeTests/         # swift-testing suite (510 tests)
 ```
 
 The generated `MaximalTree.xcodeproj` is **not** committed — regenerate it (below).
@@ -299,6 +320,14 @@ plugin action). Providers are entirely workspace-unaware.
 
 Seeding is **first-launch-only**: an empty workspace the user made stays empty.
 
+A file opened from the Finder that no workspace mounts gets an **ephemeral
+workspace** of its own, named after the file and holding just it. It is listed and
+switchable like any other but never written to the library, so it goes when the app
+does — nothing deletes it. "Keep This Workspace" (`workspace.keep`) makes it real.
+Files that *are* inside a mounted root open in that root's workspace instead, matched
+by the directory a root names rather than by its scheme, so a repo mounted as
+`git://repo?repo=…` claims its own files.
+
 **Root folders** organize the sidebar within a workspace. A workspace's `RootLayout`
 — an ordered *tree* of `RootEntry`s (a root uri, or a `RootFolder` that itself holds
 entries, so folders nest) — is the source of truth for what the sidebar draws; the
@@ -317,6 +346,62 @@ to move a folder into its own subtree. The sidebar drives it by flattening the t
 a `RootSlot` list with an insertion `gap` before/after every row: gaps are the
 position-aware drop targets (insert at index), folder rows are the nesting drop
 targets (drop *onto* to move inside), and both roots and folders are draggable.
+
+### Commands: one registry, one id space
+
+Every operation is an `Action` — the host's own (`pane.splitRight`, `explorer.down`,
+`toggle.zen`) exactly as much as a plugin's (`git.open`, `typst.newNote`). There is no
+second vocabulary of things only the keyboard can reach. That means an operation is
+defined once and every surface agrees about it:
+
+- the **menu bar** takes an item's title, key equivalent and greyed-out state from the
+  action (`ActionItem` in `UI/Commands.swift`);
+- the **finder** lists what applies, and a node-scoped source lists what is *about*
+  the node in front of you (scope `.node`/`.container`/`.document`);
+- the **keymap** binds a chord to an action id — a plugin's included, the day it ships;
+- a **plugin** runs any of it by name with `host.perform("pane.splitRight")`.
+
+Applicability is one question asked in one place (`AppModel.context(for:targets:)`):
+it decides whether a menu item greys out, whether the finder offers the action, and
+whether a key bound to it does anything. An action that can't run right now is
+uniformly absent rather than a no-op.
+
+`ActionContext` carries a repeat `count`, because a key can ask for one (`5 j`).
+
+### Keys: modes, sequences, and who gets first refusal
+
+`Keys/` is a modal layer, Doom-flavoured: `SPC` is the leader, groups are mnemonic,
+and bindings are written in Emacs notation (`C-w`, `SPC g s`). `Keymap` is a trie, so
+the interesting question isn't only "what does `SPC g s` do" but "I have typed `SPC g`,
+what now" — which is what which-key shows and what makes a leader learnable.
+
+The routing rule is **the mode decides, not the view**. In a commanding mode the
+focused canvas is offered the key first (`CanvasKeyHandling`) and the app's keymap
+takes whatever it declines; in insert mode every key belongs to whatever has focus.
+Deciding by view instead was two bugs in a row — first the editor wasn't recognised,
+then every canvas was and the leader stopped working anywhere.
+
+A canvas also *declares* what it takes (`keyBindings`), so which-key can tell the
+truth: with the editor focused, `j` moves the caret, and listing the sidebar's `j`
+plainly would be a lie.
+
+Keys arrive through one local event monitor (`KeyCapture`), not SwiftUI's
+`onKeyPress` — bindings have to work wherever focus is, including where a field editor
+holds first responder. `KeyDispatch.handle` is the pure decision underneath, so the
+modal layer is testable without a window.
+
+### Surfaces: found by geometry
+
+A `SurfaceID` is `.sidebar`, `.pane(UUID)`, or `.inspector`. Movement between them
+(`C-w h/j/k/l`) and "which one has the keyboard" are both answered from *where things
+are on screen*, not from the view tree: SwiftUI flattens the window, so a pane's
+marker is a **sibling** of its content and no ancestor distinguishes one surface from
+another. Each surface reports its rectangle from an `NSView` that self-reports on
+layout, and the focused one is whichever the first responder most overlaps.
+
+Nothing about the sidebar or the inspector is special here. They were once — the
+sidebar reached by a rule written into the movement, the inspector not reachable at
+all — and both special cases are gone.
 
 ### Canvas splits
 
@@ -432,12 +517,18 @@ the unsaved buffer through the bundled in-process engine (Vendor/typst-ffi) on a
 debounce and composes an editor, a PDFKit preview, and a diagnostics strip in one
 canvas — no external tools involved).
 
-### 3. `Action`s (optional — but the *primary* manipulation surface)
+### 3. `Action`s (the primary manipulation surface)
 
-One registry feeds the menu bar, the command palette, the context menu, and the
-inspector's Actions section; each surface filters by the action's `appliesTo`
-predicate (`.always`, `.type(_)`, or `.custom { ctx in … }`). Pass `shortcut:` and
-the menu bar registers it window-wide.
+One registry feeds the menu bar, the finder, the context menu, and the inspector's
+Actions section; each surface filters by the action's `appliesTo` predicate
+(`.always`, `.type(_)`, or `.custom { ctx in … }`). Pass `shortcut:` and the menu bar
+registers it window-wide. The host's own operations are in the same registry, so
+anything you register is bindable to a key and callable by name the day it ships.
+
+`scope` decides where an action is offered by default *and* whether it is "about" a
+node — the node-scoped finder lists `.node`, `.container` and `.document`, not
+`.workspace`. `surfaces: [.palette]` keeps an operation out of the menus while leaving
+it searchable, which is what the host's forty-odd motions use.
 
 **Design rule: canvases are content.** Don't put headers, toolbars, or control
 strips on a canvas — the node's label is already in the window subtitle, tab, and
@@ -577,10 +668,12 @@ committed and builds aren't byte-for-byte reproducible across machines.
 
 ## What's not done yet
 
-Working today: workspaces, tabs + splits + history, cross-plugin rendering, phony
-nodes, zen mode, structural writes (rename + delete-to-Trash), and the full typst
-stack (in-process compile/preview/export, parser-backed highlighting and outline,
-rendered math, tinymist completions). Known gaps, roughly in order:
+Working today: workspaces (including ephemeral ones for files opened from the
+Finder), tabs + splits + history, cross-plugin rendering, phony nodes, zen mode,
+structural writes (rename + delete-to-Trash), the modal keyboard layer over a single
+action registry, the finder, and the full typst stack (in-process compile/preview/
+export, parser-backed highlighting and outline, rendered math, tinymist completions).
+Known gaps, roughly in order:
 
 - **Dynamic plugins** — loading is launch-time from the bundled `PlugIns/`. No
   external user plugin directory, enable/disable, or revocable registrations yet.
@@ -591,3 +684,11 @@ rendered math, tinymist completions). Known gaps, roughly in order:
   compiled-in plugin registration, and AppKit→UIKit view swaps.
 - **Smaller**: richer inspector composition, undo for structural mutations,
   multi-select in the directory grid.
+- **Parameterised actions** — an action takes a target node but not an argument, so
+  "switch to workspace X" is a string-encoded id (`workspace.select:<uuid>`) that the
+  finder unpacks by prefix. The one place the single id space leaks.
+- **Only the editor declares its keys** — the terminal and web canvases take keys
+  without saying which, so which-key can't describe them the way it does the editor.
+- **One shell window** — there is one `AppModel`, so a second window of the main
+  scene is a duplicate view of the same workspace and tabs rather than a second
+  place to work.

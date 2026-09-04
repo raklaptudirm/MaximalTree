@@ -26,7 +26,7 @@ extension AppModel {
     /// here does nothing rather than something surprising — which is also how
     /// the explorer motions stay the sidebar's own.
     func runCommand(_ id: String, count: Int = 1) {
-        guard let action = applicableActions().first(where: { $0.id == id }) else { return }
+        guard let action = action(id), canRun(action) else { return }
         perform(action, count: count)
     }
 
@@ -284,6 +284,18 @@ extension AppModel {
     /// move through. Recomputed rather than remembered: the tree changes under
     /// the reader as folders load, and a stale order moves the wrong way.
     func orderedExplorerNodes() -> [NodeID] {
+        sidebarRows().compactMap(\.nodeID)
+    }
+
+    /// The sidebar's rows, top to bottom.
+    ///
+    /// The one place that flattens the tree. It was written out three times —
+    /// here, in the sibling motions, and in the view that draws it — with the
+    /// same six lines of graph plumbing each time, which is three chances for
+    /// the keyboard's idea of the row order to drift from the drawn one. They
+    /// have to agree: `j` moving to a row the sidebar isn't showing is not a
+    /// small bug.
+    func sidebarRows() -> [SidebarRow] {
         SidebarRows.flatten(
             entries: rootLayout.entries,
             expandedNodes: sidebar.expandedNodes,
@@ -291,7 +303,6 @@ extension AppModel {
                 children: { [host] in host.children(of: $0) },
                 isExpandable: { [host] in host.node($0)?.hasChildren ?? false },
                 hasMore: { [host] in host.hasMoreChildren($0) }))
-            .compactMap(\.nodeID)
     }
 
     private func moveExplorerSelection(down: Bool, times: Int) {
@@ -388,13 +399,7 @@ extension AppModel {
     /// rows stay at least as deep, and the first shallower row is the parent's
     /// next sibling, which belongs to a different list.
     private func moveToSibling(down: Bool, times: Int) {
-        let rows = SidebarRows.flatten(
-            entries: rootLayout.entries,
-            expandedNodes: sidebar.expandedNodes,
-            graph: SidebarGraph(
-                children: { [host] in host.children(of: $0) },
-                isExpandable: { [host] in host.node($0)?.hasChildren ?? false },
-                hasMore: { [host] in host.hasMoreChildren($0) }))
+        let rows = sidebarRows()
         guard let current = host.selection.first ?? host.focusedNode,
               var index = rows.firstIndex(where: { $0.nodeID == current }) else { return }
         let depth = rows[index].depth

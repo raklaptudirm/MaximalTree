@@ -10,17 +10,6 @@ import MaximalTreeKit
 /// in. That check being wrong is what made the modal layer keep `j` and `k`
 /// for the sidebar even when the caret was in the document.
 enum KeyFocus {
-    /// Whether the keyboard currently belongs to something that takes text:
-    /// the editor, a text view, or the field editor behind a text field.
-    @MainActor
-    static func isTextInput(_ responder: NSResponder?) -> Bool {
-        switch responder {
-        case is MaximalEditor.EditorTextView: return true
-        case is NSTextView, is NSText: return true
-        default: return false
-        }
-    }
-
     /// The focused canvas that handles keys in normal mode, if there is one.
     /// Walks up, because the view that ends up focused is often nested inside
     /// the one that does the handling.

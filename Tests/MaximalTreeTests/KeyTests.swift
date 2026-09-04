@@ -367,38 +367,9 @@ import SwiftUI
 }
 
 
-/// Who has the keyboard.
-///
-/// The bug this exists for: the editor is not an NSTextView. STTextView is an
-/// NSView that implements text input itself, so the obvious check —
-/// `firstResponder is NSTextView` — is false while the caret is in the
-/// document, and the modal layer went on treating every `j` as a sidebar
-/// motion no matter where focus was.
+/// Finding the things a key might be handed to.
 @MainActor
 @Suite struct KeyFocusTests {
-    @Test func theEditorCountsAsTakingText() {
-        let editor = MaximalEditor.EditorTextView(frame: .zero)
-        #expect(!(editor is NSTextView), "the premise of the bug: it is not an NSTextView")
-        #expect(KeyFocus.isTextInput(editor), "the editor was not recognised as text input")
-    }
-
-    @Test func ordinaryTextViewsAndFieldsCountToo() {
-        #expect(KeyFocus.isTextInput(NSTextView(frame: .zero)))
-        // A text field hands editing to a field editor, which is an NSTextView.
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 60),
-                              styleMask: [.titled], backing: .buffered, defer: false)
-        let field = NSTextField(string: "hi")
-        window.contentView = field
-        window.makeFirstResponder(field)
-        defer { window.orderOut(nil) }
-        #expect(KeyFocus.isTextInput(window.firstResponder))
-    }
-
-    @Test func nothingElseCounts() {
-        #expect(!KeyFocus.isTextInput(NSView(frame: .zero)))
-        #expect(!KeyFocus.isTextInput(nil))
-    }
-
     /// "Focus the editor" has to be able to find it in the view tree the
     /// canvas built, however deeply it is nested.
     @Test func theEditorIsFoundWhereverItIsNested() {

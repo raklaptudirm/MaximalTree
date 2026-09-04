@@ -31,9 +31,10 @@ final class OpenFilesDelegate: NSObject, NSApplicationDelegate {
     ///
     /// The handler AppKit installs for this is SwiftUI's, and it answers a
     /// file from the Finder by making *another* window of the main scene —
-    /// one per file, and they never go away. `handlesExternalEvents` does not
-    /// dissuade it, and closing the window afterwards does not work either:
-    /// SwiftUI keeps it open through every `close()`.
+    /// one per file, and they never go away. Neither `handlesExternalEvents`
+    /// nor closing the window afterwards helps: the first is ignored and the
+    /// second is undone — SwiftUI keeps the window open through every
+    /// `close()`. Claiming the event is the only thing that worked.
     ///
     /// So the event is claimed before it can reach SwiftUI. Where a file goes
     /// is this app's decision anyway; making a window was never part of it.
@@ -93,11 +94,6 @@ struct MaximalTreeApp: App {
             ContentView()
                 .environment(model.host)
                 .environment(model)
-                // The view half of the same statement: this is what SwiftUI
-                // matches an *existing* window against when an external event
-                // arrives. Without it the scene declares it can handle them
-                // and SwiftUI still makes a new window every time.
-                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
                 .task {
                     model.start()
                     // Now that there is somewhere to put them.
@@ -124,12 +120,6 @@ struct MaximalTreeApp: App {
         // killed the app on every File > New Window and every file opened from
         // the Finder. Opening wide enough to lay out is the whole fix.
         .defaultSize(width: 1200, height: 800)
-        // Take external events in the window that is already open. Without
-        // this SwiftUI answers every file opened from the Finder by making
-        // *another* shell window: eight of them after a morning's work, and
-        // since each one drains the loose-file list, eight windows for the one
-        // stray file too.
-        .handlesExternalEvents(matching: ["*"])
         .commands { AppCommands(model: model) }
 
 
@@ -579,22 +569,26 @@ final class AppModel {
         switchWorkspace(to: workspaces[(index + offset).wrapped(around: workspaces.count)].id)
     }
 
-    /// The nth workspace, 1-based, as the switcher lists them.
-    func selectWorkspace(number: Int) {
-        let index = number - 1
-        guard workspaces.indices.contains(index) else { return }
-        switchWorkspace(to: workspaces[index].id)
-    }
 
     /// Actions (from any plugin) that apply to `targets`, defaulting to the current
     /// selection. One registry feeds the menu bar, the palette, the sidebar context
     /// menu, and the inspector.
     func applicableActions(for targets: [NodeID]? = nil) -> [Action] {
-        guard let store else { return [] }
-        let variants = targetVariants(for: targets)
-        return store.actions.filter { action in
-            variants.contains { action.appliesTo.matches(ActionContext(host: host, targets: $0)) }
-        }
+        (store?.actions ?? []).filter { context(for: $0, targets: targets) != nil }
+    }
+
+    /// The context an action would run with, or nil if it doesn't apply.
+    ///
+    /// The one place that asks "does this apply, and to what?". Everything
+    /// else — the list of what's applicable, whether a menu item is greyed
+    /// out, running one by id, running one from a menu — is that question
+    /// asked once and answered differently. It used to be four copies of the
+    /// same loop, which is three places for the answer to drift.
+    private func context(for action: Action, targets: [NodeID]?,
+                         count: Int = 1) -> ActionContext? {
+        targetVariants(for: targets)
+            .first { action.appliesTo.matches(ActionContext(host: host, targets: $0, count: count)) }
+            .map { ActionContext(host: host, targets: $0, count: count) }
     }
 
     /// The nodes as clicked, and as each identity they also are — so a git
@@ -623,11 +617,7 @@ final class AppModel {
 
     /// Whether this action can be run against what is in front of you — what
     /// greys out a menu item, and what keeps the finder from offering it.
-    func canRun(_ action: Action) -> Bool {
-        targetVariants(for: nil).contains {
-            action.appliesTo.matches(ActionContext(host: host, targets: $0))
-        }
-    }
+    func canRun(_ action: Action) -> Bool { context(for: action, targets: nil) != nil }
 
     /// Run an action from a surface that lists them — a menu, the finder.
     ///
@@ -644,10 +634,8 @@ final class AppModel {
     /// A node is offered as each identity it also is (see `targetVariants`), so
     /// a git repository can be handed to an action written for directories.
     func perform(_ action: Action, targets: [NodeID]? = nil, count: Int = 1) {
-        let context = targetVariants(for: targets)
-            .first { action.appliesTo.matches(ActionContext(host: host, targets: $0, count: count)) }
-            .map { ActionContext(host: host, targets: $0, count: count) }
-        action.handler(context ?? ActionContext(host: host, targets: targets, count: count))
+        action.handler(context(for: action, targets: targets, count: count)
+                       ?? ActionContext(host: host, targets: targets, count: count))
     }
 
     /// Actions the host contributes itself — node manipulation that belongs to no

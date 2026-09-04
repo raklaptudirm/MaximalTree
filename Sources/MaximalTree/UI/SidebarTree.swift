@@ -16,15 +16,9 @@ struct SidebarTree: View {
     @Environment(HostContext.self) private var host
     @Environment(AppModel.self) private var model
 
-    private var rows: [SidebarRow] {
-        SidebarRows.flatten(
-            entries: model.rootLayout.entries,
-            expandedNodes: model.sidebar.expandedNodes,
-            graph: SidebarGraph(
-                children: { host.children(of: $0) },
-                isExpandable: { host.node($0)?.hasChildren ?? false },
-                hasMore: { host.hasMoreChildren($0) }))
-    }
+    /// The same rows the keyboard walks — asked of the model rather than
+    /// flattened again here, so `j` and what is drawn cannot disagree.
+    private var rows: [SidebarRow] { model.sidebarRows() }
 
     var body: some View {
         let rows = self.rows
