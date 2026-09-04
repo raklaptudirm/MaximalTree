@@ -1,8 +1,20 @@
 import SwiftUI
 import MaximalTreeKit
 
-/// Menu-bar surface for the action registry. One `Actions` menu lists whatever
-/// applies to the current selection, plus the command-palette entry point.
+/// The menu bar, built from the action registry.
+///
+/// A menu item is an action, not a second implementation of one. Its title,
+/// its key equivalent and whether it is greyed out all come from the action —
+/// so an operation is defined once and the menu, the finder, the context menu
+/// and the keymap can only ever agree about it. They did not before: the menu
+/// said "Close Pane" and greyed itself out on `navigation.canClosePane` while
+/// the same operation, bound to a key, decided for itself.
+///
+/// The menus themselves stay hand-arranged. Which operations belong together
+/// under "Navigate" is editorial and no property of an action says it; what is
+/// mechanical is *what each item does*, and that is what comes from the
+/// registry. The `Actions` menu is the exception and is generated, because
+/// there the arrangement is the registry's too.
 struct AppCommands: Commands {
     var model: AppModel
 
@@ -10,46 +22,64 @@ struct AppCommands: Commands {
         // Pane commands live in the system View menu, next to its layout controls.
         CommandGroup(after: .sidebar) {
             Divider()
-            Button(model.isZenMode ? "Exit Zen Mode" : "Enter Zen Mode") {
-                model.toggleZenMode()
-            }
-            .keyboardShortcut("z", modifiers: [.command, .control])
+            ActionItem(model: model, id: "toggle.zen",
+                       titled: model.isZenMode ? "Exit Zen Mode" : "Enter Zen Mode")
             Divider()
-            Button("Split Right") { model.splitPaneRight() }
-                .keyboardShortcut("d", modifiers: .command)
-            Button("Split Down") { model.splitPaneDown() }
-                .keyboardShortcut("d", modifiers: [.command, .shift])
-            Button("Close Pane") { model.closeActivePane() }
-                .keyboardShortcut("w", modifiers: [.command, .control])
-                .disabled(!model.navigation.canClosePane)
+            ActionItem(model: model, id: "pane.splitRight")
+            ActionItem(model: model, id: "pane.splitDown")
+            ActionItem(model: model, id: "pane.close")
             Divider()
         }
         CommandMenu("Workspace") {
             WorkspaceMenuItems(model: model, showShortcuts: true)
         }
         CommandMenu("Navigate") {
-            Button("Back") { model.goBack() }
-                .keyboardShortcut("[", modifiers: .command)
-                .disabled(!model.navigation.canGoBack)
-            Button("Forward") { model.goForward() }
-                .keyboardShortcut("]", modifiers: .command)
-                .disabled(!model.navigation.canGoForward)
+            ActionItem(model: model, id: "nav.back")
+            ActionItem(model: model, id: "nav.forward")
             Divider()
-            Button("New Tab") { model.newTab() }
-                .keyboardShortcut("t", modifiers: .command)
-            Button("Close Tab") { model.closeActiveTab() }
-                .keyboardShortcut("w", modifiers: .command)
-                .disabled(model.navigation.tabs.count <= 1)
+            ActionItem(model: model, id: "tab.new")
+            ActionItem(model: model, id: "tab.close")
         }
         CommandMenu("Actions") {
-            Button("Find Anything…") { model.openFinder() }
-                .keyboardShortcut("p", modifiers: [.command, .shift])
-            Button("Find File…") { model.openFinder(scope: "files") }
-                .keyboardShortcut("o", modifiers: [.command, .shift])
-            Button("Run Action…") { model.openFinder(scope: "actions") }
-                .keyboardShortcut("p", modifiers: [.command, .option])
+            ActionItem(model: model, id: "finder.all")
+            ActionItem(model: model, id: "finder.files")
+            ActionItem(model: model, id: "finder.actions")
+            ActionItem(model: model, id: "finder.nodeActions")
             Divider()
             ActionMenuItems(model: model)
+        }
+    }
+}
+
+/// One menu item, standing for one registered action.
+///
+/// Renders nothing when the id names no action. A menu should not offer an
+/// operation the app hasn't got, and a test asserts that every id used here
+/// resolves — so a missing item means that test was ignored, not that the
+/// reader should be shown a dead entry.
+struct ActionItem: View {
+    var model: AppModel
+    var id: String
+    /// Overrides the action's own title, for the few that read differently in
+    /// a menu — "Enter Zen Mode" says which way it goes, which a list of every
+    /// command in the app cannot.
+    var titled: String?
+
+    init(model: AppModel, id: String, titled: String? = nil) {
+        self.model = model
+        self.id = id
+        self.titled = titled
+    }
+
+    var body: some View {
+        if let action = model.action(id) {
+            let button = Button(titled ?? action.title) { model.run(action) }
+                .disabled(!model.canRun(action))
+            if let shortcut = action.shortcut {
+                button.keyboardShortcut(shortcut)
+            } else {
+                button
+            }
         }
     }
 }
@@ -84,13 +114,12 @@ struct WorkspaceMenuItems: View {
             }
         }
         Divider()
-        if model.activeWorkspaceIsEphemeral {
-            Button("Keep This Workspace…") { model.keepActiveWorkspace() }
-        }
-        Button("New Workspace…") { model.showingCreateWorkspace = true }
-        Button("Rename Workspace…") { model.showingRenameWorkspace = true }
-        Button("Delete Workspace", role: .destructive) { model.deleteActiveWorkspace() }
-            .disabled(workspaces.count <= 1)
+        // Greyed out rather than hidden when it doesn't apply: the item stays
+        // where you left it, and the action itself says when it is available.
+        ActionItem(model: model, id: "workspace.keep")
+        ActionItem(model: model, id: "workspace.create")
+        ActionItem(model: model, id: "workspace.rename")
+        ActionItem(model: model, id: "workspace.delete")
     }
 }
 

@@ -56,21 +56,6 @@ struct Keymap {
 
     /// Bind a sequence written as `"SPC g s"`. Intermediate chords become
     /// prefixes; `label` names the group they form.
-    /// Every command id this map can reach.
-    ///
-    /// So the app can be asked whether its own keys all name something real.
-    /// A binding is just a string until something runs it, and a typo in one
-    /// used to be a key that silently did nothing.
-    var commandIDs: Set<String> {
-        var found: Set<String> = []
-        func walk(_ node: Node) {
-            if case .command(let id)? = node.binding { found.insert(id) }
-            for child in node.children.values { walk(child) }
-        }
-        walk(root)
-        return found
-    }
-
     mutating func bind(_ sequence: String, to command: String, group: String? = nil) {
         let chords = sequence.split(separator: " ").compactMap { KeyChord(parsing: String($0)) }
         guard !chords.isEmpty else { return }

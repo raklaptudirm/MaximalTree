@@ -42,11 +42,16 @@ import Foundation
     @Test func everyDefaultBindingNamesARegisteredAction() throws {
         let model = try makeModel()
         let known = availableActionIDs(model)
-        let bound = DefaultKeymap.make().commandIDs.filter { !isUnavailableHere($0) }
+        let bound = DefaultKeymap.make().allCommands.filter { !isUnavailableHere($0) }
         #expect(bound.count > 40, "the keymap should be checking most of the app")
 
         let missing = bound.subtracting(known).sorted()
         #expect(missing.isEmpty, "bound to nothing: \(missing.joined(separator: ", "))")
+
+        // The two this target can't register are at least owned by a plugin
+        // that exists, which is all that can be checked from here.
+        let elsewhere = DefaultKeymap.make().allCommands.filter(isUnavailableHere)
+        #expect(elsewhere.allSatisfy { $0.hasPrefix("typst.") || $0.hasPrefix("web.") })
     }
 
     /// The point of the unification: the host's own operations are in the same
@@ -92,5 +97,76 @@ import Foundation
         let host = HostContext()
         #expect(ActionContext(host: host, count: 0).count == 1)
         #expect(ActionContext(host: host, count: -3).count == 1)
+    }
+
+    /// The menus name actions by id, and an id that resolves to nothing is a
+    /// menu item that silently isn't there. Nothing else would say so.
+    @Test func everyMenuItemNamesARegisteredAction() throws {
+        let model = try makeModel()
+        let known = availableActionIDs(model)
+
+        // The ids AppCommands and the sidebar toolbar place by hand.
+        let placed = [
+            "toggle.zen", "pane.splitRight", "pane.splitDown", "pane.close",
+            "nav.back", "nav.forward", "tab.new", "tab.close",
+            "finder.all", "finder.files", "finder.actions", "finder.nodeActions",
+            "workspace.keep", "workspace.create", "workspace.rename", "workspace.delete",
+            "workspace.addFolder", "workspace.newFolder",
+        ]
+        let missing = placed.filter { !known.contains($0) }
+        #expect(missing.isEmpty, "menus name nothing: \(missing.joined(separator: ", "))")
+    }
+
+    /// A menu item's key equivalent comes from the action, so the shortcuts
+    /// the menu bar used to own are now on the operations themselves.
+    @Test func menuOperationsCarryTheirShortcuts() throws {
+        let model = try makeModel()
+        model.registerCoreActions(with: model.pluginHost.registry)
+        let byID = Dictionary(uniqueKeysWithValues:
+            model.pluginHost.registry.actions.map { ($0.id, $0) })
+
+        for id in ["pane.splitRight", "pane.close", "nav.back", "tab.new", "tab.close",
+                   "toggle.zen", "finder.all", "finder.nodeActions"] {
+            #expect(byID[id]?.shortcut != nil, "\(id) lost its key equivalent")
+        }
+    }
+
+    /// What can't be done now shouldn't be offered. One answer feeds the
+    /// greyed-out menu item, the finder's list, and a key bound to it.
+    @Test func anOperationThatCannotRunSaysSo() throws {
+        let model = try makeModel()
+        model.registerCoreActions(with: model.pluginHost.registry)
+        let byID = Dictionary(uniqueKeysWithValues:
+            model.pluginHost.registry.actions.map { ($0.id, $0) })
+        let ctx = ActionContext(host: model.host)
+
+        // One tab and one pane in a fresh model, so neither can be closed.
+        #expect(byID["tab.close"]?.appliesTo.matches(ctx) == false)
+        #expect(byID["pane.close"]?.appliesTo.matches(ctx) == false)
+        // And one workspace, so it cannot be deleted — but a new one can be made.
+        #expect(byID["workspace.delete"]?.appliesTo.matches(ctx) == false)
+        #expect(byID["workspace.create"]?.appliesTo.matches(ctx) == true)
+    }
+
+    /// The node finder lists what is *about* the node, not the whole app.
+    /// Every app-level operation applies to a node in the sense of not being
+    /// stopped by one, so scope is what separates them.
+    @Test func theNodeFinderListsOnlyActionsAboutTheNode() throws {
+        let model = try makeModel()
+        let registry = model.pluginHost.registry
+        model.registerCoreActions(with: registry)
+        registry.register(action: Action(id: "test.onNode", title: "On Node",
+                                         scope: .node) { _ in })
+        registry.register(action: Action(id: "test.onApp", title: "On App",
+                                         scope: .workspace) { _ in })
+
+        let scoped = registry.actions
+            .filter { $0.scope == .node || $0.scope == .container || $0.scope == .document }
+            .map(\.id)
+        #expect(scoped.contains("test.onNode"))
+        #expect(!scoped.contains("test.onApp"))
+        // None of the app's own operations claim to be about a node.
+        #expect(!scoped.contains("pane.splitRight"))
+        #expect(!scoped.contains("toggle.zen"))
     }
 }

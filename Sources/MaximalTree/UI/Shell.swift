@@ -53,16 +53,10 @@ struct ContentView: View {
                     }
                     ToolbarItem {
                         Menu {
-                            Button {
-                                model.addFolder()
-                            } label: {
-                                Label("Add Root…", systemImage: "externaldrive.badge.plus")
-                            }
-                            Button {
-                                model.beginCreateFolder()
-                            } label: {
-                                Label("New Folder", systemImage: "folder.badge.plus")
-                            }
+                            // The same operations the menu bar and the finder
+                            // offer, by the same names.
+                            ActionItem(model: model, id: "workspace.addFolder")
+                            ActionItem(model: model, id: "workspace.newFolder")
                         } label: {
                             Label("Add", systemImage: "plus")
                         }

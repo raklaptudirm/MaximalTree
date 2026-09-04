@@ -615,6 +615,20 @@ final class AppModel {
 
     /// Run an action against the identity that understands it — the same one
     /// that made it applicable in the first place.
+    /// One registered action by id, for the surfaces that place a particular
+    /// operation deliberately rather than listing whatever applies.
+    func action(_ id: String) -> Action? {
+        store?.actions.first { $0.id == id }
+    }
+
+    /// Whether this action can be run against what is in front of you — what
+    /// greys out a menu item, and what keeps the finder from offering it.
+    func canRun(_ action: Action) -> Bool {
+        targetVariants(for: nil).contains {
+            action.appliesTo.matches(ActionContext(host: host, targets: $0))
+        }
+    }
+
     /// Run an action from a surface that lists them — a menu, the finder.
     ///
     /// Puts the finder away, which running one *by id* must not: the finder is

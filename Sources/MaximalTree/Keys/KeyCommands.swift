@@ -41,13 +41,25 @@ extension AppModel {
         /// Registers one, weakly: the registry outlives no model, but nothing
         /// here should be what keeps the model alive either.
         func act(_ id: String, _ title: String, image: String? = nil,
+                 shortcut: KeyboardShortcut? = nil,
                  when predicate: ActionPredicate = .always,
+                 enabled: (@MainActor (AppModel) -> Bool)? = nil,
                  surfaces: ActionSurfaces = [.palette],
                  scope: ActionScope = .workspace,
                  _ body: @escaping @MainActor (AppModel, ActionContext) -> Void) {
+            // An operation that can't be done right now says so once, here.
+            // The menu greys out, the finder leaves it out, and a key bound to
+            // it does nothing — all from the same answer.
+            var applies = predicate
+            if let enabled {
+                applies = .custom { [weak self] _ in
+                    guard let self else { return false }
+                    return enabled(self)
+                }
+            }
             registry.register(action: Action(
-                id: id, title: title, systemImage: image, appliesTo: predicate,
-                scope: scope, surfaces: surfaces,
+                id: id, title: title, systemImage: image, appliesTo: applies,
+                shortcut: shortcut, scope: scope, surfaces: surfaces,
                 handler: { [weak self] ctx in
                     guard let self else { return }
                     body(self, ctx)
@@ -92,12 +104,25 @@ extension AppModel {
 
         // MARK: The finder
 
-        act("finder.all", "Find Anything…", image: "magnifyingglass") { model, _ in
+        act("finder.all", "Find Anything…", image: "magnifyingglass",
+            shortcut: KeyboardShortcut("p", modifiers: [.command, .shift])) { model, _ in
             model.finderVisible ? model.closeFinder() : model.openFinder()
         }
-        act("finder.actions", "Run Action…") { model, _ in model.openFinder(scope: "actions") }
+        act("finder.actions", "Run Action…",
+            shortcut: KeyboardShortcut("p", modifiers: [.command, .option])) { model, _ in
+            model.openFinder(scope: "actions")
+        }
+        // Everything that can be done to what you are pointing at, as a list
+        // you can search — the context menu, reachable from the keyboard.
+        act("finder.nodeActions", "Act on Selection…", image: "hand.tap",
+            shortcut: KeyboardShortcut(".", modifiers: .command)) { model, _ in
+            model.openFinder(scope: "node-actions")
+        }
         act("finder.nodes", "Find in Sidebar…") { model, _ in model.openFinder(scope: "nodes") }
-        act("finder.files", "Find File…") { model, _ in model.openFinder(scope: "files") }
+        act("finder.files", "Find File…",
+            shortcut: KeyboardShortcut("o", modifiers: [.command, .shift])) { model, _ in
+            model.openFinder(scope: "files")
+        }
         act("finder.buffers", "Find Tab…") { model, _ in model.openFinder(scope: "buffers") }
         act("finder.workspaces", "Find Workspace…") { model, _ in
             model.openFinder(scope: "workspaces")
@@ -143,10 +168,14 @@ extension AppModel {
 
         // MARK: History and tabs
 
-        act("nav.back", "Back", image: "chevron.left") { model, ctx in
+        act("nav.back", "Back", image: "chevron.left",
+            shortcut: KeyboardShortcut("[", modifiers: .command),
+            enabled: { $0.navigation.canGoBack }) { model, ctx in
             for _ in 0..<ctx.count { model.goBack() }
         }
-        act("nav.forward", "Forward", image: "chevron.right") { model, ctx in
+        act("nav.forward", "Forward", image: "chevron.right",
+            shortcut: KeyboardShortcut("]", modifiers: .command),
+            enabled: { $0.navigation.canGoForward }) { model, ctx in
             for _ in 0..<ctx.count { model.goForward() }
         }
         act("tab.next", "Next Tab") { model, ctx in model.cycleTab(by: ctx.count) }
@@ -155,16 +184,31 @@ extension AppModel {
         act("tab.last", "Last Tab") { model, _ in
             model.selectTab(max(model.navigation.tabs.count - 1, 0))
         }
-        act("tab.close", "Close Tab", image: "xmark") { model, _ in model.closeActiveTab() }
+        act("tab.new", "New Tab", image: "plus",
+            shortcut: KeyboardShortcut("t", modifiers: .command)) { model, _ in
+            model.newTab()
+        }
+        act("tab.close", "Close Tab", image: "xmark",
+            shortcut: KeyboardShortcut("w", modifiers: .command),
+            enabled: { $0.navigation.tabs.count > 1 }) { model, _ in
+            model.closeActiveTab()
+        }
 
         // MARK: Panes and surfaces
 
-        act("pane.splitRight", "Split Right",
-            image: "rectangle.split.2x1") { model, _ in model.splitPaneRight() }
-        act("pane.splitDown", "Split Down",
-            image: "rectangle.split.1x2") { model, _ in model.splitPaneDown() }
-        act("pane.close", "Close Pane",
-            image: "xmark.rectangle") { model, _ in model.closeActivePane() }
+        act("pane.splitRight", "Split Right", image: "rectangle.split.2x1",
+            shortcut: KeyboardShortcut("d", modifiers: .command)) { model, _ in
+            model.splitPaneRight()
+        }
+        act("pane.splitDown", "Split Down", image: "rectangle.split.1x2",
+            shortcut: KeyboardShortcut("d", modifiers: [.command, .shift])) { model, _ in
+            model.splitPaneDown()
+        }
+        act("pane.close", "Close Pane", image: "xmark.rectangle",
+            shortcut: KeyboardShortcut("w", modifiers: [.command, .control]),
+            enabled: { $0.navigation.canClosePane }) { model, _ in
+            model.closeActivePane()
+        }
 
         act("surface.left", "Focus Surface Left") { model, _ in model.moveSurface(.left) }
         act("surface.right", "Focus Surface Right") { model, _ in model.moveSurface(.right) }
@@ -187,6 +231,23 @@ extension AppModel {
         act("workspace.previous", "Previous Workspace") { model, ctx in
             model.cycleWorkspace(by: -ctx.count)
         }
+        act("workspace.create", "New Workspace…", image: "plus.square.on.square") { model, _ in
+            model.showingCreateWorkspace = true
+        }
+        act("workspace.rename", "Rename Workspace…", image: "pencil") { model, _ in
+            model.showingRenameWorkspace = true
+        }
+        act("workspace.delete", "Delete Workspace", image: "trash",
+            enabled: { $0.workspaces.count > 1 }) { model, _ in
+            model.deleteActiveWorkspace()
+        }
+        act("workspace.keep", "Keep This Workspace…", image: "tray.and.arrow.down",
+            enabled: { $0.activeWorkspaceIsEphemeral }) { model, _ in
+            model.keepActiveWorkspace()
+        }
+        act("workspace.newFolder", "New Folder", image: "folder.badge.plus") { model, _ in
+            model.beginCreateFolder()
+        }
         act("workspace.addFolder", "Mount Root…",
             image: "externaldrive.badge.plus") { model, _ in model.addFolder() }
 
@@ -194,8 +255,10 @@ extension AppModel {
             image: "sidebar.leading") { model, _ in model.sidebarVisible.toggle() }
         act("toggle.inspector", "Toggle Inspector",
             image: "sidebar.trailing") { model, _ in model.inspectorVisible.toggle() }
-        act("toggle.zen", "Toggle Zen Mode",
-            image: "arrow.up.left.and.arrow.down.right") { model, _ in model.toggleZenMode() }
+        act("toggle.zen", "Toggle Zen Mode", image: "arrow.up.left.and.arrow.down.right",
+            shortcut: KeyboardShortcut("z", modifiers: [.command, .control])) { model, _ in
+            model.toggleZenMode()
+        }
 
         act("file.save", "Save", image: "square.and.arrow.down") { model, _ in
             // The editors own saving, and ⌘S is what they listen for.

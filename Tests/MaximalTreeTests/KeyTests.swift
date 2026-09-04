@@ -124,33 +124,10 @@ import SwiftUI
         }
     }
 
-    /// Every command a key names has to be one the app answers to, or the key
-    /// is dead and nothing says so.
-    @Test func everyBoundCommandIsOneTheAppKnows() {
-        let known: Set<String> = [
-            "mode.insert", "editor.focus", "explorer.focus", "inspector.focus",
-            "finder.all", "finder.actions", "finder.files", "finder.buffers",
-            "finder.workspaces", "finder.nodes",
-            "explorer.down", "explorer.up", "explorer.expand", "explorer.collapse",
-            "explorer.open", "explorer.first", "explorer.last",
-            "node.nextSibling", "node.previousSibling", "node.parent",
-            "nav.back", "nav.forward",
-            "tab.next", "tab.previous", "tab.close", "tab.first", "tab.last",
-            "pane.splitRight", "pane.splitDown", "pane.close",
-            "surface.left", "surface.right", "surface.up", "surface.down",
-            "surface.next", "surface.previous",
-            "workspace.next", "workspace.previous", "workspace.addFolder",
-            "toggle.sidebar", "toggle.inspector", "toggle.zen", "file.save",
-        ]
-        // The rest are plugin action ids, which the registry resolves at run
-        // time and this test can't see.
-        let pluginPrefixes = ["git.", "terminal.", "typst.", "web.", "file.", "core."]
-        for command in DefaultKeymap.make().allCommands {
-            guard !known.contains(command) else { continue }
-            #expect(pluginPrefixes.contains { command.hasPrefix($0) },
-                    "\(command) is bound but nothing runs it")
-        }
-    }
+    // The "is every binding real?" check lives in CoreActionTests now, where
+    // it can ask the action registry instead of a list kept by hand here. That
+    // list went stale the moment an operation was added — which is the exact
+    // failure it existed to catch.
 }
 
 /// The modal layer itself.

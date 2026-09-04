@@ -20,6 +20,17 @@ extension AppModel {
             await MainActor.run { self?.actionItems() ?? [] }
         })
 
+        // The context menu, as something you can type at. Not searched by
+        // default: these actions are already in "actions", and listing them
+        // twice in one result set would be the same command answering itself.
+        registry.register(finder: FinderSource(
+            id: "node-actions", title: "Act", prompt: "Act on the current node…",
+            systemImage: "hand.tap",
+            searchedByDefault: false
+        ) { [weak self] in
+            await MainActor.run { self?.nodeActionItems() ?? [] }
+        })
+
         registry.register(finder: FinderSource(
             id: "buffers", title: "Open", prompt: "Go to an open tab…",
             systemImage: "square.on.square",
@@ -55,6 +66,32 @@ extension AppModel {
         ) { [weak self] in
             await MainActor.run { self?.workspaceItems() ?? [] }
         })
+    }
+
+    /// What can be done to the node in front of you.
+    ///
+    /// The selection, or the focused node when nothing is selected — the same
+    /// thing the inspector shows, so the two never disagree about what "the
+    /// current node" is.
+    ///
+    /// Narrowed by scope rather than by predicate. Every app-level operation
+    /// applies to a node too, in the sense of not being stopped by it, so
+    /// filtering only on applicability would list the whole app again. What
+    /// makes an action belong here is that it is *about* the node: acting on
+    /// it, or inside it, or on the document it opens.
+    private func nodeActionItems() -> [FinderItem] {
+        let targets = host.selection.isEmpty
+            ? [host.focusedNode].compactMap { $0 }
+            : host.selection
+        guard !targets.isEmpty else { return [] }
+        return applicableActions(for: targets)
+            .filter { $0.scope == .node || $0.scope == .container || $0.scope == .document }
+            .map { action in
+                FinderItem(id: "node-action:\(action.id)", title: action.title,
+                           subtitle: action.id,
+                           systemImage: action.systemImage ?? "hand.tap",
+                           effect: .run(action.id))
+            }
     }
 
     private func actionItems() -> [FinderItem] {

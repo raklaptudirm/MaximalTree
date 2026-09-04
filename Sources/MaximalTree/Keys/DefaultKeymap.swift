@@ -47,6 +47,11 @@ enum DefaultKeymap {
         map.bind("/", to: "finder.all")
         map.bind("M-x", to: "finder.actions")
         map.bind(":", to: "finder.actions")
+        // What can be done to the thing you are pointing at — the context
+        // menu without the mouse. Vim's "repeat" key is not bound here, so the
+        // full stop is free and reads as "do something to this".
+        map.bind(".", to: "finder.nodeActions")
+        map.bind("SPC .", to: "finder.nodeActions")
 
         // History, the way a browser does it.
         map.bind("C-o", to: "nav.back")
