@@ -74,6 +74,10 @@ final class GraphStore: GraphBackend {
     /// (sidebar expansion) can follow the node.
     var onNodeRenamed: ((NodeID, NodeID) -> Void)?
 
+    /// Runs an action by id. Set by the owner, because dispatch needs the
+    /// selection variants and the applicability rules that live up there.
+    var onPerformAction: ((String, Int) -> Void)?
+
     init(context: HostContext, registry: Registry, nav: NavigationModel) {
         self.context = context
         self.registry = registry
@@ -478,6 +482,11 @@ final class GraphStore: GraphBackend {
             context._setChildCursor(page.next, of: id)
             childrenInFlight.remove(id)
         }
+    }
+
+    /// A plugin driving the app by name — the same path a key takes.
+    func perform(actionID: String, count: Int) {
+        onPerformAction?(actionID, count)
     }
 
     func requestRelated(of id: NodeID) {

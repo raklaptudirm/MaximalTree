@@ -83,6 +83,20 @@ public final class HostContext {
         return childrenByParent[id] ?? []
     }
 
+    /// Run any of the app's operations by name.
+    ///
+    /// Every operation is an action, the host's own included — moving in the
+    /// tree, splitting a pane, switching workspace — so this is the whole of
+    /// what the app can do, addressable by id. A plugin can drive the app the
+    /// same way a key does, and does not have to be told which operations came
+    /// from the host and which from another plugin.
+    ///
+    /// Does nothing when the id is unknown or the action does not apply right
+    /// now, so a caller need not guard either.
+    public func perform(_ actionID: String, count: Int = 1) {
+        backend?.perform(actionID: actionID, count: count)
+    }
+
     /// Cached forward links, requesting a load if we've never fetched them.
     public func related(of id: NodeID) -> [Related] {
         if relatedByNode[id] == nil { backend?.requestRelated(of: id) }
@@ -225,4 +239,5 @@ public protocol GraphBackend: AnyObject {
     func requestChildren(of id: NodeID)
     func requestMoreChildren(of id: NodeID)
     func requestRelated(of id: NodeID)
+    func perform(actionID: String, count: Int)
 }

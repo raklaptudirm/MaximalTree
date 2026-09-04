@@ -615,12 +615,25 @@ final class AppModel {
 
     /// Run an action against the identity that understands it — the same one
     /// that made it applicable in the first place.
+    /// Run an action from a surface that lists them — a menu, the finder.
+    ///
+    /// Puts the finder away, which running one *by id* must not: the finder is
+    /// itself opened by an action, and closing it on the way in would mean the
+    /// key that opens it also shuts it.
     func run(_ action: Action, targets: [NodeID]? = nil) {
-        let context = targetVariants(for: targets)
-            .first { action.appliesTo.matches(ActionContext(host: host, targets: $0)) }
-            .map { ActionContext(host: host, targets: $0) }
-        action.handler(context ?? ActionContext(host: host, targets: targets))
+        perform(action, targets: targets)
         closeFinder()
+    }
+
+    /// Invoke an action against the first set of targets it accepts.
+    ///
+    /// A node is offered as each identity it also is (see `targetVariants`), so
+    /// a git repository can be handed to an action written for directories.
+    func perform(_ action: Action, targets: [NodeID]? = nil, count: Int = 1) {
+        let context = targetVariants(for: targets)
+            .first { action.appliesTo.matches(ActionContext(host: host, targets: $0, count: count)) }
+            .map { ActionContext(host: host, targets: $0, count: count) }
+        action.handler(context ?? ActionContext(host: host, targets: targets, count: count))
     }
 
     /// Actions the host contributes itself — node manipulation that belongs to no
@@ -638,24 +651,6 @@ final class AppModel {
         ) { id, host in
             AnyView(NodeInspector(nodeID: id).environment(host))
         })
-    }
-
-    private func registerCoreActions(with registry: Registry) {
-        registry.register(action: Action(
-            id: "core.rename",
-            title: "Rename…",
-            systemImage: "pencil",
-            appliesTo: .custom { ctx in
-                guard ctx.targets.count == 1, let target = ctx.targets.first else { return false }
-                let label = ctx.host.node(target)?.label ?? target.uri
-                return ctx.host.canApply(.rename(target, to: label))
-            },
-            shortcut: KeyboardShortcut("r", modifiers: [.command, .shift]),
-            handler: { ctx in
-                guard let target = ctx.targets.first else { return }
-                ctx.host.beginRename(target)
-            }
-        ))
     }
 
     func start() {
@@ -686,6 +681,11 @@ final class AppModel {
         // at any moment leaves the tree the way it looks right now.
         sidebar.onExpansionChanged = { [weak self] revealed in
             self?.workspaceStore.setRevealedNodes(revealed.map(\.uri))
+        }
+        // `host.perform(id)` from a plugin runs the same dispatch a key does,
+        // so there is one answer to "what happens when this id is invoked".
+        store.onPerformAction = { [weak self] id, count in
+            self?.runCommand(id, count: count)
         }
         store.onRootsChanged = { [weak self] in
             guard let self else { return }

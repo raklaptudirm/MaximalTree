@@ -12,9 +12,18 @@ public struct ActionContext {
     /// which may not be the selection at all.
     public let targets: [NodeID]
 
-    public init(host: HostContext, targets: [NodeID]? = nil) {
+    /// How many times this was asked for.
+    ///
+    /// Keys can carry a repeat — `5 j` walks five rows — and an action is what
+    /// a key runs, so the count has to reach the handler. Actions that cannot
+    /// sensibly repeat ignore it, which is why it defaults to 1 and is never
+    /// zero: a handler can use it without checking.
+    public let count: Int
+
+    public init(host: HostContext, targets: [NodeID]? = nil, count: Int = 1) {
         self.host = host
         self.targets = targets ?? host.selection
+        self.count = max(count, 1)
     }
 
     /// The nodes being acted on. Alias of `targets`, which reads naturally in handlers.
