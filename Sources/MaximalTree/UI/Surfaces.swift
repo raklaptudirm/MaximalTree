@@ -290,3 +290,63 @@ struct SurfaceFocusRing: View {
         }
     }
 }
+
+/// Keeps a window at least as big as the shell inside it can lay out in.
+///
+/// The three columns give a shell window a minimum width of 975pt, and a
+/// window narrower than that does not clip or clamp: the split view re-reports
+/// its minimum on every constraints pass, the window is marked as needing
+/// another, and AppKit's feedback detector aborts the process ("more Update
+/// Constraints in Window passes than there are views in the window").
+///
+/// Nothing above us prevents that. `defaultSize` is ignored once SwiftUI has a
+/// remembered frame, AppKit's own clamp lands a point *below* `minSize` —
+/// still too narrow — and opening a file makes SwiftUI order a window front at
+/// whatever frame it last saved. The crash then saves the frame it died at, so
+/// one bad window poisons every launch after it: this app reached a state
+/// where every file opened from the Finder killed it, from a 940x450 frame
+/// left behind by an earlier session.
+///
+/// So the floor is stated rather than inferred, and applied as windows appear
+/// rather than from the view — by the time a SwiftUI view has a window to
+/// reach, the pass that aborts has already run.
+@MainActor
+enum WindowFloor {
+    /// Enough for the sidebar, the canvas and the inspector at their
+    /// minimums, with room to spare: the point is to be clear of the cliff
+    /// rather than balanced on it.
+    static let size = NSSize(width: 1040, height: 400)
+
+    /// Watch every window this app puts on screen.
+    ///
+    /// `didUpdate` rather than a delegate: SwiftUI owns the delegate of its
+    /// own windows, and this has to run while the window is being ordered in,
+    /// which is the last moment before the layout that would abort.
+    /// A window showing the shell, as opposed to a panel the system opened.
+    /// Identified by the scene name SwiftUI stamps on its own windows, which
+    /// a save panel does not carry.
+    private static func isShell(_ window: NSWindow) -> Bool {
+        window.identifier?.rawValue.contains("AppWindow") ?? false
+    }
+
+    static func watch() {
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didUpdateNotification, object: nil, queue: .main) { note in
+            guard let window = note.object as? NSWindow else { return }
+            MainActor.assumeIsolated { enforce(on: window) }
+        }
+    }
+
+    static func enforce(on window: NSWindow) {
+        guard isShell(window) else { return }
+        window.minSize = NSSize(width: max(window.minSize.width, size.width),
+                                height: max(window.minSize.height, size.height))
+        guard window.frame.width < size.width || window.frame.height < size.height else { return }
+        var frame = window.frame
+        frame.size.width = max(frame.width, size.width)
+        frame.size.height = max(frame.height, size.height)
+        window.setFrame(frame, display: false)
+    }
+
+}
+

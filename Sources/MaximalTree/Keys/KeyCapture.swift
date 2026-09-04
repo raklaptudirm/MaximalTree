@@ -149,10 +149,18 @@ struct KeyModeIndicator: View {
 /// bolted to a mode pill.
 struct KeyWhichKey: View {
     @Environment(AppModel.self) private var model
+    /// Whether this is the window holding the keyboard.
+    ///
+    /// The pending sequence is one app-wide value — there is one mode and one
+    /// keymap — so every window that draws this would draw it at the same
+    /// time. Drawn only where the keys are actually being typed: pressing the
+    /// leader in a loose file's window used to answer in the main window,
+    /// behind it.
+    @Environment(\.controlActiveState) private var activeState
 
     var body: some View {
         let keys = model.keys
-        if !keys.pending.isEmpty, !keys.continuations.isEmpty {
+        if activeState == .key, !keys.pending.isEmpty, !keys.continuations.isEmpty {
             // Wide enough to scan, capped so a big group can't cover the
             // thing being worked on.
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 130),

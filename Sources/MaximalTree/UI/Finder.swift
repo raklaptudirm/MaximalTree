@@ -271,3 +271,36 @@ private extension Array {
         return filter { seen.insert($0.row.id).inserted }
     }
 }
+
+
+/// The finder over whichever window has the keyboard.
+///
+/// Applied per window rather than owned by the shell. `finderVisible` is one
+/// app-wide flag — there is one finder, opened by one keymap — so every window
+/// carrying this would show it at once; the gate picks the window the keys are
+/// actually being typed in. It used to live in the shell alone, which meant
+/// opening the finder from a loose file's window drew it in the main window,
+/// behind the one you were looking at.
+private struct FinderOverlay: ViewModifier {
+    @Environment(AppModel.self) private var model
+    @Environment(\.controlActiveState) private var activeState
+
+    func body(content: Content) -> some View {
+        content.overlay {
+            if model.finderVisible, activeState == .key {
+                ZStack(alignment: .top) {
+                    Color.black.opacity(0.08)
+                        .ignoresSafeArea()
+                        .onTapGesture { model.closeFinder() }
+                    Finder()
+                        .padding(.top, 90)
+                }
+            }
+        }
+    }
+}
+
+extension View {
+    /// Show the finder here when this window holds the keyboard.
+    func finderOverlay() -> some View { modifier(FinderOverlay()) }
+}

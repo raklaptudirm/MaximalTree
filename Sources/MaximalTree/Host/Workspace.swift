@@ -268,6 +268,17 @@ struct Workspace: Codable, Identifiable, Equatable {
     /// provider has resolved one.
     var revealedNodes: [String] = []
 
+    /// Made on the spot for a file that belongs to nowhere else, and not
+    /// written to the library.
+    ///
+    /// A file opened from the Finder that no workspace mounts still wants the
+    /// whole app around it — a sidebar, tabs, the keys — so it gets a
+    /// workspace rather than a window of its own. It just isn't one you asked
+    /// for, so it doesn't outlive the session unless you keep it. Deliberately
+    /// outside `CodingKeys`: an ephemeral workspace is never encoded, and one
+    /// read back from disk is by definition a real one.
+    var isEphemeral: Bool = false
+
     /// Convenience for the flat root set (what older code and `resolvedRoots` want).
     var rootURIs: [String] { layout.rootURIs }
 
@@ -545,6 +556,24 @@ final class WorkspaceStore {
         return workspace
     }
 
+    /// A workspace for something passing through: listed and switchable like
+    /// any other, but never written down.
+    func createEphemeral(named name: String, rootURIs: [String]) -> Workspace {
+        var workspace = Workspace(name: name, rootURIs: rootURIs)
+        workspace.isEphemeral = true
+        library.workspaces.append(workspace)
+        return workspace
+    }
+
+    /// Keep an ephemeral workspace: from here on it is a workspace like any
+    /// other, and survives the app being closed.
+    func keep(_ id: UUID) {
+        guard let i = library.workspaces.firstIndex(where: { $0.id == id }),
+              library.workspaces[i].isEphemeral else { return }
+        library.workspaces[i].isEphemeral = false
+        persist()
+    }
+
     func rename(_ id: UUID, to name: String) {
         guard let i = library.workspaces.firstIndex(where: { $0.id == id }) else { return }
         library.workspaces[i].name = name
@@ -577,8 +606,20 @@ final class WorkspaceStore {
         persist()
     }
 
+    /// Writes the library, minus anything ephemeral.
+    ///
+    /// Which is how an ephemeral workspace goes away on its own: nothing
+    /// deletes it, it was simply never written down. The active id follows the
+    /// same rule — pointing the stored library at a workspace that won't be
+    /// there on the next launch would leave it with no active workspace at all.
     private func persist() {
-        if let data = try? JSONEncoder().encode(library) {
+        var stored = library
+        stored.workspaces = library.workspaces.filter { !$0.isEphemeral }
+        guard !stored.workspaces.isEmpty else { return }
+        if !stored.workspaces.contains(where: { $0.id == stored.activeID }) {
+            stored.activeID = stored.workspaces[0].id
+        }
+        if let data = try? JSONEncoder().encode(stored) {
             try? data.write(to: fileURL, options: .atomic)
         }
     }

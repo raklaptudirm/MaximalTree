@@ -293,9 +293,49 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.app
-        GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
-        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Sources/MaximalTree/Info.plist
+    # Written by xcodegen, so the document types live with the rest of the
+    # project's description rather than in a file edited by hand.
+    #
+    # These have to be *static*: Launch Services reads them when the app is
+    # installed, so a plugin cannot declare the types it can open the way it
+    # declares its canvases and actions. Adding a format means adding it here.
+    info:
+      path: Sources/MaximalTree/Info.plist
+      properties:
+        LSApplicationCategoryType: public.app-category.developer-tools
+        NSHumanReadableCopyright: ""
+        CFBundleDocumentTypes:
+          # Everything the text editor renders. Ranked Alternate, not Owner:
+          # this puts MaximalTree in Open With and lets you make it the default
+          # per type, without it quietly taking .swift from whatever you use
+          # today the moment it is installed.
+          - CFBundleTypeName: Text or Source File
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - public.plain-text
+              - public.source-code
+              - public.script
+              - public.shell-script
+              - public.json
+              - public.xml
+              - public.yaml
+              - net.daringfireball.markdown
+          # Typst is the app's own format, so it does claim this one.
+          - CFBundleTypeName: Typst Document
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes: [app.typst.document]
+        # macOS doesn't know what a .typ is; this teaches it, so the entry
+        # above has a type to name.
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: app.typst.document
+            UTTypeDescription: Typst Document
+            UTTypeConformsTo: [public.plain-text, public.source-code]
+            UTTypeTagSpecification:
+              public.filename-extension: [typ]
 
   MaximalTreeTests:
     type: bundle.unit-test

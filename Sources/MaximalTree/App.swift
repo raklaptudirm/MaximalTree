@@ -2,17 +2,110 @@ import SwiftUI
 import AppKit
 import MaximalTreeKit
 
+/// Takes files the system hands the app — a double-click in the Finder, a drop
+/// on the icon, `open -a`.
+///
+/// A delegate rather than `onOpenURL`, which is for url *schemes*: a file open
+/// arrives as `application(_:open:)` and never reaches a scene's handler.
+final class OpenFilesDelegate: NSObject, NSApplicationDelegate {
+    /// Before any window is on screen, because the first one can already be
+    /// too small — SwiftUI orders a remembered frame front when a file
+    /// arrives, and a shell that can't fit in it aborts the process.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        MainActor.assumeIsolated { WindowFloor.watch() }
+        claimOpenDocuments()
+    }
+
+    /// Set once the model exists. Static because AppKit builds the delegate
+    /// itself and hands it no context.
+    @MainActor static var handler: (([URL]) -> Void)?
+    /// Anything that arrived before the app had finished starting.
+    @MainActor static var pending: [URL] = []
+
+    /// Claimed a second time, in case AppKit's own install landed in between.
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        claimOpenDocuments()
+    }
+
+    /// Take the open-documents event ourselves.
+    ///
+    /// The handler AppKit installs for this is SwiftUI's, and it answers a
+    /// file from the Finder by making *another* window of the main scene —
+    /// one per file, and they never go away. `handlesExternalEvents` does not
+    /// dissuade it, and closing the window afterwards does not work either:
+    /// SwiftUI keeps it open through every `close()`.
+    ///
+    /// So the event is claimed before it can reach SwiftUI. Where a file goes
+    /// is this app's decision anyway; making a window was never part of it.
+    ///
+    /// Claimed in *both* launch phases on purpose. A file double-clicked while
+    /// the app is closed arrives during launch, before `didFinishLaunching` —
+    /// claiming it only there was one launch too late, and a cold start from
+    /// the Finder still opened the shell twice.
+    private func claimOpenDocuments() {
+        NSAppleEventManager.shared().setEventHandler(
+            self, andSelector: #selector(handleOpenDocuments(_:withReply:)),
+            forEventClass: AEEventClass(kCoreEventClass),
+            andEventID: AEEventID(kAEOpenDocuments))
+    }
+
+    @objc private func handleOpenDocuments(_ event: NSAppleEventDescriptor,
+                                           withReply reply: NSAppleEventDescriptor) {
+        guard let list = event.paramDescriptor(forKeyword: keyDirectObject) else { return }
+        var urls: [URL] = []
+        for index in 1...max(list.numberOfItems, 1) {
+            guard let item = list.atIndex(index),
+                  let data = item.coerce(toDescriptorType: typeFileURL)?.data,
+                  let text = String(data: data, encoding: .utf8),
+                  let url = URL(string: text.trimmingCharacters(in: .controlCharacters))
+            else { continue }
+            urls.append(url)
+        }
+        guard !urls.isEmpty else { return }
+        MainActor.assumeIsolated { OpenFilesDelegate.deliver(urls) }
+    }
+
+    /// Also the delegate's own way in, for whatever reaches it that way.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        MainActor.assumeIsolated { OpenFilesDelegate.deliver(urls) }
+    }
+
+    @MainActor
+    private static func deliver(_ urls: [URL]) {
+        guard let handler = Self.handler else {
+            Self.pending += urls
+            return
+        }
+        // Off this turn: this arrives from inside AppKit's Apple event
+        // dispatch, and switching workspace from there mutates the model
+        // while the shell is mid-update.
+        DispatchQueue.main.async { handler(urls) }
+    }
+}
+
 @main
 struct MaximalTreeApp: App {
     @State private var model = AppModel(host: HostContext())
+    @NSApplicationDelegateAdaptor(OpenFilesDelegate.self) private var openFiles
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environment(model.host)
                 .environment(model)
+                // The view half of the same statement: this is what SwiftUI
+                // matches an *existing* window against when an external event
+                // arrives. Without it the scene declares it can handle them
+                // and SwiftUI still makes a new window every time.
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
                 .task {
                     model.start()
+                    // Now that there is somewhere to put them.
+                    OpenFilesDelegate.handler = { [model] in model.open(files: $0) }
+                    if !OpenFilesDelegate.pending.isEmpty {
+                        model.open(files: OpenFilesDelegate.pending)
+                        OpenFilesDelegate.pending = []
+                    }
                     // Debug hook: MAXIMALTREE_ZEN=1 boots straight into zen so
                     // window-chrome issues can be inspected from the CLI.
                     if ProcessInfo.processInfo.environment["MAXIMALTREE_ZEN"] == "1" {
@@ -21,7 +114,25 @@ struct MaximalTreeApp: App {
                     }
                 }
         }
+        // Not decoration. The shell's three columns give the window a minimum
+        // width of 975pt, and SwiftUI's default for a new window is 940 —
+        // narrower than the layout it is about to be given. AppKit does not
+        // clamp its way out of that: the split view re-reports its minimum on
+        // every constraints pass, the window is marked as needing another, and
+        // the feedback detector aborts the process ("more Update Constraints
+        // in Window passes than there are views in the window"). That is what
+        // killed the app on every File > New Window and every file opened from
+        // the Finder. Opening wide enough to lay out is the whole fix.
+        .defaultSize(width: 1200, height: 800)
+        // Take external events in the window that is already open. Without
+        // this SwiftUI answers every file opened from the Finder by making
+        // *another* shell window: eight of them after a morning's work, and
+        // since each one drains the loose-file list, eight windows for the one
+        // stray file too.
+        .handlesExternalEvents(matching: ["*"])
         .commands { AppCommands(model: model) }
+
+
     }
 }
 
@@ -112,6 +223,64 @@ final class AppModel {
         finderVisible = false
         finder.close()
         keys.setMode(.normal)
+    }
+
+    // MARK: Files opened from outside
+
+    /// Open what the Finder (or `open`, or a drop on the icon) gave us.
+    ///
+    /// A file inside a mounted root belongs to that root's workspace and opens
+    /// there, with the project around it — switching workspace first if it
+    /// isn't the one in front of you.
+    ///
+    /// A file no workspace mounts gets a workspace of its own, made on the
+    /// spot and holding just that file. It was a window of its own once, with
+    /// no sidebar and nothing but the canvas, which meant rebuilding the shell
+    /// badly: focus, the mode indicator, the finder and the which-key overlay
+    /// all had to be taught about a second kind of window. A workspace is the
+    /// app's own answer to "a set of things to work on", and one file is a
+    /// perfectly good set — so the whole shell comes with it, and keeping the
+    /// file is `keepActiveWorkspace` rather than a menu built for the purpose.
+    func open(files urls: [URL]) {
+        for url in urls {
+            if let owner = FileOpening.owner(of: url, in: workspaces) {
+                if owner.id != activeWorkspaceID { switchWorkspace(to: owner.id) }
+            } else {
+                openInNewWorkspace(url)
+            }
+            store?.openURI(url.absoluteString)
+        }
+    }
+
+    /// A workspace made for one file, and not written down.
+    ///
+    /// Named after the file, because that is the whole of it. Reuses the one
+    /// already made for this file if it is still around, so opening the same
+    /// stray twice returns to it rather than stacking up namesakes.
+    private func openInNewWorkspace(_ url: URL) {
+        let uri = url.absoluteString
+        if let existing = workspaces.first(where: { $0.isEphemeral && $0.rootURIs == [uri] }) {
+            if existing.id != activeWorkspaceID { switchWorkspace(to: existing.id) }
+            return
+        }
+        let workspace = workspaceStore.createEphemeral(named: url.lastPathComponent,
+                                                       rootURIs: [uri])
+        switchWorkspace(to: workspace.id)
+    }
+
+    /// Whether what you are looking at is a workspace that will not outlive
+    /// the session — which is what offers you the chance to keep it.
+    var activeWorkspaceIsEphemeral: Bool { workspaceStore.active.isEphemeral }
+
+    /// Keep the workspace a stray file arrived in.
+    ///
+    /// The way out of being ephemeral: from here on it is written down like
+    /// any other. Renaming it is the next thing most people want, since it is
+    /// still named after a file, so that prompt follows.
+    func keepActiveWorkspace() {
+        guard let id = activeWorkspaceID else { return }
+        workspaceStore.keep(id)
+        showingRenameWorkspace = true
     }
 
     /// Recompute after anything that could have moved the keyboard: a key, a

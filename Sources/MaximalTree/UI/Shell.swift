@@ -106,7 +106,11 @@ struct ContentView: View {
         // Zen: the canvas, alone. Collapse both side panes and the toolbar;
         // restore the inspector to how the user had it on the way out.
         .toolbar(host.isZenMode ? .hidden : .automatic, for: .windowToolbar)
-        .background(WindowAccessor { window = $0 })
+        .background(WindowAccessor {
+            window = $0
+            // Before anything asks this window to lay out three columns in it.
+            WindowFloor.enforce(on: $0)
+        })
         .onChange(of: host.isZenMode) { _, zen in
             withAnimation {
                 if zen {
@@ -158,22 +162,12 @@ struct ContentView: View {
         .onChange(of: model.showingRenameWorkspace) { _, showing in
             if showing { workspaceNameDraft = model.activeWorkspaceName }
         }
-        .overlay {
-            if model.finderVisible {
-                ZStack(alignment: .top) {
-                    Color.black.opacity(0.08)
-                        .ignoresSafeArea()
-                        .onTapGesture { model.closeFinder() }
-                    Finder()
-                        .padding(.top, 90)
-                }
-            }
-        }
+        .finderOverlay()
     }
 }
 
 /// Hands the hosting `NSWindow` to SwiftUI once it exists — for window-level
-/// styling SwiftUI doesn't expose (zen's title-bar dissolve).
+/// styling SwiftUI doesn't expose (zen's title-bar dissolve, the size floor).
 private struct WindowAccessor: NSViewRepresentable {
     let onWindow: (NSWindow) -> Void
 

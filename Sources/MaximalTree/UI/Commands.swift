@@ -67,10 +67,13 @@ struct WorkspaceMenuItems: View {
             let button = Button {
                 model.switchWorkspace(to: workspace.id)
             } label: {
+                // An ephemeral one says so: it is here because a file was
+                // opened from the Finder, and it goes when the app does.
+                let name = workspace.isEphemeral ? "\(workspace.name) — Unsaved" : workspace.name
                 if workspace.id == model.activeWorkspaceID {
-                    Label(workspace.name, systemImage: "checkmark")
+                    Label(name, systemImage: "checkmark")
                 } else {
-                    Text(workspace.name)
+                    Text(name)
                 }
             }
             if showShortcuts, index < 9,
@@ -81,6 +84,9 @@ struct WorkspaceMenuItems: View {
             }
         }
         Divider()
+        if model.activeWorkspaceIsEphemeral {
+            Button("Keep This Workspace…") { model.keepActiveWorkspace() }
+        }
         Button("New Workspace…") { model.showingCreateWorkspace = true }
         Button("Rename Workspace…") { model.showingRenameWorkspace = true }
         Button("Delete Workspace", role: .destructive) { model.deleteActiveWorkspace() }
