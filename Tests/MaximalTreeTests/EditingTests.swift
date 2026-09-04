@@ -275,3 +275,47 @@ import Foundation
         #expect(buffer.text == "")
     }
 }
+
+/// The editor's declared keys and the keys it actually answers to.
+///
+/// `EditEngine` decides by pattern-matching over key sequences, and a switch
+/// cannot be asked what it matches — so the list which-key shows is written by
+/// hand beside it. This is what keeps the two honest: a key added to the
+/// switch without being listed stays invisible, and a key listed but not
+/// handled is worse, because the overlay promises something that does nothing.
+@MainActor
+@Suite struct DeclaredEditorKeysTests {
+    private let text = "hello world\nsecond line\nthird line\n"
+
+    @Test func theEngineAnswersToEveryKeyTheEditorClaims() {
+        for binding in MaximalEditor.EditorTextView.modalBindings {
+            let engine = EditEngine()
+            var selection = NSRange(location: 0, length: 0)
+            var outcome: EditOutcome?
+            // A sequence is written with spaces, and every key of it has to
+            // land — `g` alone is pending, `g g` is the motion.
+            for key in binding.key.split(separator: " ") {
+                outcome = engine.handle(EditKey(String(key)), mode: .normal,
+                                        text: text, selection: selection)
+                if let outcome { selection = outcome.selection }
+            }
+            #expect(outcome != nil,
+                    "\(binding.key) — \(binding.title) — is claimed but the engine declines it")
+        }
+    }
+
+    /// Every claim is for a mode the app actually has, and reads as something.
+    @Test func theClaimsAreWellFormed() {
+        let bindings = MaximalEditor.EditorTextView.modalBindings
+        #expect(!bindings.isEmpty)
+        for binding in bindings {
+            #expect(!binding.title.isEmpty, "\(binding.key) has no label to show")
+            #expect(!binding.key.isEmpty)
+        }
+        // No duplicates: the overlay identifies rows by key, and two rows with
+        // the same id is a SwiftUI list that drops one silently.
+        let keys = bindings.filter { $0.mode == .normal }.map(\.key)
+        #expect(Set(keys).count == keys.count, "a key is claimed twice")
+    }
+}
+

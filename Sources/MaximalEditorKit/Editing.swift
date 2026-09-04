@@ -363,6 +363,55 @@ public final class EditEngine {
 }
 
 extension MaximalEditor.EditorTextView: CanvasKeyHandling {
+    /// The keys this editor takes, so which-key can say so.
+    ///
+    /// Written out rather than derived: `EditEngine` decides by pattern-match
+    /// over key sequences, and a switch cannot be asked what it matches. The
+    /// list is beside the switch it describes, and a test walks it to check
+    /// the engine really answers to every key claimed here — which is the part
+    /// that would otherwise drift.
+    public nonisolated var keyBindings: [CanvasKeyBinding] {
+        guard modalEditing else { return [] }
+        return Self.modalBindings
+    }
+
+    /// Helix's grammar: a motion selects, a verb acts on the selection.
+    static let modalBindings: [CanvasKeyBinding] = [
+        // Moving, which is also selecting.
+        .init("h", title: "Left"),
+        .init("l", title: "Right"),
+        .init("j", title: "Down"),
+        .init("k", title: "Up"),
+        .init("w", title: "Next word"),
+        .init("b", title: "Previous word"),
+        .init("e", title: "End of word"),
+        .init("0", title: "Line start"),
+        .init("^", title: "First non-blank"),
+        .init("$", title: "Line end"),
+        .init("x", title: "Select line"),
+        .init("%", title: "Select all"),
+        .init("G", title: "Last line"),
+        .init("g g", title: "First line"),
+        .init("g e", title: "Last line"),
+        .init("g h", title: "Line start"),
+        .init("g l", title: "Line end"),
+
+        // Acting on what is selected.
+        .init("d", title: "Delete"),
+        .init("c", title: "Change"),
+        .init("y", title: "Yank"),
+        .init("p", title: "Paste after"),
+        .init("P", title: "Paste before"),
+        .init("i", title: "Insert before"),
+        .init("a", title: "Insert after"),
+        .init("I", title: "Insert at line start"),
+        .init("A", title: "Insert at line end"),
+        .init("o", title: "Open line below"),
+        .init("O", title: "Open line above"),
+        .init("v", title: "Extend selection"),
+        .init(";", title: "Collapse selection"),
+    ]
+
     /// The editor's share of the commanding modes: selections and the verbs
     /// that act on them. What it doesn't understand goes back to the app,
     /// which is how the leader and every global binding keep working with the

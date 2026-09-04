@@ -25,6 +25,24 @@ final class KeyEngine {
     /// Runs a command id, `count` times where that makes sense.
     var perform: ((String, Int) -> Void)?
 
+    /// Showing what a key would do from here, with nothing typed yet — see
+    /// `KeyCapture`, which sets this while ⌘ is held down.
+    ///
+    /// A modifier is a good place for this: holding one is already how you ask
+    /// a Mac "what else is there", and it costs nothing to ask because letting
+    /// go answers nothing.
+    var isPeeking = false
+
+    /// Every key that means something on its own, before any sequence has
+    /// begun: `j`, `k`, `i`, and the leader among them as the group it is.
+    ///
+    /// The answer to "what do the keys do", which is a question worth being
+    /// able to ask without committing to a sequence first.
+    var topLevelBindings: [(chord: KeyChord, binding: KeyBinding)] {
+        guard case .prefix(_, let continuations) = keymap.lookup([]) else { return [] }
+        return continuations
+    }
+
     init(keymap: Keymap) { self.keymap = keymap }
 
     enum Outcome: Equatable {
@@ -58,6 +76,23 @@ final class KeyEngine {
         // the leader has to work with a selection up, not just without one.
         guard !mode.isTyping, !editing else { return .passed }
 
+        // Backspace undoes the last key of a sequence rather than the whole
+        // thing. Escape is the way out; this is the way *back*, so a mistyped
+        // third key doesn't cost you the two that were right.
+        if chord == KeyChord("DEL") {
+            if !pending.isEmpty {
+                stepBack()
+                return .pendingSequence
+            }
+            if let current = count {
+                // Same idea for a repeat being typed: 12 becomes 1, and the
+                // last digit leaves no count behind rather than a zero.
+                count = current >= 10 ? current / 10 : nil
+                return count == nil ? .consumed : .pendingSequence
+            }
+            return .passed
+        }
+
         // Counts: digits before a sequence, but `0` alone is a motion, not a
         // count, so it only counts when one is already being typed.
         if pending.isEmpty, let digit = Int(chord.key), chord.key.count == 1,
@@ -85,6 +120,27 @@ final class KeyEngine {
             reset()
             return hadPending ? .consumed : .passed
         }
+    }
+
+    /// Drop the last chord and put the state back to what it was before it.
+    ///
+    /// Re-looked-up rather than remembered: the label and the continuations
+    /// are what the map says about a sequence, and the map is the only thing
+    /// that knows. A stack of previous states would be a second copy of it.
+    private func stepBack() {
+        let shortened = pending.dropLast()
+        guard !shortened.isEmpty,
+              case .prefix(let label, let continuations) = keymap.lookup(Array(shortened)) else {
+            // Back past the first key is back to nothing pending — but a count
+            // already typed survives, the way it does in vim.
+            let repeats = count
+            reset()
+            count = repeats
+            return
+        }
+        pending = Array(shortened)
+        prefixLabel = label
+        self.continuations = continuations
     }
 
     private func reset() {

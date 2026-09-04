@@ -38,9 +38,28 @@ struct KeyCapture: ViewModifier {
             private var monitor: Any?
             /// Clicks move the keyboard too, and nothing else tells us.
             private var clicks: Any?
+            /// Watches the modifiers, for the ⌘-held peek.
+            private var flags: Any?
+            /// Distinguishes this press of ⌘ from the next one, so a release
+            /// can't cancel a peek that a later press asked for.
+            private var peekGeneration = 0
+
+            /// How long ⌘ has to be down before the peek appears.
+            ///
+            /// Long enough that ⌘S never flashes it, short enough that holding
+            /// the key to ask a question feels like it answered.
+            private static let peekDelay: TimeInterval = 0.4
 
             func install(model: AppModel) {
                 guard monitor == nil else { return }
+                flags = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+                    // ⌘ alone: with another modifier down this is someone
+                    // building a shortcut, not asking what there is.
+                    let held = event.modifierFlags.isDisjoint(with: [.control, .option, .shift])
+                        && event.modifierFlags.contains(.command)
+                    MainActor.assumeIsolated { self.setPeek(held, model: model) }
+                    return event
+                }
                 clicks = NSEvent.addLocalMonitorForEvents(
                     matching: [.leftMouseUp, .rightMouseUp]) { event in
                     MainActor.assumeIsolated { model.refreshFocusedSurface() }
@@ -73,11 +92,33 @@ struct KeyCapture: ViewModifier {
                                           canvas: KeyFocus.focusedCanvas())
             }
 
+            /// Show the leader's menu while ⌘ is held, after a moment.
+            ///
+            /// Deferred rather than immediate: every ⌘ shortcut in the app
+            /// passes through here, and a menu that flickered on each one
+            /// would be worse than not having it. Letting go takes it away at
+            /// once, because by then the question has been answered.
+            @MainActor
+            private func setPeek(_ held: Bool, model: AppModel) {
+                peekGeneration += 1
+                guard held else {
+                    model.keys.isPeeking = false
+                    return
+                }
+                let generation = peekGeneration
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.peekDelay) { [self] in
+                    guard generation == peekGeneration else { return }
+                    model.keys.isPeeking = true
+                }
+            }
+
             func remove() {
                 if let monitor { NSEvent.removeMonitor(monitor) }
                 if let clicks { NSEvent.removeMonitor(clicks) }
+                if let flags { NSEvent.removeMonitor(flags) }
                 monitor = nil
                 clicks = nil
+                flags = nil
             }
         }
     }
@@ -148,6 +189,10 @@ struct KeyModeIndicator: View {
 /// floating card over the canvas — in the app's own card style, not a HUD
 /// bolted to a mode pill.
 struct KeyWhichKey: View {
+    /// Enough for every key the app binds at the top level, with room for a
+    /// keymap of one's own. Not unbounded: this is still an overlay.
+    static let peekLimit = 60
+
     @Environment(AppModel.self) private var model
     /// Whether this is the window holding the keyboard.
     ///
@@ -158,34 +203,95 @@ struct KeyWhichKey: View {
     /// behind it.
     @Environment(\.controlActiveState) private var activeState
 
+    /// One line of the overlay.
+    struct Row: Identifiable, Equatable {
+        let id: String
+        let keys: String
+        let label: String
+        /// An app binding the focused canvas will take before the app sees it.
+        /// Shown, because it is still in the keymap and still worth knowing
+        /// about, but not as though pressing it would do this.
+        let intercepted: Bool
+    }
+
     var body: some View {
         let keys = model.keys
-        if activeState == .key, !keys.pending.isEmpty, !keys.continuations.isEmpty {
+        let rows = rows(for: keys)
+        if activeState == .key, !rows.isEmpty {
             // Wide enough to scan, capped so a big group can't cover the
-            // thing being worked on.
+            // thing being worked on — but the peek is a deliberate "show me
+            // what the keys do", and answering it with a silent three-quarters
+            // of the list would be worse than not answering.
+            // Four columns while peeking: the canvas's keys and the app's
+            // together run to fifty-odd rows, and three columns of that is a
+            // wall down the side of the window.
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 130),
                                                           alignment: .leading),
-                                     count: 3),
+                                     count: keys.isPeeking ? 4 : 3),
                       alignment: .leading, spacing: 4) {
-                ForEach(keys.continuations.prefix(18), id: \.chord) { item in
+                ForEach(rows.prefix(keys.isPeeking ? Self.peekLimit : 18)) { row in
                     HStack(spacing: 6) {
-                        Text(item.chord.description)
+                        Text(row.keys)
                             .font(.system(.caption2, design: .monospaced).weight(.medium))
                             .padding(.horizontal, 5)
                             .padding(.vertical, 1)
-                            .background(Color.secondary.opacity(0.12),
+                            .background(Color.secondary.opacity(row.intercepted ? 0.06 : 0.12),
                                        in: RoundedRectangle(cornerRadius: 4))
-                        Text(label(for: item.binding))
+                        Text(row.label)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(row.intercepted ? AnyShapeStyle(.tertiary)
+                                                             : AnyShapeStyle(.secondary))
                             .lineLimit(1)
                     }
+                    .opacity(row.intercepted ? 0.55 : 1)
                 }
             }
             .padding(10)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(.separator))
             .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
+        }
+    }
+
+    /// What to show: mid-sequence, where you are; with ⌘ held and nothing
+    /// typed, every key that means something from here.
+    ///
+    /// The peek leads with the focused canvas's own keys, because those are
+    /// what the keys will actually do — in a commanding mode the canvas is
+    /// offered every key before the app is. The app's own bindings follow, and
+    /// the ones the canvas will take are dimmed rather than dropped: the
+    /// binding is still real, it just isn't what happens here.
+    private func rows(for keys: KeyEngine) -> [Row] {
+        guard keys.pending.isEmpty else {
+            return keys.continuations.map {
+                Row(id: $0.chord.description, keys: $0.chord.description,
+                    label: label(for: $0.binding), intercepted: false)
+            }
+        }
+        guard keys.isPeeking else { return [] }
+        return Self.peekRows(
+            canvas: KeyFocus.focusedCanvas()?.keyBindings ?? [],
+            app: keys.topLevelBindings.map {
+                (keys: $0.chord.description, label: label(for: $0.binding))
+            },
+            mode: keys.mode)
+    }
+
+    /// The peek's contents, given what the canvas takes and what the app binds.
+    ///
+    /// Separate from the view because this is the part that was wrong: the
+    /// overlay listed the app's bindings while a canvas quietly took them, so
+    /// `j` read as "move down the sidebar" with the caret moving instead.
+    static func peekRows(canvas: [CanvasKeyBinding],
+                         app: [(keys: String, label: String)],
+                         mode: KeyMode) -> [Row] {
+        let mine = canvas.filter { $0.mode == mode }
+        let taken = Set(mine.map(\.key))
+        return mine.map {
+            Row(id: "canvas:\($0.key)", keys: $0.key, label: $0.title, intercepted: false)
+        } + app.map {
+            Row(id: "app:\($0.keys)", keys: $0.keys, label: $0.label,
+                intercepted: taken.contains($0.keys))
         }
     }
 

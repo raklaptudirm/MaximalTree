@@ -27,6 +27,30 @@ public enum KeyMode: String, Sendable {
     public var isTyping: Bool { self == .insert }
 }
 
+/// One key a canvas takes, so the app can say so before it is pressed.
+///
+/// The same vocabulary `handleKey` speaks — a key name and whether Control
+/// was held — plus what it does and the mode it does it in.
+public struct CanvasKeyBinding: Sendable {
+    /// A single character, or a name like `RET`, `TAB`, `ESC`. A sequence is
+    /// written with spaces, as `"g g"`.
+    public let key: String
+    public let control: Bool
+    /// The mode this applies in. A canvas that takes the same key in more
+    /// than one lists it once per mode.
+    public let mode: KeyMode
+    /// What it does, in the words the reader should see.
+    public let title: String
+
+    public init(_ key: String, control: Bool = false,
+                mode: KeyMode = .normal, title: String) {
+        self.key = key
+        self.control = control
+        self.mode = mode
+        self.title = title
+    }
+}
+
 /// A canvas that does something with keys itself.
 ///
 /// A canvas is entitled to its own commands: an editor moves its caret with
@@ -39,6 +63,18 @@ public enum KeyMode: String, Sendable {
 /// every key to the app.
 @MainActor
 public protocol CanvasKeyHandling: AnyObject {
+    /// What this canvas does with keys.
+    ///
+    /// Declared so the app can *show* them: in normal mode the focused canvas
+    /// gets first refusal on every key, which means the app's own bindings are
+    /// not what will happen while a canvas has the keyboard. Which-key listed
+    /// them anyway, and confidently — `j` reads as "move down the sidebar"
+    /// while the editor is quietly taking it to move the caret.
+    ///
+    /// Empty by default: a canvas that declares nothing is described as taking
+    /// nothing, which is wrong but no worse than before.
+    var keyBindings: [CanvasKeyBinding] { get }
+
     /// Handle a key press in the app's current mode.
     ///
     /// - Parameters:
@@ -49,4 +85,8 @@ public protocol CanvasKeyHandling: AnyObject {
     ///   came in, but `i` and `o` and a visual `c` all answer `.insert` — or
     ///   nil to decline the key and leave it to the app.
     func handleKey(_ key: String, control: Bool, mode: KeyMode) -> KeyMode?
+}
+
+public extension CanvasKeyHandling {
+    var keyBindings: [CanvasKeyBinding] { [] }
 }

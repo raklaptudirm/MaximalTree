@@ -147,6 +147,142 @@ import SwiftUI
 
     private func chord(_ text: String) -> KeyChord { KeyChord(parsing: text)! }
 
+    /// Backspace is the way *back* through a sequence, where Escape is the way
+    /// out of it. A wrong third key shouldn't cost the two that were right.
+    @Test func backspaceStepsBackOneKey() {
+        let (engine, log) = makeEngine()
+        _ = engine.handle(chord("SPC"), editing: false)
+        _ = engine.handle(chord("f"), editing: false)
+        #expect(engine.pending == [chord("SPC"), chord("f")])
+        #expect(engine.prefixLabel == "file")
+
+        #expect(engine.handle(chord("DEL"), editing: false) == .pendingSequence)
+        #expect(engine.pending == [chord("SPC")])
+        // And the level it stepped back to is live again, not just shorter.
+        #expect(engine.continuations.map(\.chord) == [chord("f")])
+
+        // Typing on from there still works.
+        _ = engine.handle(chord("f"), editing: false)
+        _ = engine.handle(chord("s"), editing: false)
+        #expect(log().map(\.0) == ["save"])
+    }
+
+    @Test func backspacePastTheFirstKeyLeavesNothingPending() {
+        let (engine, _) = makeEngine()
+        _ = engine.handle(chord("SPC"), editing: false)
+        _ = engine.handle(chord("DEL"), editing: false)
+        #expect(engine.pending.isEmpty)
+        #expect(engine.continuations.isEmpty)
+        #expect(engine.prefixLabel.isEmpty)
+    }
+
+    /// A repeat is being typed one digit at a time, so backspace takes one
+    /// digit — and the last one leaves no count rather than a zero.
+    @Test func backspaceEditsACountBeingTyped() {
+        let (engine, _) = makeEngine()
+        _ = engine.handle(chord("1"), editing: false)
+        _ = engine.handle(chord("2"), editing: false)
+        #expect(engine.count == 12)
+
+        _ = engine.handle(chord("DEL"), editing: false)
+        #expect(engine.count == 1)
+        _ = engine.handle(chord("DEL"), editing: false)
+        #expect(engine.count == nil)
+    }
+
+    /// A count survives stepping back out of a sequence, the way it does in
+    /// vim: `3 SPC` backspaced is still `3`.
+    @Test func aCountOutlivesTheSequenceItPrefixed() {
+        let (engine, _) = makeEngine()
+        _ = engine.handle(chord("3"), editing: false)
+        _ = engine.handle(chord("SPC"), editing: false)
+        _ = engine.handle(chord("DEL"), editing: false)
+        #expect(engine.pending.isEmpty)
+        #expect(engine.count == 3)
+    }
+
+    /// With nothing being typed it is just a key, and belongs to whatever has
+    /// the keyboard.
+    @Test func backspaceWithNothingPendingIsNotOurs() {
+        let (engine, _) = makeEngine()
+        #expect(engine.handle(chord("DEL"), editing: false) == .passed)
+    }
+
+    /// What the peek shows while a canvas has the keyboard.
+    ///
+    /// The defect this fixes: in a commanding mode the focused canvas is
+    /// offered every key before the app is, so listing the app's bindings
+    /// plainly was a lie — `j` read as "move down the sidebar" while the
+    /// editor took it to move the caret.
+    @Test func thePeekLeadsWithTheCanvasKeysAndMarksWhatItTakes() {
+        let canvas = [
+            CanvasKeyBinding("j", title: "Down"),
+            CanvasKeyBinding("w", title: "Next word"),
+        ]
+        let app = [(keys: "j", label: "Move Down"),
+                   (keys: "SPC", label: "+leader"),
+                   (keys: "/", label: "Find Anything…")]
+
+        let rows = KeyWhichKey.peekRows(canvas: canvas, app: app, mode: .normal)
+
+        // The canvas's own keys come first, as themselves.
+        #expect(rows.prefix(2).map(\.keys) == ["j", "w"])
+        #expect(rows.prefix(2).allSatisfy { !$0.intercepted })
+
+        // The app's follow, and the one the canvas takes is marked.
+        let appRows = rows.dropFirst(2)
+        #expect(appRows.map(\.keys) == ["j", "SPC", "/"])
+        #expect(appRows.first { $0.keys == "j" }?.intercepted == true)
+        #expect(appRows.first { $0.keys == "SPC" }?.intercepted == false)
+        #expect(appRows.first { $0.keys == "/" }?.intercepted == false)
+    }
+
+    /// Bindings for another mode aren't what would happen in this one.
+    @Test func onlyTheCanvasKeysForTheModeInForceAreShown() {
+        let canvas = [
+            CanvasKeyBinding("j", title: "Down"),
+            CanvasKeyBinding("d", mode: .visual, title: "Delete selection"),
+        ]
+        let rows = KeyWhichKey.peekRows(canvas: canvas, app: [], mode: .normal)
+        #expect(rows.map(\.keys) == ["j"])
+    }
+
+    /// With nothing focused that takes keys, it is the app's list unchanged.
+    @Test func withNoCanvasThePeekIsJustTheApp() {
+        let app = [(keys: "j", label: "Move Down"), (keys: "SPC", label: "+leader")]
+        let rows = KeyWhichKey.peekRows(canvas: [], app: app, mode: .normal)
+        #expect(rows.map(\.keys) == ["j", "SPC"])
+        #expect(rows.allSatisfy { !$0.intercepted })
+    }
+
+    /// The peek is only useful if it shows all of them. The shipped keymap
+    /// binds more keys at the top level than a mid-sequence group is allowed
+    /// to show, which is why the peek has a limit of its own.
+    @Test func everyTopLevelKeyFitsInThePeek() {
+        let engine = KeyEngine(keymap: DefaultKeymap.make())
+        // Both lists at once, which is what the peek shows over an editor.
+        let together = engine.topLevelBindings.count
+            + MaximalEditor.EditorTextView.modalBindings.count
+        #expect(together <= KeyWhichKey.peekLimit)
+        #expect(together > 18,
+                "if this ever drops below the ordinary cap, the peek limit is dead weight")
+    }
+
+    /// The peek shows the keys that mean something with nothing typed — the
+    /// plain ones, and the leader among them as the group it opens.
+    @Test func theTopLevelKeysCanBeReadWithoutTypingAnything() {
+        let (engine, _) = makeEngine()
+        let top = engine.topLevelBindings
+        #expect(top.map(\.chord).sorted { $0.description < $1.description }
+                == [chord("SPC"), chord("j")])
+        // `j` runs something; `SPC` is a group and says so, which is what
+        // makes this readable rather than a list of letters.
+        #expect(top.first { $0.chord == chord("j") }?.binding == .command("down"))
+        if case .prefix? = top.first(where: { $0.chord == chord("SPC") })?.binding {} else {
+            Issue.record("the leader should read as a group")
+        }
+    }
+
     @Test func aBoundKeyRunsItsCommand() {
         let (engine, log) = makeEngine()
         #expect(engine.handle(chord("j"), editing: false) == .consumed)
