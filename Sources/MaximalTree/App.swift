@@ -371,11 +371,17 @@ final class AppModel {
         store?.switchRoots(roots)
         guard let id = activeWorkspaceID, let session = sessions[id] else {
             // First visit this run: fall back to what the workspace persisted.
+            // Nothing is cached yet, so opening the tree fetches it fresh —
+            // there is nothing here to bring up to date.
             restoreRevealedNodesFromDisk()
             return
         }
         sidebar.restore(session.sidebar)
         store?.restoreNavigation(session.navigation)
+        // Switched back to a workspace this session has seen before, so its
+        // children are cached from whenever you last looked. Long enough ago
+        // to be wrong.
+        refreshVisibleNodes()
     }
 
     /// Put the sidebar's disclosure back the way the active workspace last had
@@ -385,6 +391,61 @@ final class AppModel {
         let revealed = Set(workspaceStore.active.revealedNodes.compactMap(NodeID.init))
         sidebar.restore(SidebarState.Snapshot(expandedNodes: revealed, anchor: nil))
     }
+
+    // MARK: Keeping the tree current
+
+    /// How often the tree is brought up to date while you are using the app.
+    ///
+    /// Long enough that it costs nothing to have running, short enough that a
+    /// directory changed by something else doesn't stay wrong for a session.
+    private static let refreshInterval: TimeInterval = 60
+
+    /// The nodes whose contents are actually on display: the roots, and
+    /// whatever has been opened out beneath them.
+    ///
+    /// The expanded set can name nodes inside a collapsed parent, which are
+    /// not strictly on screen — refreshing those is a listing nobody reads,
+    /// but the set is small and bounded by what has been loaded at all, and
+    /// working out true visibility means walking the tree the sidebar just
+    /// walked. `refreshChildren` skips anything never loaded, so this can only
+    /// ever re-ask questions the app has already asked once.
+    private var visibleNodes: [NodeID] { host.roots + sidebar.expandedNodes }
+
+    /// Ask again for what is on screen.
+    ///
+    /// Providers that stream their changes keep themselves current, and two of
+    /// the six do; the rest answered once, when the node was first opened, and
+    /// would go on showing that answer until something happened to invalidate
+    /// it. Nothing did — so a directory changed by another program, a branch
+    /// switched in a terminal, a note written by a script all stayed invisible
+    /// until the node was collapsed and opened again.
+    func refreshVisibleNodes() {
+        store?.refreshChildren(of: visibleNodes)
+    }
+
+    /// Refresh on the occasions when what is on screen is most likely to be
+    /// out of date: coming back to the app after being away in another one,
+    /// and on a slow tick while it is in front of you.
+    ///
+    /// Only while the app is active. A refresh in the background is work
+    /// nobody is waiting for, and coming back triggers one anyway.
+    private func startRefreshing() {
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshVisibleNodes() }
+        }
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: Self.refreshInterval,
+                                            repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard NSApp.isActive else { return }
+                self?.refreshVisibleNodes()
+            }
+        }
+    }
+
+    @ObservationIgnored private var refreshTimer: Timer?
+    @ObservationIgnored private var activationObserver: (any NSObjectProtocol)?
 
     // MARK: Root folders
 
@@ -607,7 +668,12 @@ final class AppModel {
         // also dlopen the .bundle into the same process, or the @objc principal class
         // collides. Tests exercise provider logic without the running host.
         let underTest = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-        if !underTest { pluginHost.loadAll() }
+        if !underTest {
+            pluginHost.loadAll()
+            // No timer under test: it would fire into a model the test has
+            // finished with, and there is no app to become active anyway.
+            startRefreshing()
+        }
         let store = GraphStore(context: host, registry: pluginHost.registry, nav: navigation)
         self.store = store
         // Persist on every root-set change, no matter who mounted (UI or plugin).

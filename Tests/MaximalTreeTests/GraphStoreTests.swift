@@ -25,6 +25,27 @@ private struct PagingProvider: NodeProvider {
     }
 }
 
+/// A directory that changes underneath the app: it serves whatever
+/// `contents` currently says, and counts how often it was asked.
+@MainActor
+private final class ShiftingProvider: NodeProvider {
+    let schemes: Set<String> = ["shift"]
+    var contents: [String] = ["a", "b"]
+    var listings = 0
+
+    nonisolated func resolve(_ uri: String) -> NodeID? { NodeID(uri) }
+    nonisolated func node(for id: NodeID) async -> Node? { Node(id: id, type: "shift.item") }
+
+    nonisolated func children(of id: NodeID, page cursor: Cursor?) async -> Page<Node> {
+        await MainActor.run {
+            listings += 1
+            return Page(items: contents.compactMap { name in
+                NodeID("shift://\(name)").map { Node(id: $0, type: "shift.item") }
+            }, next: nil)
+        }
+    }
+}
+
 @MainActor
 @Suite struct GraphStoreTests {
     private func makeStore() -> (GraphStore, HostContext) {
@@ -379,5 +400,61 @@ private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider
         #expect(children.count == 3)
         #expect(children.last?.uri.hasSuffix("/contributed") == true)
         #expect(context.node(children.last!)?.type == TypeID("other.extra"))
+    }
+
+    /// The point of refreshing: a listing the app already has is asked for
+    /// again, and the new answer replaces the old.
+    @Test func refreshingReasksForChildrenAlreadyLoaded() async throws {
+        let context = HostContext()
+        let registry = Registry()
+        let provider = ShiftingProvider()
+        registry.register(provider: provider)
+        let store = GraphStore(context: context, registry: registry, nav: NavigationModel())
+        let root = try #require(NodeID("shift://root"))
+
+        store.requestChildren(of: root)
+        try await waitUntil { context.cachedChildren(of: root)?.count == 2 }
+        #expect(provider.listings == 1)
+
+        // Something else changes the directory.
+        provider.contents = ["a", "b", "c"]
+
+        store.refreshChildren(of: [root])
+        try await waitUntil { context.cachedChildren(of: root)?.count == 3 }
+        #expect(provider.listings == 2)
+    }
+
+    /// Refreshing must not turn into a background crawl of the whole tree: a
+    /// node nobody has opened is not fetched just because it was named.
+    @Test func refreshingIgnoresNodesNeverLoaded() async throws {
+        let context = HostContext()
+        let registry = Registry()
+        let provider = ShiftingProvider()
+        registry.register(provider: provider)
+        let store = GraphStore(context: context, registry: registry, nav: NavigationModel())
+        let unopened = try #require(NodeID("shift://never-opened"))
+
+        store.refreshChildren(of: [unopened])
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(provider.listings == 0)
+        #expect(context.cachedChildren(of: unopened) == nil)
+    }
+
+    /// A refresh replaces the listing, it doesn't blank it: the tree must not
+    /// collapse to empty for the moment the provider takes to answer.
+    @Test func theOldListingStaysUntilTheNewOneArrives() async throws {
+        let context = HostContext()
+        let registry = Registry()
+        let provider = ShiftingProvider()
+        registry.register(provider: provider)
+        let store = GraphStore(context: context, registry: registry, nav: NavigationModel())
+        let root = try #require(NodeID("shift://root"))
+
+        store.requestChildren(of: root)
+        try await waitUntil { context.cachedChildren(of: root)?.count == 2 }
+
+        store.refreshChildren(of: [root])
+        // Read straight after asking, before the provider can have answered.
+        #expect(context.cachedChildren(of: root)?.count == 2)
     }
 }

@@ -445,6 +445,21 @@ final class GraphStore: GraphBackend {
         }
     }
 
+    /// Ask for these nodes' children again.
+    ///
+    /// Marked stale rather than cleared, so the listing already on screen stays
+    /// until the new one arrives — a refresh should never blink the tree.
+    ///
+    /// Only nodes whose children have actually been loaded. Requesting children
+    /// for a node nobody has opened would fetch the tree a level at a time in
+    /// the background, which is the opposite of what this is for.
+    func refreshChildren(of ids: some Sequence<NodeID>) {
+        for id in ids where context.cachedChildren(of: id) != nil {
+            context._invalidateChildren(of: id)
+            requestChildren(of: id)
+        }
+    }
+
     /// Fetch the next page of children and append. Only runs when the provider
     /// reported a cursor on the previous page.
     func requestMoreChildren(of id: NodeID) {
