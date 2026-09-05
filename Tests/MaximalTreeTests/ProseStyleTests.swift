@@ -105,6 +105,38 @@ import AppKit
         #expect(EditorStyle.prose().design == .serif)
     }
 
+    // MARK: The column
+
+    /// The measure is the point: a line holds about the same number of
+    /// characters at any size, because the column grows with the text rather
+    /// than staying a fixed number of points.
+    @Test func theColumnHoldsTheSameMeasureAtEverySize() {
+        let alphabet = "abcdefghijklmnopqrstuvwxyz" as NSString
+        for size in [12, 15, 20, 24] as [CGFloat] {
+            let style = EditorStyle.prose(size: size)
+            let one = alphabet.size(withAttributes: [.font: style.font]).width
+            let alphabets = (style.idealColumnWidth - 10) / one
+            #expect(abs(alphabets - 2.5) < 0.05,
+                    "\(size)pt gives \(alphabets) alphabets, not the measure")
+        }
+    }
+
+    @Test func aBiggerSizeGetsAWiderColumn() {
+        #expect(EditorStyle.prose(size: 24).idealColumnWidth
+                > EditorStyle.prose(size: 15).idealColumnWidth)
+    }
+
+    /// Measured in the face, not counted in characters: a narrow face gets a
+    /// narrower column for the same measure rather than a longer line.
+    @Test func aNarrowerFaceGetsANarrowerColumn() throws {
+        let installed = Set(NSFontManager.shared.availableFontFamilies)
+        try #require(installed.contains("EB Garamond") && installed.contains("Literata"),
+                     "needs both faces installed to compare")
+        let garamond = EditorStyle.prose(family: "EB Garamond").idealColumnWidth
+        let literata = EditorStyle.prose(family: "Literata").idealColumnWidth
+        #expect(garamond < literata)
+    }
+
     // MARK: Size
 
     private func withStoredSize(_ body: () -> Void) {

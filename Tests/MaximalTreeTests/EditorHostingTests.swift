@@ -86,7 +86,8 @@ import STTextView
                 if mode.write {
                     HStack(spacing: 0) {
                         Spacer(minLength: 24)
-                        editor(style: .prose()).frame(maxWidth: 760)
+                        editor(style: .prose())
+                            .frame(maxWidth: EditorStyle.prose().idealColumnWidth)
                         Spacer(minLength: 24)
                     }
                 } else {

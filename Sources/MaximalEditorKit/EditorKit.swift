@@ -136,6 +136,26 @@ public struct EditorStyle: Equatable {
         return style
     }
 
+    /// How wide a column of this text wants to be.
+    ///
+    /// Two and a half lowercase alphabets, which is the old compositor's rule
+    /// for a comfortable measure and lands around 73 characters a line. It is
+    /// measured in the actual face rather than counted in characters, so a
+    /// narrow one like EB Garamond gets a narrower column for the same measure
+    /// instead of a longer line.
+    ///
+    /// Derived from the style rather than fixed, so the column tracks the text
+    /// size: making the text bigger widens the column by the same proportion
+    /// and the measure stays put, which is the thing a reader actually feels.
+    ///
+    /// Includes the text container's 5pt of padding a side — that is frame,
+    /// not text, and a caller sizing a view wants the frame.
+    public var idealColumnWidth: CGFloat {
+        let alphabet = "abcdefghijklmnopqrstuvwxyz" as NSString
+        let width = alphabet.size(withAttributes: [.font: font]).width
+        return (width * 2.5 + 10).rounded()
+    }
+
     /// A line's full height with this style's spacing — the floor a reserved
     /// math box must clear so an equation never shrinks its own line.
     var naturalLineHeight: CGFloat {

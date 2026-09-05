@@ -126,11 +126,18 @@ struct TypstCanvas: View {
     // MARK: Layouts
 
     /// Prose layout: a centered column on the page color, nothing else.
+    ///
+    /// The column is measured from the text rather than taken as a share of
+    /// the window: a line whose length moves when the sidebar comes and goes
+    /// is what makes a full-width editor tiring to read, and a fixed number of
+    /// points means a different measure in every face and at every size. The
+    /// width follows the type, so making the text bigger makes the column
+    /// wider and the line still holds about the same number of words.
     private var writeLayout: some View {
         HStack(spacing: 0) {
             Spacer(minLength: 24)
             editor(fontSize: 14)
-                .frame(maxWidth: 760)
+                .frame(maxWidth: proseStyle.idealColumnWidth)
             Spacer(minLength: 24)
         }
         .background(Color(nsColor: pageBackground))
@@ -152,14 +159,21 @@ struct TypstCanvas: View {
         }
     }
 
+    /// The manuscript's style — the chosen face at the chosen size. Held in
+    /// one place because the column's width is measured from it: the editor
+    /// and the frame around it have to be describing the same text.
+    private var proseStyle: EditorStyle {
+        .prose(size: TypstUIState.shared.proseSize,
+               family: TypstUIState.shared.proseFont.family)
+    }
+
     private func editor(fontSize: CGFloat) -> some View {
         // Write reads like a manuscript (serif, roomy); Typeset is a code editor
         // that wraps (prose-like source).
         MaximalEditor(
             text: $text,
             style: mode == .write
-                ? .prose(size: TypstUIState.shared.proseSize,
-                         family: TypstUIState.shared.proseFont.family)
+                ? proseStyle
                 : .code(size: fontSize, wrapLines: true, indentSpaces: 2),
             tokenizer: tokenizer,
             mathRenderer: TypstMathRenderer.shared,
