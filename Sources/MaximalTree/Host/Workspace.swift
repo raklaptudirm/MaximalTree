@@ -372,10 +372,34 @@ extension RootFolder {
     }
 }
 
-/// Everything persisted: all workspaces plus which one is active.
+/// Everything persisted: all workspaces, which one is active, and the order
+/// they were last used in.
+///
+/// `workspaces` is the order the user arranged and the menu numbers (⌘⌥1 has
+/// to mean the same workspace tomorrow); `recentIDs` is the order they were
+/// visited in, most recent first, which is what cycling walks. Two orders
+/// because one can't be both stable and last-use at once.
 struct WorkspaceLibrary: Codable {
     var workspaces: [Workspace]
     var activeID: UUID?
+    var recentIDs: [UUID] = []
+
+    init(workspaces: [Workspace], activeID: UUID?, recentIDs: [UUID] = []) {
+        self.workspaces = workspaces
+        self.activeID = activeID
+        self.recentIDs = recentIDs
+    }
+
+    // Written by hand so a library saved before recency existed still loads —
+    // the synthesized decoder wants every key, default value or not.
+    private enum CodingKeys: String, CodingKey { case workspaces, activeID, recentIDs }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        workspaces = try container.decode([Workspace].self, forKey: .workspaces)
+        activeID = try container.decodeIfPresent(UUID.self, forKey: .activeID)
+        recentIDs = try container.decodeIfPresent([UUID].self, forKey: .recentIDs) ?? []
+    }
 }
 
 /// The app-managed workspace library (not document-based — a deliberate early
@@ -424,6 +448,7 @@ final class WorkspaceStore {
         if !library.workspaces.contains(where: { $0.id == library.activeID }) {
             library.activeID = library.workspaces[0].id
         }
+        healRecency()
         persist()
     }
 
@@ -587,14 +612,50 @@ final class WorkspaceStore {
         guard library.workspaces.count > 1,
               let i = library.workspaces.firstIndex(where: { $0.id == id }) else { return }
         library.workspaces.remove(at: i)
-        if library.activeID == id { library.activeID = library.workspaces[0].id }
+        library.recentIDs.removeAll { $0 == id }
+        // The most recently used one, which is where you were before here.
+        if library.activeID == id { library.activeID = byRecency[0].id }
         persist()
     }
 
     func setActive(_ id: UUID) {
         guard library.workspaces.contains(where: { $0.id == id }) else { return }
         library.activeID = id
+        promote(id)
         persist()
+    }
+
+    // MARK: Last-use order
+
+    /// The workspaces in last-use order, the active one first.
+    ///
+    /// This is what cycling walks, and why `SPC w n` twice puts you back: the
+    /// one you leave becomes second, so the next step is the way you came.
+    /// Alt-tab's bargain — the two you are working between stay one keystroke
+    /// apart, and the rest sort themselves by how recently they mattered.
+    var byRecency: [Workspace] {
+        let ordered = library.recentIDs.compactMap { id in
+            library.workspaces.first { $0.id == id }
+        }
+        let known = Set(library.recentIDs)
+        return ordered + library.workspaces.filter { !known.contains($0.id) }
+    }
+
+    /// Move a workspace to the front of the last-use order.
+    private func promote(_ id: UUID) {
+        library.recentIDs.removeAll { $0 == id }
+        library.recentIDs.insert(id, at: 0)
+    }
+
+    /// Make the recency list say exactly what exists, active first — for a
+    /// library written before recency, one edited elsewhere, or one whose
+    /// ephemeral workspaces went away with the last session.
+    private func healRecency() {
+        let live = Set(library.workspaces.map(\.id))
+        library.recentIDs = library.recentIDs.filter { live.contains($0) }
+        let known = Set(library.recentIDs)
+        library.recentIDs += library.workspaces.map(\.id).filter { !known.contains($0) }
+        if let active = library.activeID { promote(active) }
     }
 
     // MARK: Persistence
@@ -616,6 +677,8 @@ final class WorkspaceStore {
         var stored = library
         stored.workspaces = library.workspaces.filter { !$0.isEphemeral }
         guard !stored.workspaces.isEmpty else { return }
+        let kept = Set(stored.workspaces.map(\.id))
+        stored.recentIDs = library.recentIDs.filter { kept.contains($0) }
         if !stored.workspaces.contains(where: { $0.id == stored.activeID }) {
             stored.activeID = stored.workspaces[0].id
         }

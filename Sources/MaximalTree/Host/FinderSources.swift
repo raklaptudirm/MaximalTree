@@ -136,8 +136,11 @@ extension AppModel {
         }
     }
 
+    /// Last-use order, like the switcher it stands in for: the one you were
+    /// in before this is at the top, and typing a name still beats reading a
+    /// list. The menu bar keeps the arranged order, where the numbers live.
     private func workspaceItems() -> [FinderItem] {
-        workspaces.map { workspace in
+        workspacesByRecency.map { workspace in
             FinderItem(id: "workspace:\(workspace.id)", title: workspace.name,
                        systemImage: "square.stack.3d.up",
                        effect: .run("workspace.select:\(workspace.id)"))

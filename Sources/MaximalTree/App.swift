@@ -357,6 +357,9 @@ final class AppModel {
     // MARK: Workspaces
 
     var workspaces: [Workspace] { workspaceStore.library.workspaces }
+    /// The same workspaces in last-use order — what cycling and the switcher
+    /// walk, while the menu keeps the arranged one.
+    var workspacesByRecency: [Workspace] { workspaceStore.byRecency }
     var activeWorkspaceID: UUID? { workspaceStore.library.activeID }
     var activeWorkspaceName: String { workspaceStore.active.name }
 
@@ -608,12 +611,20 @@ final class AppModel {
     func movePane(_ direction: PaneDirection) -> UUID? { store?.movePane(direction) }
     func cyclePane(by offset: Int) { store?.cyclePane(by: offset) }
 
-    /// Step to the next or previous workspace, wrapping. The workspace list is
-    /// the order the switcher shows, so this and the menu agree.
+    /// Step through the workspaces in last-use order, wrapping.
+    ///
+    /// Alt-tab, not a carousel: the active one is always the head of that
+    /// order, so one step forward is the workspace you were just in — and
+    /// taking it again brings you back, because arriving put this one at the
+    /// head instead. Two workspaces you are working between stay one
+    /// keystroke apart however many others exist.
+    ///
+    /// The menu keeps the arranged order and its ⌘⌥1…9, which have to mean
+    /// the same workspace tomorrow as today.
     func cycleWorkspace(by offset: Int) {
-        guard workspaces.count > 1, let active = activeWorkspaceID,
-              let index = workspaces.firstIndex(where: { $0.id == active }) else { return }
-        switchWorkspace(to: workspaces[(index + offset).wrapped(around: workspaces.count)].id)
+        let recent = workspacesByRecency
+        guard recent.count > 1 else { return }
+        switchWorkspace(to: recent[offset.wrapped(around: recent.count)].id)
     }
 
 

@@ -324,6 +324,17 @@ plugin action). Providers are entirely workspace-unaware.
 
 Seeding is **first-launch-only**: an empty workspace the user made stays empty.
 
+Workspaces are held in **two orders**. `workspaces` is the arranged one — what the
+menu lists and what ⌘⌥1–9 number, and it never moves, because a number that meant a
+different workspace after every switch would be worse than no number. `recentIDs` is
+last-use order, most recent first, and it is what `workspace.next` / `previous` walk
+(`SPC w n`, `g w`) and what the switcher lists. Arriving at a workspace puts it at the
+head, so stepping forward lands on the one you just left and stepping forward again
+comes back — alt-tab's bargain, where the two you are working between stay one
+keystroke apart no matter how many others exist. Both orders are persisted; the
+recency list is healed against the live workspaces on load and filtered of ephemeral
+ones on save.
+
 A file opened from the Finder that no workspace mounts gets an **ephemeral
 workspace** of its own, named after the file and holding just it. It is listed and
 switchable like any other but never written to the library, so it goes when the app

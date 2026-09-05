@@ -85,6 +85,79 @@ import Foundation
     }
 }
 
+/// Switching workspaces the way alt-tab switches apps.
+@MainActor
+@Suite struct WorkspaceCyclingTests {
+    private func makeModel() throws -> AppModel {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("cycle-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return AppModel(host: HostContext(),
+                        workspaceFile: dir.appendingPathComponent("workspaces.json"))
+    }
+
+    /// The whole point. Whatever else is open, the workspace you were last in
+    /// is one step away, and taking that step again is the way back — so the
+    /// key can be held down without walking off into workspaces you have not
+    /// touched in a week.
+    @Test func steppingForwardTwiceComesBack() throws {
+        let model = try makeModel()
+        model.createWorkspace(named: "B")
+        model.createWorkspace(named: "C")
+        let start = model.activeWorkspaceName
+        #expect(start == "C")
+
+        model.cycleWorkspace(by: 1)
+        #expect(model.activeWorkspaceName == "B", "one step is the one you left")
+        model.cycleWorkspace(by: 1)
+        #expect(model.activeWorkspaceName == start, "and the next step is back")
+        model.cycleWorkspace(by: 1)
+        #expect(model.activeWorkspaceName == "B", "which makes it a toggle")
+    }
+
+    /// The other direction wraps to the far end of the same order, which is
+    /// the workspace you have gone longest without.
+    @Test func steppingBackReachesTheOldest() throws {
+        let model = try makeModel()
+        model.createWorkspace(named: "B")
+        model.createWorkspace(named: "C")
+        // Order is now C, B, Main.
+        model.cycleWorkspace(by: -1)
+        #expect(model.activeWorkspaceName == "Main")
+    }
+
+    /// A count is a step count, so `3 SPC w n` is the third most recent — the
+    /// deeper reach alt-tab gives you for holding the key down.
+    @Test func aCountStepsFurtherDownTheOrder() throws {
+        let model = try makeModel()
+        model.createWorkspace(named: "B")
+        model.createWorkspace(named: "C")
+        model.cycleWorkspace(by: 2)
+        #expect(model.activeWorkspaceName == "Main")
+    }
+
+    /// Nowhere to go: one workspace is not a cycle of one, it is a no-op.
+    @Test func oneWorkspaceGoesNowhere() throws {
+        let model = try makeModel()
+        model.cycleWorkspace(by: 1)
+        #expect(model.workspaces.count == 1)
+        #expect(model.activeWorkspaceName == "Main")
+    }
+
+    /// The menu numbers the arranged order, not this one: ⌘⌥2 has to mean the
+    /// same workspace tomorrow, and it would not if visiting one moved it.
+    @Test func theArrangedOrderDoesNotMove() throws {
+        let model = try makeModel()
+        model.createWorkspace(named: "B")
+        model.createWorkspace(named: "C")
+        let arranged = model.workspaces.map(\.name)
+        model.cycleWorkspace(by: 1)
+        model.cycleWorkspace(by: 1)
+        #expect(model.workspaces.map(\.name) == arranged)
+        #expect(arranged == ["Main", "B", "C"])
+    }
+}
+
 @MainActor
 @Suite struct WorkspaceStoreTests {
     /// Fresh directory per test so libraries and legacy files can't collide.
@@ -203,6 +276,73 @@ import Foundation
 
         store.delete(store.active.id)                  // refused: last one
         #expect(store.library.workspaces.count == 1)
+    }
+
+    // MARK: Last-use order
+
+    /// The order cycling walks: most recently used first, and the one you
+    /// just left second — which is what makes stepping forward twice a
+    /// round trip.
+    @Test func recencyPutsTheOneYouLeftSecond() throws {
+        let file = try tempLibraryURL()
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        let store = WorkspaceStore(fileURL: file)
+        let b = store.create(named: "B")
+        let c = store.create(named: "C")
+
+        store.setActive(b.id)
+        store.setActive(c.id)
+        #expect(store.byRecency.map(\.name) == ["C", "B", "Main"])
+
+        store.setActive(b.id)
+        #expect(store.byRecency.map(\.name) == ["B", "C", "Main"])
+    }
+
+    /// A library from before recency existed, or one whose workspaces were
+    /// edited elsewhere: the order says exactly what exists, active first,
+    /// rather than trusting the file.
+    @Test func recencyHealsToWhatActuallyExists() throws {
+        let file = try tempLibraryURL()
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        let store = WorkspaceStore(fileURL: file)
+        let b = store.create(named: "B")
+        store.setActive(b.id)
+
+        let relaunched = WorkspaceStore(fileURL: file)
+        #expect(relaunched.byRecency.map(\.name) == ["B", "Main"])
+        #expect(relaunched.byRecency.count == relaunched.library.workspaces.count)
+    }
+
+    /// Deleting the one you are in lands on the one you were in before it,
+    /// not on whichever happens to be first in the arranged list.
+    @Test func deletingTheActiveOneLandsOnTheMostRecent() throws {
+        let file = try tempLibraryURL()
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        let store = WorkspaceStore(fileURL: file)
+        let b = store.create(named: "B")
+        let c = store.create(named: "C")
+        store.setActive(b.id)
+        store.setActive(c.id)
+
+        store.delete(c.id)
+        #expect(store.active.name == "B")
+        #expect(!store.library.recentIDs.contains(c.id))
+    }
+
+    /// An ephemeral workspace is never written down, and neither is its place
+    /// in the order — a recency list naming a workspace that won't exist next
+    /// launch is the same dangling reference `activeID` already avoids.
+    @Test func ephemeralWorkspacesStayOutOfThePersistedOrder() throws {
+        let file = try tempLibraryURL()
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        let store = WorkspaceStore(fileURL: file)
+        let passing = store.createEphemeral(named: "note.typ", rootURIs: [])
+        store.setActive(passing.id)
+        #expect(store.byRecency.first?.id == passing.id)
+
+        let relaunched = WorkspaceStore(fileURL: file)
+        #expect(relaunched.library.recentIDs == [relaunched.active.id])
+        #expect(relaunched.library.workspaces.count == 1)
     }
 
     @Test func renamePersists() throws {
