@@ -213,6 +213,7 @@ struct GitInspector: View {
                 if let date = gitDate(node) { LabeledContent("Date", value: date) }
                 if let status = gitString(node, "status") { LabeledContent("Status", value: status) }
             }
+            RepositorySection(nodeID: nodeID)
             CommitBox(nodeID: nodeID)
             GitFailureNotice()
         }
@@ -298,5 +299,54 @@ private func GitRefKindIsRepoScope(_ id: NodeID) -> Bool {
     switch ref.kind {
     case .repo, .staged, .unstaged, .branches, .commits: return true
     default: return false
+    }
+}
+
+
+/// Where the repository stands, for any node inside it.
+///
+/// Shown throughout rather than only on the repo row: "am I ahead of the
+/// remote" is the question you have while looking at a commit or a changed
+/// file, not while looking at the repository's own row.
+private struct RepositorySection: View {
+    let nodeID: NodeID
+    @State private var status: GitStatus?
+    @State private var remote: String?
+
+    var body: some View {
+        content.task(id: nodeID) { await load() }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let status, status.branch != nil {
+            Section("Repository") {
+                LabeledContent("Branch", value: status.branch ?? "—")
+                if let upstream = status.upstream {
+                    LabeledContent("Upstream", value: upstream)
+                }
+                if status.ahead > 0 || status.behind > 0 {
+                    LabeledContent("Diverged",
+                                   value: "\(status.ahead) ahead, \(status.behind) behind")
+                }
+                if let remote { LabeledContent("Remote", value: remote) }
+                LabeledContent("Changes", value: status.isClean
+                               ? "None"
+                               : "\(status.staged.count) staged, \(status.unstaged.count) unstaged")
+            }
+        }
+    }
+
+    /// Read off the main actor: git talks to the disk, and an inspector that
+    /// waited for it would stall every selection change.
+    private func load() async {
+        guard let repo = GitActions.repo(of: nodeID) else { return }
+        let read = await Task.detached { () -> (GitStatus, String?) in
+            (GitStatus.read(repo),
+             Git.run(repo, ["remote", "get-url", "origin"])?
+                .trimmingCharacters(in: .whitespacesAndNewlines))
+        }.value
+        status = read.0
+        remote = read.1?.isEmpty == true ? nil : read.1
     }
 }

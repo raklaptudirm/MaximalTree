@@ -439,6 +439,12 @@ final class GitPlugin: NSObject, Plugin {
             matches: { $0.type == TypeID("git.commitfile") }) { id, host in
                 AnyView(CommitFileCanvas(nodeID: id).environment(host))
         })
+        // A repository gets its status rather than a list of its four folders,
+        // which said nothing a sidebar row didn't.
+        registry.register(canvas: CanvasContribution(priority: 20,
+            matches: { $0.type == TypeID("git.repo") }) { id, host in
+                AnyView(RepoCanvas(nodeID: id).environment(host))
+        })
         registry.register(canvas: CanvasContribution(priority: 0,
             matches: { $0.type.raw.hasPrefix("git.") }) { id, host in
                 AnyView(GitListCanvas(nodeID: id).environment(host))

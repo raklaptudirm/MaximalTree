@@ -167,3 +167,85 @@ import WebKit
         }
     }
 }
+
+/// The repository canvas's keys.
+///
+/// Item one gave the page and the terminal theirs and left git out, because
+/// its canvas was a SwiftUI List with no selection of its own — a canvas that
+/// declares `j` has to have something for `j` to move. This is that something.
+@MainActor
+@Suite struct RepoCanvasKeyTests {
+    private func model(staged: [String], unstaged: [String]) -> RepoCanvasModel {
+        let model = RepoCanvasModel()
+        model.setStatusForTesting(GitStatus(
+            branch: "main",
+            staged: staged.map { .init(code: "M", path: $0) },
+            unstaged: unstaged.map { .init(code: "M", path: $0) }))
+        return model
+    }
+
+    /// Staged first, then unstaged — one list to walk, in the order drawn.
+    @Test func theKeysWalkBothSectionsAsOneList() {
+        let model = model(staged: ["a.txt"], unstaged: ["b.txt", "c.txt"])
+        #expect(model.rows.map(\.entry.path) == ["a.txt", "b.txt", "c.txt"])
+
+        model.move(1)
+        #expect(model.current?.entry.path == "a.txt")
+        #expect(model.current?.staged == true)
+        model.move(1)
+        #expect(model.current?.entry.path == "b.txt")
+        #expect(model.current?.staged == false)
+    }
+
+    @Test func movingStopsAtEitherEnd() {
+        let model = model(staged: [], unstaged: ["a.txt", "b.txt"])
+        model.moveToEdge(last: true)
+        #expect(model.current?.entry.path == "b.txt")
+        model.move(1)
+        #expect(model.current?.entry.path == "b.txt", "walked off the end")
+
+        model.moveToEdge(last: false)
+        model.move(-1)
+        #expect(model.current?.entry.path == "a.txt", "walked off the start")
+    }
+
+    @Test func movingInAnEmptyRepositoryDoesNothing() {
+        let model = model(staged: [], unstaged: [])
+        model.move(1)
+        model.moveToEdge(last: true)
+        #expect(model.current == nil)
+    }
+
+    /// A row that goes — staged, discarded — must not leave the keys pointing
+    /// at nothing, or the next `j` starts over from the top.
+    @Test func theSelectionSurvivesARowLeaving() {
+        let model = model(staged: [], unstaged: ["a.txt", "b.txt"])
+        model.selected = "Mb.txt"
+        model.setStatusForTesting(GitStatus(branch: "main",
+                                            staged: [.init(code: "M", path: "b.txt")],
+                                            unstaged: [.init(code: "M", path: "a.txt")]))
+        #expect(model.current != nil, "the selection was left on a row that is gone")
+    }
+
+    @Test func theCanvasAnswersToEveryKeyItClaims() {
+        let view = RepoKeyCatcherViewForTesting()
+        view.model = model(staged: ["a.txt"], unstaged: ["b.txt"])
+        for binding in type(of: view).bindings {
+            var last: KeyMode?
+            for key in binding.key.split(separator: " ") {
+                last = view.handleKey(String(key), control: false, mode: .normal)
+                if last == nil { break }
+            }
+            #expect(last != nil, "\(binding.key) — \(binding.title) — is claimed but declined")
+        }
+    }
+
+    @Test func itLeavesTheAppsKeysAlone() {
+        let view = RepoKeyCatcherViewForTesting()
+        view.model = model(staged: [], unstaged: ["a.txt"])
+        for key in ["SPC", "/", "i", "h", "l", "w"] {
+            #expect(view.handleKey(key, control: false, mode: .normal) == nil,
+                    "the repo canvas took \(key), which belongs to the app")
+        }
+    }
+}
