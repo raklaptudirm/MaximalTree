@@ -54,6 +54,26 @@ struct Keymap {
         return found
     }
 
+    /// Every command reachable from `chords` — the whole subtree under a
+    /// prefix, or the one command if the path names a command itself.
+    ///
+    /// For deciding whether a *group* is worth offering: a group leading only
+    /// to things that can't happen here is as misleading as a dead binding.
+    func commands(under chords: [KeyChord]) -> [String] {
+        var node = root
+        for chord in chords {
+            guard let next = node.children[chord] else { return [] }
+            node = next
+        }
+        var found: [String] = []
+        var stack = [node]
+        while let current = stack.popLast() {
+            if case .command(let id)? = current.binding { found.append(id) }
+            stack.append(contentsOf: current.children.values)
+        }
+        return found
+    }
+
     /// Bind a sequence written as `"SPC g s"`. Intermediate chords become
     /// prefixes; `label` names the group they form.
     mutating func bind(_ sequence: String, to command: String, group: String? = nil) {

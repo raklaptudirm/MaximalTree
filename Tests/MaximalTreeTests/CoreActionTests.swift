@@ -1,5 +1,7 @@
 import Testing
 import Foundation
+import AppKit
+import SwiftUI
 @testable import MaximalTreeKit
 @testable import MaximalTree
 
@@ -168,5 +170,63 @@ import Foundation
         // None of the app's own operations claim to be about a node.
         #expect(!scoped.contains("pane.splitRight"))
         #expect(!scoped.contains("toggle.zen"))
+    }
+}
+
+/// A surface's keys belong to that surface.
+///
+/// The explorer's motions are the sidebar's own. Dispatch has always known it —
+/// `runCommand` checks before running — but the overlay read the keymap
+/// directly, and a keymap is a static trie that cannot know the caret is in a
+/// document. So it listed keys that could not fire, which is what made the
+/// sidebar look like it was taking part in a surface it has nothing to do with.
+@MainActor
+@Suite struct SurfaceScopedKeyTests {
+    private func map() -> Keymap {
+        var map = Keymap()
+        map.describe("SPC g", as: "git")
+        map.bind("SPC g s", to: "git.stage")
+        map.bind("SPC g c", to: "git.commit")
+        map.bind("j", to: "explorer.down")
+        map.bind("/", to: "finder.all")
+        return map
+    }
+
+    private func top(_ map: Keymap) -> [(chord: KeyChord, binding: KeyBinding)] {
+        guard case .prefix(_, let continuations) = map.lookup([]) else { return [] }
+        return continuations
+    }
+
+    @Test func abindingThatCannotFireIsNotListed() {
+        let map = map()
+        // The sidebar hasn't got the keyboard, so its motions cannot run.
+        let rows = KeyWhichKey.live(top(map), under: [], keymap: map) { $0 != "explorer.down" }
+        #expect(!rows.contains { $0.chord == KeyChord("j") }, "a dead binding was offered")
+        #expect(rows.contains { $0.chord == KeyChord("/") })
+    }
+
+    /// A group is worth showing only while something under it is.
+    @Test func aGroupIsAsLiveAsWhatItLeadsTo() {
+        let map = map()
+        let all = KeyWhichKey.live(top(map), under: [], keymap: map) { _ in true }
+        #expect(all.contains { $0.chord == KeyChord("SPC") })
+
+        let none = KeyWhichKey.live(top(map), under: [], keymap: map) {
+            !$0.hasPrefix("git.")
+        }
+        #expect(!none.contains { $0.chord == KeyChord("SPC") },
+                "a group leading only to dead ends was offered")
+
+        // One live command under it is enough to keep the group.
+        let some = KeyWhichKey.live(top(map), under: [], keymap: map) { $0 == "git.commit" }
+        #expect(some.contains { $0.chord == KeyChord("SPC") })
+    }
+
+    @Test func theKeymapCanSayWhatAGroupLeadsTo() {
+        let map = map()
+        #expect(Set(map.commands(under: [KeyChord("SPC"), KeyChord("g")])
+                    ) == ["git.stage", "git.commit"])
+        #expect(map.commands(under: [KeyChord("j")]) == ["explorer.down"])
+        #expect(map.commands(under: [KeyChord("z")]).isEmpty)
     }
 }

@@ -227,14 +227,11 @@ import SwiftUI
 
         // The canvas's own keys come first, as themselves.
         #expect(rows.prefix(2).map(\.keys) == ["j", "w"])
-        #expect(rows.prefix(2).allSatisfy { !$0.intercepted })
-
-        // The app's follow, and the one the canvas takes is marked.
-        let appRows = rows.dropFirst(2)
-        #expect(appRows.map(\.keys) == ["j", "SPC", "/"])
-        #expect(appRows.first { $0.keys == "j" }?.intercepted == true)
-        #expect(appRows.first { $0.keys == "SPC" }?.intercepted == false)
-        #expect(appRows.first { $0.keys == "/" }?.intercepted == false)
+        // One row per key: `j` belongs to the canvas here, so the app's `j`
+        // is gone rather than shown greyed beside it.
+        #expect(rows.map(\.keys) == ["j", "w", "SPC", "/"])
+        #expect(rows.filter { $0.keys == "j" }.count == 1)
+        #expect(rows.first { $0.keys == "j" }?.label == "Down")
     }
 
     /// Bindings for another mode aren't what would happen in this one.
@@ -252,7 +249,7 @@ import SwiftUI
         let app = [(keys: "j", label: "Move Down"), (keys: "SPC", label: "+leader")]
         let rows = KeyWhichKey.peekRows(canvas: [], app: app, mode: .normal)
         #expect(rows.map(\.keys) == ["j", "SPC"])
-        #expect(rows.allSatisfy { !$0.intercepted })
+        #expect(rows.map(\.label) == ["Move Down", "+leader"])
     }
 
     /// The peek is only useful if it shows all of them. The shipped keymap

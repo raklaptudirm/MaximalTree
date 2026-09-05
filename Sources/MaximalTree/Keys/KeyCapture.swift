@@ -203,15 +203,11 @@ struct KeyWhichKey: View {
     /// behind it.
     @Environment(\.controlActiveState) private var activeState
 
-    /// One line of the overlay.
+    /// One line of the overlay: a key, and what it does here.
     struct Row: Identifiable, Equatable {
         let id: String
         let keys: String
         let label: String
-        /// An app binding the focused canvas will take before the app sees it.
-        /// Shown, because it is still in the keymap and still worth knowing
-        /// about, but not as though pressing it would do this.
-        let intercepted: Bool
     }
 
     var body: some View {
@@ -235,15 +231,13 @@ struct KeyWhichKey: View {
                             .font(.system(.caption2, design: .monospaced).weight(.medium))
                             .padding(.horizontal, 5)
                             .padding(.vertical, 1)
-                            .background(Color.secondary.opacity(row.intercepted ? 0.06 : 0.12),
+                            .background(Color.secondary.opacity(0.12),
                                        in: RoundedRectangle(cornerRadius: 4))
                         Text(row.label)
                             .font(.caption)
-                            .foregroundStyle(row.intercepted ? AnyShapeStyle(.tertiary)
-                                                             : AnyShapeStyle(.secondary))
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
-                    .opacity(row.intercepted ? 0.55 : 1)
                 }
             }
             .padding(10)
@@ -263,35 +257,71 @@ struct KeyWhichKey: View {
     /// binding is still real, it just isn't what happens here.
     private func rows(for keys: KeyEngine) -> [Row] {
         guard keys.pending.isEmpty else {
-            return keys.continuations.map {
+            return live(keys.continuations, under: keys.pending, in: keys).map {
                 Row(id: $0.chord.description, keys: $0.chord.description,
-                    label: label(for: $0.binding), intercepted: false)
+                    label: label(for: $0.binding))
             }
         }
         guard keys.isPeeking else { return [] }
         return Self.peekRows(
             canvas: KeyFocus.focusedCanvas()?.keyBindings ?? [],
-            app: keys.topLevelBindings.map {
+            app: live(keys.topLevelBindings, under: [], in: keys).map {
                 (keys: $0.chord.description, label: label(for: $0.binding))
             },
             mode: keys.mode)
     }
 
-    /// The peek's contents, given what the canvas takes and what the app binds.
+    /// The bindings that can actually fire from here.
     ///
-    /// Separate from the view because this is the part that was wrong: the
-    /// overlay listed the app's bindings while a canvas quietly took them, so
-    /// `j` read as "move down the sidebar" with the caret moving instead.
+    /// A keymap is a static trie: it knows `j` names `explorer.down`, not that
+    /// the explorer's motions belong to the sidebar and the caret is in a
+    /// document. The overlay listed them anyway, which made the sidebar look
+    /// like it was taking part in a surface it has nothing to do with. It
+    /// wasn't — `runCommand` has always checked before running one — but a
+    /// list of keys that quietly do nothing is its own kind of wrong.
+    ///
+    /// A group survives if anything under it does, so `SPC g` stays while its
+    /// contents apply and goes when none of them do.
+    private func live(_ bindings: [(chord: KeyChord, binding: KeyBinding)],
+                      under prefix: [KeyChord],
+                      in keys: KeyEngine) -> [(chord: KeyChord, binding: KeyBinding)] {
+        Self.live(bindings, under: prefix, keymap: keys.keymap) { [model] id in
+            model.action(id).map(model.canRun) ?? false
+        }
+    }
+
+    /// Separate and injectable for the same reason `KeyDispatch` is: whether a
+    /// binding is live depends on which surface has the keyboard, and that
+    /// question needs a key window to answer — which a test process has not
+    /// got. The rule is the part worth pinning down.
+    static func live(_ bindings: [(chord: KeyChord, binding: KeyBinding)],
+                     under prefix: [KeyChord],
+                     keymap: Keymap,
+                     canRun: (String) -> Bool) -> [(chord: KeyChord, binding: KeyBinding)] {
+        bindings.filter { item in
+            switch item.binding {
+            case .command(let id): return canRun(id)
+            case .prefix: return keymap.commands(under: prefix + [item.chord]).contains(where: canRun)
+            }
+        }
+    }
+
+    /// The peek's contents: one row per key, saying what that key does here.
+    ///
+    /// A key the canvas takes appears once, as the canvas's — the app's row for
+    /// it is dropped rather than dimmed. Dimming was a half-answer: `i` in the
+    /// editor inserts *and* leaves the app in insert mode, so greying the app's
+    /// "Insert Mode" said the opposite of what pressing it does. Whatever the
+    /// canvas takes, the canvas's own row already describes.
     static func peekRows(canvas: [CanvasKeyBinding],
                          app: [(keys: String, label: String)],
                          mode: KeyMode) -> [Row] {
         let mine = canvas.filter { $0.mode == mode }
         let taken = Set(mine.map(\.key))
         return mine.map {
-            Row(id: "canvas:\($0.key)", keys: $0.key, label: $0.title, intercepted: false)
-        } + app.map {
-            Row(id: "app:\($0.keys)", keys: $0.keys, label: $0.label,
-                intercepted: taken.contains($0.keys))
+            Row(id: "canvas:\($0.key)", keys: $0.key, label: $0.title)
+        } + app.filter { !taken.contains($0.keys) }.map {
+            Row(id: "app:\($0.keys)", keys: $0.keys, label: $0.label)
         }
     }
 
