@@ -3,10 +3,14 @@ import Foundation
 /// The keys the app ships with.
 ///
 /// Doom-flavoured: `SPC` is the leader and the groups are the app's own nouns
-/// — `s` surface, `t` tab, `w` workspace, `f` file, `n` new, `g` git,
-/// `T` terminal. Motions belong to the surface holding the keyboard: `j` walks
-/// the tree in the sidebar and moves the caret in an editor, and the binding
-/// is the same one.
+/// — `s` surface, `t` tab, `w` workspace, `f` file, `n` new, `g` git. Motions
+/// belong to the surface holding the keyboard: `j` walks the tree in the
+/// sidebar and moves the caret in an editor, and the binding is the same one.
+///
+/// There were groups for the web and the terminal too, and every key in them
+/// needed the page or the shell in front of you — so they are that surface's
+/// keys now and it declares them. Git stays because git acts on whatever node
+/// is selected, which the sidebar can hand it from anywhere.
 ///
 /// They used to be Doom's nouns instead — `w` for window, `b` for buffer, `p`
 /// for project — and the comments spent their time translating: "windows —
@@ -34,17 +38,16 @@ enum DefaultKeymap {
         map.describe("SPC w", as: "workspace")
         map.describe("SPC n", as: "new")
         map.describe("SPC g", as: "git")
-        map.describe("SPC T", as: "terminal")
         map.describe("g", as: "goto")
 
         // Moving in the sidebar is not here: those keys are the sidebar's own
         // and it declares them, the same way a canvas declares its. What is
         // here is what works wherever the keyboard happens to be.
         //
-        // That is the line a group has to pass. A web page's zoom or a
-        // repeated search does nothing with a folder selected, so those keys
-        // belong to the page and the page declares them; the leader is not a
-        // place to park a command that only ever has one surface to act on.
+        // That is the line a group has to pass. A page's zoom or a shell's
+        // clear does nothing with a folder selected, so those keys belong to
+        // the page and the terminal and they declare them; the leader is not
+        // a place to park a command that only ever has one surface to act on.
 
         map.bind("i", to: "mode.insert")
         // The finder. `SPC SPC` is the one you reach for without thinking, so
@@ -165,19 +168,6 @@ enum DefaultKeymap {
         map.bind("SPC g b", to: "git.checkout")
         map.bind("SPC g z", to: "git.stash")
         map.bind("SPC g Z", to: "git.stashPop")
-
-        // MARK: The terminal. Capital T, because lowercase `t` is tabs.
-        map.bind("SPC T c", to: "terminal.clear")
-        map.bind("SPC T r", to: "terminal.restart")
-        map.bind("SPC T R", to: "terminal.reset")
-        map.bind("SPC T d", to: "terminal.openDirectory")
-        map.bind("SPC T y", to: "terminal.copyDirectory")
-        map.bind("SPC T f", to: "terminal.revealDirectory")
-        map.bind("SPC T a", to: "terminal.showAll")
-        map.bind("SPC T x", to: "terminal.close")
-        map.bind("SPC T +", to: "terminal.fontBigger")
-        map.bind("SPC T -", to: "terminal.fontSmaller")
-        map.bind("SPC T 0", to: "terminal.fontReset")
 
         return map
     }

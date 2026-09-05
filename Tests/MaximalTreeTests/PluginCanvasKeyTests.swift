@@ -36,17 +36,21 @@ import WebKit
         }
     }
 
-    /// It claims the scrollback and nothing else: in a commanding mode the
-    /// app's bindings are what you want, and a terminal that swallowed them
-    /// would leave no way out of itself.
-    @Test func theTerminalClaimsOnlyItsScrollback() {
+    /// It claims its scrollback and its own commands — the ones that need a
+    /// shell in front of you, which used to sit under `SPC T` doing nothing
+    /// the rest of the time. What it must never claim is the way out of
+    /// itself: in a commanding mode the app's bindings are what you want.
+    @Test func theTerminalClaimsItsOwnCommandsAndNoWayOut() {
         let canvas = registry().canvases.first { !$0.keys.isEmpty }
         let sequences = Set((canvas?.keys ?? []).map(\.sequence))
-        #expect(sequences == ["j", "k", "d", "u", "g g", "G"])
+        #expect(sequences.isSuperset(of: ["j", "k", "d", "u", "g g", "G"]),
+                "the scrollback keys are gone")
+        #expect(sequences.isSuperset(of: ["c", "r", "R", "o", "y", "f", "X"]),
+                "the shell's own commands are not on the surface")
         // Never the leader, and never a key the app needs to get you out.
-        #expect(!sequences.contains("SPC"))
-        #expect(!sequences.contains("/"))
-        #expect(!sequences.contains("i"))
+        for reserved in ["SPC", "/", "i", ":"] {
+            #expect(!sequences.contains(reserved), "the terminal claims \(reserved)")
+        }
     }
 
     /// Each scroll action names one of libghostty's own, checked against the

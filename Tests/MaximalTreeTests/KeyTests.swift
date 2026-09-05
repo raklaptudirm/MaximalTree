@@ -100,7 +100,7 @@ import SwiftUI
     @Test func theGroupsAreTheAppsOwnNouns() {
         let map = DefaultKeymap.make()
         let expected = ["f": "file", "s": "surface", "t": "tab",
-                        "w": "workspace", "n": "new", "g": "git", "T": "terminal"]
+                        "w": "workspace", "n": "new", "g": "git"]
         for (key, noun) in expected {
             guard case .prefix(let label, _) = map.lookup(chords("SPC \(key)")) else {
                 Issue.record("SPC \(key) should be the \(noun) group")
@@ -108,8 +108,11 @@ import SwiftUI
             }
             #expect(label == noun, "SPC \(key) reads as \(label)")
         }
-        // And the words that no longer describe anything are gone.
-        for retired in ["b", "p"] {
+        // And the words that no longer describe anything are gone: `b` and
+        // `p` were Doom's buffer and project, and `T` and `W` were groups of
+        // commands that only ever applied to one surface, which now declares
+        // them itself.
+        for retired in ["b", "p", "T", "W"] {
             #expect(map.lookup(chords("SPC \(retired)")) == .unbound,
                     "SPC \(retired) still leads somewhere")
         }

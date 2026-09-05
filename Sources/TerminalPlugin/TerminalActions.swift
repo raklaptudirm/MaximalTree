@@ -43,6 +43,35 @@ enum TerminalActions {
         ("terminal.scrollBottom", "Bottom of Scrollback", "G", "scroll_to_bottom"),
     ]
 
+    /// The keys a terminal claims while it has the keyboard.
+    ///
+    /// All of it is here rather than under a leader group: clearing a screen,
+    /// resizing its text, asking where it is — none of it means anything with
+    /// a folder selected, and a leader group is for what works wherever the
+    /// keyboard happens to be. A terminal spends most of its life in insert
+    /// mode, so these are what `ESC` gets you, which is the same bargain its
+    /// scrollback keys already made.
+    static var keys: [SurfaceKey] {
+        scrolling.map { SurfaceKey($0.key, $0.id) }
+            + [SurfaceKey("c", "terminal.clear"),
+               SurfaceKey("r", "terminal.restart"),
+               SurfaceKey("R", "terminal.reset"),
+               // Where it is, as a place you can go, copy, or reveal.
+               SurfaceKey("o", "terminal.openDirectory"),
+               SurfaceKey("y", "terminal.copyDirectory"),
+               SurfaceKey("f", "terminal.revealDirectory"),
+               // Another shell in the same directory, which is the one you
+               // want often enough to be a single key.
+               SurfaceKey("n", "terminal.newHere"),
+               // Capital, like every other key that throws something away:
+               // never the neighbour of one you were reaching for.
+               SurfaceKey("X", "terminal.close"),
+               // Text size under `z`, the same place a page keeps its zoom.
+               SurfaceKey("z i", "terminal.fontBigger"),
+               SurfaceKey("z o", "terminal.fontSmaller"),
+               SurfaceKey("z 0", "terminal.fontReset")]
+    }
+
     /// The actions that are a straight hand-off to libghostty.
     ///
     /// Clearing a screen and resizing a font are the terminal's business and
