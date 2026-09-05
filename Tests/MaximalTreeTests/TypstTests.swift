@@ -1008,13 +1008,36 @@ struct TinymistLiveTests {
         #expect(TypstStructure.wordCount(of: "*bold* and _italic_") == 3)
     }
 
+    /// A document outlives any one canvas looking at it.
+    ///
+    /// The source and the pages are two panes on one document, so closing the
+    /// editor must not cancel the compile and take the pages down with it —
+    /// which is what dropping the document on any canvas disappearing did.
+    @Test func aDocumentSurvivesUntilTheLastCanvasCloses() {
+        let state = TypstUIState.shared
+        let url = URL(fileURLWithPath: "/tmp/maximaltree-two-readers.typ")
+        defer { state.releaseDocument(for: url) }
+
+        state.retainDocument(for: url)          // the editor
+        state.retainDocument(for: url)          // the pages beside it
+        state.setBuffer("body", for: url)
+
+        state.releaseDocument(for: url)
+        #expect(state.buffer(for: url) == "body",
+                "closing one pane took the document from the other")
+        state.releaseDocument(for: url)
+        #expect(state.buffer(for: url) == nil, "nobody is looking and it stayed")
+    }
+
     @Test func bufferChannelIsPerDocumentAndClears() throws {
         let state = TypstUIState.shared
         let a = URL(fileURLWithPath: "/tmp/maximaltree-a.typ")
         let b = URL(fileURLWithPath: "/tmp/maximaltree-b.typ")
-        defer { state.clearBuffer(for: a); state.clearBuffer(for: b) }
+        defer { state.releaseDocument(for: a); state.releaseDocument(for: b) }
 
         #expect(state.buffer(for: a) == nil, "no canvas open means no buffer")
+        state.retainDocument(for: a)
+        state.retainDocument(for: b)
         state.setBuffer("hello world", for: a)
         state.setBuffer("just b", for: b)
         #expect(state.buffer(for: a) == "hello world")
@@ -1026,7 +1049,7 @@ struct TinymistLiveTests {
         #expect(TypstStructure.wordCount(of: live) == 2)
 
         // Closing one document leaves the other's buffer alone.
-        state.clearBuffer(for: a)
+        state.releaseDocument(for: a)
         #expect(state.buffer(for: a) == nil)
         #expect(state.buffer(for: b) == "just b")
         #expect(state.buffer(for: nil) == nil)

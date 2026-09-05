@@ -127,7 +127,14 @@ final class TypstPlugin: NSObject, Plugin {
                 shortcut: KeyboardShortcut(key, modifiers: [.command, .option]),
                 scope: .document,
                 handler: { ctx in
-                    TypstUIState.shared.setMode(mode, for: Self.typFileURL(in: ctx))
+                    guard let url = Self.typFileURL(in: ctx) else { return }
+                    TypstUIState.shared.setMode(mode, for: url)
+                    // Typesetting means seeing what you are typesetting: the
+                    // pages go in the pane next door, reusing one that already
+                    // has them. The keyboard stays in the source.
+                    if mode == .typeset {
+                        ctx.host.openURIBeside(TypstRef.preview(file: url.path).uri)
+                    }
                 }
             ))
         }

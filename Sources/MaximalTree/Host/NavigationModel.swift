@@ -275,6 +275,36 @@ final class NavigationModel {
 
     // MARK: Panes
 
+    /// Put a node in a neighbouring pane, and leave the keyboard where it is.
+    ///
+    /// The call a plugin needs to show two views of one thing side by side —
+    /// a typst document's source and its pages — without knowing anything
+    /// about splits. Reuse before creation: a pane already showing it is the
+    /// answer, then any neighbour, and only then a new split. Sequencing
+    /// "split" and "open" as two actions could not do that, and split again
+    /// every time the key was pressed.
+    ///
+    /// Focus deliberately stays put: you asked to *see* the other thing, not
+    /// to go to it, and typing should carry on where it was.
+    @discardableResult
+    func openBeside(_ id: NodeID) -> UUID? {
+        guard let source = activePane else { return nil }
+        let panes = tabs[activeIndex].root.panes
+        if let showing = panes.first(where: { $0.id != source.id && $0.current == id }) {
+            return showing.id
+        }
+        if let neighbour = tabs[activeIndex].root.pane(from: source.id, moving: .right)
+            ?? panes.first(where: { $0.id != source.id })?.id {
+            tabs[activeIndex].root.withPane(neighbour) { $0.navigate(to: id) }
+            return neighbour
+        }
+        splitActivePane(horizontal: true)
+        guard let created = activePane?.id, created != source.id else { return nil }
+        tabs[activeIndex].root.withPane(created) { $0.navigate(to: id) }
+        tabs[activeIndex].activePaneID = source.id
+        return created
+    }
+
     /// Split the active pane; the new pane starts on the same node (fresh history)
     /// and becomes active.
     func splitActivePane(horizontal: Bool) {

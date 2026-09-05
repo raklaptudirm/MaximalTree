@@ -161,6 +161,7 @@ import Foundation
             func select(_ ids: [NodeID]) {}
             func mount(_ uri: String) {}
             func openURI(_ uri: String) {}
+            func openURIBeside(_ uri: String) {}
             func apply(_ mutation: GraphMutation) {}
             func canApply(_ mutation: GraphMutation) -> Bool { false }
             func beginRename(_ id: NodeID) {}

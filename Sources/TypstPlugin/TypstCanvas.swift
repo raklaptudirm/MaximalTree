@@ -34,7 +34,6 @@ struct TypstCanvas: View {
     }
     private var preview: PDFDocument? { document?.preview }
     private var diagnostics: [TypstDiagnostic] { document?.diagnostics ?? [] }
-    @State private var editorFraction: CGFloat = 0.5
     @State private var autosaveTask: Task<Void, Never>?
     @State private var consumedFragment: UUID?
     /// The file's contents when it changed on disk under unsaved edits. Blocks
@@ -90,6 +89,7 @@ struct TypstCanvas: View {
         .task(id: nodeID) {
             loadedNode = nil
             conflict = nil
+            if let fileURL { TypstUIState.shared.retainDocument(for: fileURL) }
             await load()
             loadedNode = nodeID
             if loadError == nil { scheduleCompile(delay: .zero) }
@@ -107,7 +107,7 @@ struct TypstCanvas: View {
         }
         .onDisappear {
             if mode.autosaves && dirty && loadedNode == nodeID { saveToDisk() }
-            TypstUIState.shared.clearBuffer(for: fileURL)
+            TypstUIState.shared.releaseDocument(for: fileURL)
         }
     }
 
@@ -149,20 +149,15 @@ struct TypstCanvas: View {
             .background(Color(nsColor: pageBackground))
     }
 
+    /// Typesetting is the source; the pages are the pane next to it.
+    ///
+    /// This drew both halves itself, with its own divider and its own drag —
+    /// a split inside a canvas, in an app whose tabs already hold splits. The
+    /// pages are a node now, so `typst.mode.typeset` puts them in the
+    /// neighbouring pane and the tab does the rest: resizing it, moving it,
+    /// closing it, restoring it, and giving each half its own keys.
     private var typesetLayout: some View {
-        GeometryReader { geo in
-            let handle: CGFloat = 7
-            let available = max(geo.size.width - handle, 1)
-            let editorWidth = min(max(available * editorFraction, 200),
-                                  max(available - 200, 200))
-
-            HStack(spacing: 0) {
-                editor(fontSize: 12).frame(width: editorWidth)
-                divider(available: available)
-                previewColumn.frame(maxWidth: .infinity)
-            }
-            .coordinateSpace(name: "typst-split")
-        }
+        editor(fontSize: 12)
     }
 
     /// The manuscript's style — the chosen face at the chosen size. Held in
@@ -207,41 +202,6 @@ struct TypstCanvas: View {
         let edit = makeEdit(currentText, selection)
         editor.applyEdit(range: edit.range, replacement: edit.replacement,
                          selection: edit.selection)
-    }
-
-    private func divider(available: CGFloat) -> some View {
-        ZStack {
-            Color.clear
-            Rectangle()
-                .fill(Color(nsColor: .separatorColor))
-                .frame(width: 1)
-        }
-        .frame(width: 7)
-        .contentShape(Rectangle())
-        .onHover { inside in
-            if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
-        }
-        .gesture(
-            DragGesture(minimumDistance: 1, coordinateSpace: .named("typst-split"))
-                .onChanged { value in
-                    editorFraction = min(max(value.location.x / available, 0.15), 0.85)
-                }
-        )
-        .onTapGesture(count: 2) { editorFraction = 0.5 }
-    }
-
-    @ViewBuilder
-    private var previewColumn: some View {
-        if let preview {
-            PDFPreview(document: preview, dark: colorScheme == .dark)
-        } else if hasErrors {
-            ContentUnavailableView("Compile Failed", systemImage: "exclamationmark.triangle",
-                                   description: Text(mode == .typeset
-                                        ? "Fix the errors below to see the preview."
-                                        : "Open Typeset mode to see the errors."))
-        } else {
-            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
     }
 
     private var pageBackground: NSColor {
@@ -618,7 +578,11 @@ struct TypstPreviewCanvas: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .task(id: nodeID) { await ensureCompiled() }
+        .task(id: nodeID) {
+            if let fileURL { TypstUIState.shared.retainDocument(for: fileURL) }
+            await ensureCompiled()
+        }
+        .onDisappear { TypstUIState.shared.releaseDocument(for: fileURL) }
     }
 
     /// Pages for a document nothing has opened for editing.

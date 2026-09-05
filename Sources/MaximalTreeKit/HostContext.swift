@@ -140,6 +140,14 @@ public final class HostContext {
     /// it as a root. This is how the inspector follows a reference.
     public func openURI(_ uri: String) { backend?.openURI(uri) }
 
+    /// Show this in a neighbouring pane, without going to it.
+    ///
+    /// For two views of one thing side by side — a document's source and its
+    /// pages. Reuses a pane already showing it, then any neighbour, and only
+    /// splits when there is nowhere else to put it. The keyboard stays where
+    /// it was: asking to see a thing is not asking to go to it.
+    public func openURIBeside(_ uri: String) { backend?.openURIBeside(uri) }
+
     /// Perform a write. Fire-and-forget: the host runs it and updates caches/nav from
     /// the reported changes; failures are logged. Check `canApply` first for UI state.
     public func apply(_ mutation: GraphMutation) { backend?.apply(mutation) }
@@ -246,6 +254,7 @@ public protocol GraphBackend: AnyObject {
     func select(_ ids: [NodeID])
     func mount(_ uri: String)
     func openURI(_ uri: String)
+    func openURIBeside(_ uri: String)
     func apply(_ mutation: GraphMutation)
     func canApply(_ mutation: GraphMutation) -> Bool
     func beginRename(_ id: NodeID)

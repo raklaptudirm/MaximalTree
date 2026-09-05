@@ -15,6 +15,50 @@ import Foundation
         #expect(!nav.canGoForward)
     }
 
+    // MARK: Beside
+
+    /// Nowhere to put it: split, fill the new pane, and leave the keyboard
+    /// where the typing was. Asking to *see* a thing is not asking to go to it.
+    @Test func besideSplitsWhenThereIsNoNeighbour() {
+        let nav = NavigationModel()
+        let source = id("file:///doc.typ")
+        let pages = id("typst://preview?file=/doc.typ")
+        nav.navigate(to: source)
+        let editorPane = nav.activePane?.id
+
+        let landed = nav.openBeside(pages)
+        #expect(nav.activeTab.root.panes.count == 2)
+        #expect(nav.activeTab.root.pane(landed!)?.current == pages)
+        #expect(nav.activePane?.id == editorPane, "the keyboard followed the pages")
+        #expect(nav.current == source)
+    }
+
+    /// A neighbour already exists: use it rather than splitting again. This is
+    /// the whole reason it is one call and not "split" then "open" — pressing
+    /// the key twice must not carve the window into quarters.
+    @Test func besideReusesANeighbourInsteadOfSplittingAgain() {
+        let nav = NavigationModel()
+        nav.navigate(to: id("file:///doc.typ"))
+        nav.openBeside(id("typst://preview?file=/doc.typ"))
+        #expect(nav.activeTab.root.panes.count == 2)
+
+        nav.openBeside(id("typst://preview?file=/other.typ"))
+        #expect(nav.activeTab.root.panes.count == 2, "split a second time")
+        #expect(nav.activeTab.root.panes.contains { $0.current?.uri.contains("other") == true })
+    }
+
+    /// Already showing it: nothing to do, and nothing moves.
+    @Test func besideLeavesAPaneThatAlreadyShowsItAlone() {
+        let nav = NavigationModel()
+        let pages = id("typst://preview?file=/doc.typ")
+        nav.navigate(to: id("file:///doc.typ"))
+        let created = nav.openBeside(pages)
+
+        let again = nav.openBeside(pages)
+        #expect(again == created)
+        #expect(nav.activeTab.root.panes.count == 2)
+    }
+
     @Test func navigatePushesHistory() {
         let nav = NavigationModel()
         nav.navigate(to: id("file:///a"))

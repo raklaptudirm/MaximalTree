@@ -77,11 +77,29 @@ final class TypstUIState {
         document(for: url).setBuffer(text, compileAfter: .zero)
     }
 
-    func clearBuffer(for url: URL?) {
-        guard let url else { return }
-        // Phase 3 note: with an editor and a preview open on one document this
-        // has to count its readers, or closing either takes the document from
-        // under the other. One pane today, so the last look is the only look.
+    /// How many canvases are looking at each document.
+    ///
+    /// One document can be open in two panes — the source and its pages — so
+    /// "a canvas went away" is not "the document went away". Counting is the
+    /// difference between closing the editor and taking the pages down with
+    /// it.
+    private var readers: [URL: Int] = [:]
+
+    /// Start looking at a document, making it if nobody was.
+    @discardableResult
+    func retainDocument(for url: URL) -> TypstDocument {
+        readers[url, default: 0] += 1
+        return document(for: url)
+    }
+
+    /// Stop looking. The last one out cancels the compile and drops the text.
+    func releaseDocument(for url: URL?) {
+        guard let url, let count = readers[url] else { return }
+        guard count <= 1 else {
+            readers[url] = count - 1
+            return
+        }
+        readers[url] = nil
         documents[url]?.cancel()
         documents[url] = nil
     }

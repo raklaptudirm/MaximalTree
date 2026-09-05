@@ -266,6 +266,12 @@ final class GraphStore: GraphBackend {
         open(id)
     }
 
+    func openURIBeside(_ uri: String) {
+        guard let p = provider(forURI: uri), let id = p.resolve(uri) else { return }
+        nav.openBeside(id)
+        didNavigate()
+    }
+
     // MARK: Writes
 
     func canApply(_ mutation: GraphMutation) -> Bool {
