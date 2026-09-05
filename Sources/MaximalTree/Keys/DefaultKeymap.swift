@@ -133,6 +133,18 @@ enum DefaultKeymap {
         map.bind("SPC g z", to: "git.stash")
         map.bind("SPC g Z", to: "git.stashPop")
         map.bind("SPC n t", to: "terminal.new")
+        // The terminal's own group. Capital T, because lowercase `t` is
+        // already the toggles and a shell is not one.
+        map.describe("SPC T", as: "terminal")
+        map.bind("SPC T c", to: "terminal.clear")
+        map.bind("SPC T r", to: "terminal.restart")
+        map.bind("SPC T R", to: "terminal.reset")
+        map.bind("SPC T d", to: "terminal.openDirectory")
+        map.bind("SPC T y", to: "terminal.copyDirectory")
+        map.bind("SPC T f", to: "terminal.revealDirectory")
+        map.bind("SPC T +", to: "terminal.fontBigger")
+        map.bind("SPC T -", to: "terminal.fontSmaller")
+        map.bind("SPC T 0", to: "terminal.fontReset")
         map.bind("SPC n n", to: "typst.newNote")
         map.bind("SPC n d", to: "typst.dailyNote")
         map.bind("SPC n w", to: "web.newPage")

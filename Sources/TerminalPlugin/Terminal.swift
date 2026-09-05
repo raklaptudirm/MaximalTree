@@ -67,6 +67,11 @@ final class TerminalPlugin: NSObject, Plugin {
 
     func register(with registry: PluginRegistry) {
         registry.register(provider: TerminalProvider())
+        registerSessionActions(with: registry)
+        registry.register(inspector: InspectorContribution(
+            matches: { $0.type == TypeID("terminal.session") }) { id, host in
+                AnyView(TerminalInspector(nodeID: id).environment(host))
+        })
 
         registry.register(canvas: CanvasContribution(
             priority: 0,

@@ -302,7 +302,7 @@ final class TerminalSurfaceView: NSView {
     /// learn that an action name is wrong — a bad name is otherwise a key
     /// that silently does nothing.
     @discardableResult
-    fileprivate func perform(action: String) -> Bool {
+    func perform(action: String) -> Bool {
         guard let surface else { return false }
         var name = action
         let known = name.withUTF8 {
