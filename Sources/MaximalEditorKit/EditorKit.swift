@@ -445,6 +445,9 @@ public struct MaximalEditor: NSViewRepresentable {
         /// plain text field stays a plain text field.
         public let editing = EditEngine()
         public var modalEditing = false
+        /// Whether the style in force wraps — set with the style, because only
+        /// a wrapping view has visual lines that differ from the file's.
+        var lastAppliedStyleWraps = false
         /// True while a command is moving the caret.
         ///
         /// A click and a motion both change the selection, and the repaint
@@ -460,6 +463,38 @@ public struct MaximalEditor: NSViewRepresentable {
         /// sends keys here at all (see `handleKey`).
         public override func keyDown(with event: NSEvent) {
             super.keyDown(with: event)
+        }
+
+        /// Where the caret lands `delta` *wrapped* lines away, or nil when the
+        /// layout cannot say.
+        ///
+        /// TextKit 2's own navigation, so a motion lands where an arrow key
+        /// would: `.line` here means a line on screen, which with wrapping on
+        /// is not a line in the file.
+        func offset(from offset: Int, byVisualLines delta: Int) -> Int? {
+            guard delta != 0,
+                  let contentManager = textLayoutManager.textContentManager,
+                  let range = NSTextRange(NSRange(location: offset, length: 0),
+                                          in: contentManager)
+            else { return nil }
+            let navigation = textLayoutManager.textSelectionNavigation
+            let direction: NSTextSelectionNavigation.Direction = delta > 0 ? .down : .up
+            var selection = NSTextSelection(range.location, affinity: .downstream)
+            for _ in 0..<abs(delta) {
+                // `.character` is the *granularity* of the step, not its
+                // axis: with a vertical direction it means "one line down,
+                // same column", which is what an arrow key does. `.line`
+                // means the line's own boundary — so it walked to the end of
+                // the current line instead of onto the next one, and only
+                // looked right where a soft wrap made those the same offset.
+                guard let next = navigation.destinationSelection(
+                    for: selection, direction: direction, destination: .character,
+                    extending: false, confined: false) else { break }
+                selection = next
+            }
+            guard let landed = selection.textRanges.first?.location else { return nil }
+            return contentManager.offset(from: contentManager.documentRange.location,
+                                         to: landed)
         }
 
         func apply(_ outcome: EditOutcome) {
@@ -531,10 +566,15 @@ public struct MaximalEditor: NSViewRepresentable {
         textView.needsDisplay = true
     }
 
-    private static func apply(style: EditorStyle, to textView: STTextView) {
+    /// Everything a style sets on the view. Internal rather than private so a
+    /// test can configure an editor the way the app does — a harness that sets
+    /// the font and the paragraph style by hand is not running the same editor
+    /// (it missed wrapping, and with it every visual-line motion).
+    static func apply(style: EditorStyle, to textView: STTextView) {
         textView.font = style.font
         textView.defaultParagraphStyle = style.paragraphStyle
         textView.widthTracksTextView = style.wrapLines
+        (textView as? EditorTextView)?.lastAppliedStyleWraps = style.wrapLines
         textView.showsLineNumbers = style.showsLineNumbers
         // Wrapped text has nowhere to go sideways, so it must not offer a
         // scroller for going there. It can still *overflow*: the reserved box

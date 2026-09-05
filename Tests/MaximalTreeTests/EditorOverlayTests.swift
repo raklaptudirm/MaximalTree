@@ -121,8 +121,9 @@ import STTextView
         textView.textDelegate = coordinator
         coordinator.textView = textView
         coordinator.lastStyle = style
-        textView.font = style.font
-        textView.defaultParagraphStyle = style.paragraphStyle
+        // The app's own setup rather than a hand-copied subset of it.
+        MaximalEditor.apply(style: style, to: textView)
+        MaximalEditor.applyColumnInsets(style: style, in: scrollView)
         textView.text = text
         // The app installs these; they re-place overlays on scroll and resize,
         // so they're part of the behaviour under test.
@@ -427,6 +428,46 @@ import STTextView
         let after = try #require(topOfViewport())
         #expect(before.offset == after.offset && abs(before.into - after.into) < 1,
                 "a no-op repaint changed the top of the viewport: \(before) -> \(after)")
+    }
+
+    /// `j` moves down a line on screen, not down a paragraph.
+    ///
+    /// The reported bug: with wrapping on, a paragraph is many lines to the
+    /// reader and one line to the file, so a motion computed from the text
+    /// skipped the whole paragraph every time.
+    @Test func downMovesByWrappedLineNotByParagraph() async throws {
+        let paragraph = String(repeating: "words that wrap and keep going ", count: 12)
+        let editor = makeEditor(text: paragraph + "\n\nA second paragraph.")
+        editor.coordinator.highlightNow()
+        await settle()
+
+        editor.textView.textSelection = NSRange(location: 0, length: 0)
+        editor.textView.run(.down, count: 1, mode: .normal)
+        await settle()
+
+        let landed = editor.textView.textSelection.location
+        #expect(landed > 0, "did not move")
+        #expect(landed < (paragraph as NSString).length,
+                "left the paragraph entirely — moved by source line, not by wrapped line")
+    }
+
+    /// Down goes onto the next line, not to the end of this one.
+    ///
+    /// The granularity bug, and the reason it hid: with a *soft* wrap the end
+    /// of one segment and the start of the next are the same offset, so a
+    /// document without hard line breaks cannot tell the two apart. Put a real
+    /// newline in and the caret stops at the end of the line it started on.
+    @Test func downCrossesALineBreakInsteadOfStoppingAtItsEnd() async throws {
+        let editor = makeEditor(text: "Intro line.\n\nA paragraph after it.")
+        editor.coordinator.highlightNow()
+        await settle()
+
+        editor.textView.textSelection = NSRange(location: 0, length: 1)
+        editor.textView.run(.down, count: 1, mode: .normal)
+        await settle()
+
+        #expect(editor.textView.textSelection.location == 12,
+                "landed at \(editor.textView.textSelection.location); 11 is the end of the line it started on")
     }
 
     /// A motion takes the view with it.

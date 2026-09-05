@@ -107,8 +107,16 @@ public final class EditEngine {
     ///
     /// The entry point the app uses. `handle(_ key:)` remains for the tests
     /// that still speak keys and goes with them.
+    /// - Parameter visualLine: where the caret lands `n` *wrapped* lines from
+    ///   an offset, when the caller has a laid-out view to ask. Vertical motion
+    ///   is the one thing this engine cannot work out from text alone: with
+    ///   wrapping on, the line under you is a line on screen, not a line in the
+    ///   file, and `j` walking paragraphs is wrong by exactly the amount the
+    ///   text wrapped. Nil falls back to source lines, which is right for a
+    ///   view that does not wrap and for the tests.
     public func perform(_ command: EditCommand, count: Int, mode: EditMode,
-                        text: String, selection: NSRange) -> EditOutcome? {
+                        text: String, selection: NSRange,
+                        visualLine: ((Int, Int) -> Int?)? = nil) -> EditOutcome? {
         lastMode = mode
         // Not ours: someone clicked, or searched. Both ends start again from
         // what they left.
@@ -122,7 +130,8 @@ public final class EditEngine {
         guard mode != .insert else { return nil }
         let ns = text as NSString
         let repeats = max(count, 1)
-        let outcome = select(command, from: selection, count: repeats, mode: mode, in: ns)
+        let outcome = select(command, from: selection, count: repeats, mode: mode,
+                             in: ns, visualLine: visualLine)
             .map { EditOutcome(selection: $0, mode: mode) }
             ?? act(command, mode: mode, selection: selection, count: repeats, in: ns)
         guard let outcome else { return nil }
@@ -140,7 +149,8 @@ public final class EditEngine {
     /// starts a new selection, which is what keeps a bare cursor from
     /// dragging everything it passes along with it.
     private func select(_ command: EditCommand, from selection: NSRange, count: Int,
-                        mode: EditMode, in ns: NSString) -> NSRange? {
+                        mode: EditMode, in ns: NSString,
+                        visualLine: ((Int, Int) -> Int?)? = nil) -> NSRange? {
         let extending = mode == .visual
         // A plain move carries the cursor; a sweep drags a selection behind
         // it. Either way the motion starts from the head, which is what makes
@@ -163,7 +173,10 @@ public final class EditEngine {
         case .right:
             return moved(to: min(head + count, max(lineEnd(at: head, in: ns) - 1, head)))
         case .down, .up:
-            return moved(to: line(from: head, by: command == .down ? count : -count, in: ns))
+            let delta = command == .down ? count : -count
+            // What is on screen first, what is in the file second.
+            return moved(to: visualLine?(head, delta)
+                            ?? line(from: head, by: delta, in: ns))
 
         // Words. The selection covers what was crossed, which is the whole
         // point: `w` then `d` deletes the word you can see is selected.
@@ -376,8 +389,15 @@ extension MaximalEditor.EditorTextView {
     @discardableResult
     func run(_ command: EditCommand, count: Int, mode: KeyMode) -> KeyMode? {
         guard modalEditing else { return nil }
-        guard let outcome = editing.perform(command, count: count, mode: mode,
-                                            text: text ?? "", selection: textSelection)
+        guard let outcome = editing.perform(
+            command, count: count, mode: mode,
+            text: text ?? "", selection: textSelection,
+            // Only where lines actually wrap: with wrapping off a line on
+            // screen *is* a line in the file, and asking the layout would be
+            // the same answer through more machinery.
+            visualLine: lastAppliedStyleWraps ? { [weak self] offset, delta in
+                self?.offset(from: offset, byVisualLines: delta)
+            } : nil)
         else { return nil }
         apply(outcome)
         return outcome.mode

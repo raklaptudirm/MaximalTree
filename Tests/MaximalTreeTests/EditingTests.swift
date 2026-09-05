@@ -202,6 +202,31 @@ import Foundation
         #expect(!deleted.contains("\n\n") && !yanked.contains("\n\n"))
     }
 
+    /// Vertical motion is the one thing the engine cannot work out from text.
+    ///
+    /// With wrapping on, the line below you is a line on screen, not a line in
+    /// the file — so `j` asks the view, and only falls back to source lines
+    /// when nobody can answer.
+    @Test func verticalMotionPrefersWhatTheViewSays() {
+        let engine = EditEngine()
+        let text = "a long first line\nsecond"
+        var asked: (offset: Int, delta: Int)?
+
+        let outcome = engine.perform(.down, count: 1, mode: .normal, text: text,
+                                     selection: NSRange(location: 0, length: 1),
+                                     visualLine: { offset, delta in
+            asked = (offset, delta)
+            return 7        // wherever the layout says, not where the text does
+        })
+        #expect(asked?.delta == 1)
+        #expect(outcome?.selection.location == 7, "took the source line over the view")
+
+        // Nobody to ask: the file's own lines, as before.
+        let fallback = engine.perform(.down, count: 1, mode: .normal, text: text,
+                                      selection: NSRange(location: 0, length: 1))
+        #expect(fallback?.selection.location == 18)
+    }
+
     @Test func percentSelectsEverything() {
         #expect(Buffer("one\ntwo").type("%").selected == "one\ntwo")
     }
