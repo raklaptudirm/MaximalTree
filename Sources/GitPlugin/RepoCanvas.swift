@@ -11,7 +11,8 @@ import MaximalTreeKit
 struct RepoCanvas: View {
     let nodeID: NodeID
     @Environment(HostContext.self) private var host
-    @State private var model = RepoCanvasModel()
+    // Held outside the view so the actions its keys run can reach it.
+    private var model: RepoCanvasModel { GitUIState.shared.canvas(for: nodeID) }
 
     var body: some View {
         Group {
@@ -36,7 +37,7 @@ struct RepoCanvas: View {
                 }
             }
         }
-        .background(RepoKeyCatcher(model: model))
+        .background(RepoFocusCatcher())
         .task(id: nodeID) { model.attach(to: nodeID, host: host) }
         // The provider re-reads its children after a write; this canvas reads
         // its own status, so it has to be told the same news.
@@ -228,65 +229,21 @@ final class RepoCanvasModel {
     }
 }
 
-/// Gives the repo canvas a first responder, so its keys can reach it.
+/// Gives the repo canvas a first responder.
 ///
-/// A leaf `NSView` that takes focus: the app finds the thing to focus in a
-/// pane by looking for one of those, and walks up from the first responder to
-/// find the canvas that handles keys. A SwiftUI `List` offers neither.
-struct RepoKeyCatcher: NSViewRepresentable {
-    let model: RepoCanvasModel
+/// A pane is focused by finding a leaf view that takes the keyboard, and a
+/// SwiftUI `List` is not one — it has subviews of its own. Without this,
+/// moving into the pane would focus nothing, the app would go on thinking the
+/// keyboard was wherever it last was, and the canvas's keys would never be
+/// the ones consulted.
+///
+/// It handles no keys itself. Those are actions now, declared on the
+/// contribution and resolved by the core.
+struct RepoFocusCatcher: NSViewRepresentable {
+    func makeNSView(context: Context) -> Catcher { Catcher() }
+    func updateNSView(_ view: Catcher, context: Context) {}
 
-    func makeNSView(context: Context) -> KeyView {
-        let view = KeyView()
-        view.model = model
-        return view
-    }
-
-    func updateNSView(_ view: KeyView, context: Context) { view.model = model }
-
-    typealias ViewForTesting = KeyView
-
-    final class KeyView: NSView, CanvasKeyHandling {
-        var model: RepoCanvasModel?
+    final class Catcher: NSView {
         override var acceptsFirstResponder: Bool { true }
-
-        static let bindings: [CanvasKeyBinding] = [
-            .init("j", title: "Next change"),
-            .init("k", title: "Previous change"),
-            .init("g g", title: "First change"),
-            .init("G", title: "Last change"),
-            .init("RET", title: "Open diff"),
-            .init("s", title: "Stage or unstage"),
-            .init("x", title: "Discard change"),
-        ]
-
-        var keyBindings: [CanvasKeyBinding] { Self.bindings }
-
-        private var pendingG = false
-
-        func handleKey(_ key: String, control: Bool, mode: KeyMode) -> KeyMode? {
-            guard !control, let model else { return nil }
-            if pendingG {
-                pendingG = false
-                guard key == "g" else { return nil }
-                model.moveToEdge(last: false)
-                return mode
-            }
-            switch key {
-            case "j": model.move(1)
-            case "k": model.move(-1)
-            case "g": pendingG = true
-            case "G": model.moveToEdge(last: true)
-            case "RET": model.open()
-            case "s": model.stageOrUnstage()
-            case "x": model.discard()
-            default: return nil
-            }
-            return mode
-        }
     }
 }
-
-
-/// The repo canvas's key view, by a name a test can say.
-typealias RepoKeyCatcherViewForTesting = RepoKeyCatcher.KeyView

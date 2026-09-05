@@ -80,11 +80,19 @@ import WebKit
 
 /// The repository canvas's keys.
 ///
-/// Item one gave the page and the terminal theirs and left git out, because
-/// its canvas was a SwiftUI List with no selection of its own — a canvas that
-/// declares `j` has to have something for `j` to move. This is that something.
+/// It was the one canvas that could not have keys when the page and the
+/// terminal got theirs, because a canvas needs something for `j` to move and a
+/// SwiftUI `List` has no selection of its own. It has one now, and it lives
+/// outside the view — an action cannot reach a view's `@State`, which is what
+/// moving keys into actions forces you to notice.
 @MainActor
 @Suite struct RepoCanvasKeyTests {
+    private func registry() -> Registry {
+        let registry = Registry()
+        GitPlugin().register(with: registry)
+        return registry
+    }
+
     private func model(staged: [String], unstaged: [String]) -> RepoCanvasModel {
         let model = RepoCanvasModel()
         model.setStatusForTesting(GitStatus(
@@ -93,6 +101,35 @@ import WebKit
             unstaged: unstaged.map { .init(code: "M", path: $0) }))
         return model
     }
+
+    @Test func itsKeysNameRegisteredActions() {
+        let registry = registry()
+        let ids = Set(registry.actions.map(\.id))
+        let canvas = registry.canvases.first { !$0.keys.isEmpty }
+        let keys = canvas?.keys ?? []
+
+        #expect(Set(keys.map(\.sequence)) == ["j", "k", "g g", "G", "RET", "s", "x"])
+        for key in keys {
+            #expect(ids.contains(key.action),
+                    "\(key.sequence) names \(key.action), which is not registered")
+        }
+    }
+
+    /// They are about the row under the cursor, so they only apply to the
+    /// repository canvas and nowhere else.
+    @Test func theyOnlyApplyToARepository() throws {
+        let host = HostContext()
+        let file = try #require(NodeID("file:///tmp/a.txt"))
+        host._ingest(Node(id: file, type: "file.file"))
+
+        for command in GitActions.canvasCommands {
+            let action = try #require(registry().actions.first { $0.id == command.id })
+            #expect(!action.appliesTo.matches(ActionContext(host: host, targets: [file])),
+                    "\(command.id) offered itself for a text file")
+        }
+    }
+
+    // MARK: What the commands do to the selection
 
     /// Staged first, then unstaged — one list to walk, in the order drawn.
     @Test func theKeysWalkBothSectionsAsOneList() {
@@ -107,6 +144,16 @@ import WebKit
         #expect(model.current?.staged == false)
     }
 
+    /// A repeat reaches it, which it could not when the canvas handled its own
+    /// keys — `handleKey` was never given a count.
+    @Test func aCountRepeatsTheMotion() throws {
+        let model = model(staged: [], unstaged: ["a.txt", "b.txt", "c.txt"])
+        let down = try #require(GitActions.canvasCommands.first { $0.id == "git.changeDown" })
+
+        down.run(model, 3)
+        #expect(model.current?.entry.path == "c.txt")
+    }
+
     @Test func movingStopsAtEitherEnd() {
         let model = model(staged: [], unstaged: ["a.txt", "b.txt"])
         model.moveToEdge(last: true)
@@ -119,7 +166,7 @@ import WebKit
         #expect(model.current?.entry.path == "a.txt", "walked off the start")
     }
 
-    @Test func movingInAnEmptyRepositoryDoesNothing() {
+    @Test func movingInACleanRepositoryDoesNothing() {
         let model = model(staged: [], unstaged: [])
         model.move(1)
         model.moveToEdge(last: true)
@@ -137,25 +184,11 @@ import WebKit
         #expect(model.current != nil, "the selection was left on a row that is gone")
     }
 
-    @Test func theCanvasAnswersToEveryKeyItClaims() {
-        let view = RepoKeyCatcherViewForTesting()
-        view.model = model(staged: ["a.txt"], unstaged: ["b.txt"])
-        for binding in type(of: view).bindings {
-            var last: KeyMode?
-            for key in binding.key.split(separator: " ") {
-                last = view.handleKey(String(key), control: false, mode: .normal)
-                if last == nil { break }
-            }
-            #expect(last != nil, "\(binding.key) — \(binding.title) — is claimed but declined")
-        }
-    }
-
-    @Test func itLeavesTheAppsKeysAlone() {
-        let view = RepoKeyCatcherViewForTesting()
-        view.model = model(staged: [], unstaged: ["a.txt"])
-        for key in ["SPC", "/", "i", "h", "l", "w"] {
-            #expect(view.handleKey(key, control: false, mode: .normal) == nil,
-                    "the repo canvas took \(key), which belongs to the app")
-        }
+    /// One model per repository, so two open repos do not share a cursor.
+    @Test func eachRepositoryHasItsOwnCursor() throws {
+        let a = try #require(GitRef(repo: "/one", kind: .repo).nodeID)
+        let b = try #require(GitRef(repo: "/two", kind: .repo).nodeID)
+        #expect(GitUIState.shared.canvas(for: a) !== GitUIState.shared.canvas(for: b))
+        #expect(GitUIState.shared.canvas(for: a) === GitUIState.shared.canvas(for: a))
     }
 }

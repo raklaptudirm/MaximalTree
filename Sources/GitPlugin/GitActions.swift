@@ -81,6 +81,21 @@ final class GitUIState {
     /// The last failure, with the operation that produced it.
     var failure: (operation: String, message: String)?
 
+    /// One canvas model per repository node.
+    ///
+    /// The canvas used to own this as view state, which was fine while it
+    /// handled its own keys. An action cannot reach a view's `@State`, so the
+    /// selection lives here — the same reason the typst plugin and the web
+    /// plugin keep theirs outside their canvases.
+    private var canvases: [NodeID: RepoCanvasModel] = [:]
+
+    func canvas(for id: NodeID) -> RepoCanvasModel {
+        if let existing = canvases[id] { return existing }
+        let model = RepoCanvasModel()
+        canvases[id] = model
+        return model
+    }
+
     func message(for repo: String) -> String { messages[repo] ?? "" }
     func setMessage(_ text: String, for repo: String) { messages[repo] = text }
 
@@ -98,6 +113,25 @@ extension GitPlugin {
     /// Registered in one place so the vocabulary can be read at a glance.
     @MainActor
     func registerActions(with registry: PluginRegistry) {
+        // MARK: Moving and acting inside the repository canvas
+        //
+        // The canvas has a selection, so these are about *that* row rather
+        // than about the node the pane is showing. They reach it through the
+        // shared state the canvas keeps, which is why that stopped being view
+        // state when the keys became actions.
+        for item in GitActions.canvasCommands {
+            registry.register(action: Action(
+                id: item.id, title: item.title, systemImage: item.image,
+                appliesTo: .type(TypeID("git.repo")),
+                // Real operations, and searchable, but a list of "next change"
+                // in the menu bar would bury what belongs there.
+                scope: .container, surfaces: [.palette]
+            ) { ctx in
+                guard let target = ctx.targets.first else { return }
+                item.run(GitUIState.shared.canvas(for: target), ctx.count)
+            })
+        }
+
         // MARK: Staging
 
         registry.register(action: Action(
@@ -243,5 +277,36 @@ extension GitActions {
         alert.addButton(withTitle: "Cancel")
         alert.buttons.first?.hasDestructiveAction = true
         return alert.runModal() == .alertFirstButtonReturn
+    }
+}
+
+
+extension GitActions {
+    /// What the repository canvas can do to the change under the cursor.
+    ///
+    /// Keys and actions in one table, so the binding and the thing it runs are
+    /// written next to each other and cannot drift apart.
+    static let canvasCommands: [(id: String, title: String, image: String,
+                                 key: String,
+                                 run: @MainActor (RepoCanvasModel, Int) -> Void)] = [
+        ("git.changeDown", "Next Change", "chevron.down", "j",
+         { model, count in for _ in 0..<count { model.move(1) } }),
+        ("git.changeUp", "Previous Change", "chevron.up", "k",
+         { model, count in for _ in 0..<count { model.move(-1) } }),
+        ("git.changeFirst", "First Change", "chevron.up.2", "g g",
+         { model, _ in model.moveToEdge(last: false) }),
+        ("git.changeLast", "Last Change", "chevron.down.2", "G",
+         { model, _ in model.moveToEdge(last: true) }),
+        ("git.openChange", "Open Change", "doc.text.magnifyingglass", "RET",
+         { model, _ in model.open() }),
+        ("git.toggleStage", "Stage or Unstage", "plusminus", "s",
+         { model, _ in model.stageOrUnstage() }),
+        ("git.discardChange", "Discard Change", "arrow.uturn.backward", "x",
+         { model, _ in model.discard() }),
+    ]
+
+    /// The keys the repository canvas claims.
+    static var canvasKeys: [SurfaceKey] {
+        canvasCommands.map { SurfaceKey($0.key, $0.id) }
     }
 }

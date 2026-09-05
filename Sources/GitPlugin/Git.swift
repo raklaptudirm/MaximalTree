@@ -442,7 +442,8 @@ final class GitPlugin: NSObject, Plugin {
         // A repository gets its status rather than a list of its four folders,
         // which said nothing a sidebar row didn't.
         registry.register(canvas: CanvasContribution(priority: 20,
-            matches: { $0.type == TypeID("git.repo") }) { id, host in
+            matches: { $0.type == TypeID("git.repo") },
+            keys: GitActions.canvasKeys) { id, host in
                 AnyView(RepoCanvas(nodeID: id).environment(host))
         })
         registry.register(canvas: CanvasContribution(priority: 0,
