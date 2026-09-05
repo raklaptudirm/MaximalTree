@@ -22,32 +22,64 @@ import MaximalTreeKit
 extension AppModel {
     /// The keys the surface holding the keyboard claims.
     ///
-    /// Built fresh each time rather than cached: which surface has the
-    /// keyboard, and what its pane is showing, both change under the reader,
-    /// and a remembered map is a map of somewhere else. It is a handful of
-    /// bindings through a trie — cheaper than working out when to invalidate.
-    ///
     /// A canvas's keys come from the contribution that actually drew it, so
     /// the canvas on screen and the keys that work cannot disagree.
     func surfaceKeymap() -> Keymap {
+        surfaceKeymap(for: Surfaces.focused(), showing: focusedPaneNode())
+    }
+
+    /// Remembered between keystrokes, because building it is not free.
+    ///
+    /// Resolving a canvas runs every registered matcher — twelve closures, and
+    /// three of them test a file extension rather than a type — and then a
+    /// trie is built from the winner's bindings, an allocation per chord. That
+    /// happened on every key press. It only ever depends on two things: which
+    /// surface has the keyboard, and which node its pane is showing, so those
+    /// are the key and everything else is a hit.
+    ///
+    /// A node keeps its identity for as long as it is the same node — a rename
+    /// makes a new one — so a file that becomes a `.typ` and changes which
+    /// canvas draws it also changes this key, and the map is rebuilt.
+    ///
+    /// Split from the caller so a test can vary the surface and the node,
+    /// which is otherwise impossible without a key window.
+    func surfaceKeymap(for surface: SurfaceID, showing node: NodeID?) -> Keymap {
+        if let cached = cachedSurfaceKeys, cached.surface == surface, cached.node == node {
+            return cached.map
+        }
+        // Never mutated after building. `Keymap` is a struct around a class
+        // trie, so a copy shares the nodes — binding into a copy of this would
+        // reach back into the cache.
         var map = Keymap()
-        for key in claimedKeys() {
+        for key in claimedKeys(surface: surface, showing: node) {
             map.bind(key.sequence, to: key.action)
         }
+        bumpSurfaceKeymapBuilds()
+        cachedSurfaceKeys = (surface: surface, node: node, map: map)
         return map
     }
 
-    private func claimedKeys() -> [SurfaceKey] {
-        guard let store else { return [] }
-        switch Surfaces.focused() {
-        case .sidebar:
-            return store.surfaceKeys.filter { $0.surface == .sidebar }.flatMap(\.keys)
-        case .inspector:
-            return store.surfaceKeys.filter { $0.surface == .inspector }.flatMap(\.keys)
-        case .pane(let id):
-            guard let node = navigation.activeTab.root.pane(id)?.current.flatMap({ host.node($0) })
-            else { return [] }
-            return store.canvas(for: node)?.keys ?? []
+    /// The node the focused pane is showing, if a pane is focused at all.
+    private func focusedPaneNode() -> NodeID? {
+        guard case .pane(let id) = Surfaces.focused() else { return nil }
+        return navigation.activeTab.root.pane(id)?.current
+    }
+
+    private func claimedKeys(surface: SurfaceID, showing node: NodeID?) -> [SurfaceKey] {
+        switch surface {
+        case .sidebar, .inspector:
+            // Registry data, not the store's: what a surface claims is
+            // declared at registration and does not depend on a graph being
+            // up. Reading it through the store made this unanswerable before
+            // the app had started, which is also every test.
+            let wanted: SurfaceKeys.Surface = surface == .sidebar ? .sidebar : .inspector
+            return pluginHost.registry.surfaceKeys
+                .filter { $0.surface == wanted }.flatMap(\.keys)
+        case .pane:
+            // A canvas's keys ride on the contribution that drew it, and
+            // resolving which one that is needs the store.
+            guard let store, let record = node.flatMap({ host.node($0) }) else { return [] }
+            return store.canvas(for: record)?.keys ?? []
         }
     }
 

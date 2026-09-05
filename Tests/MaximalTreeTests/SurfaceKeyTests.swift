@@ -163,4 +163,62 @@ import AppKit
                     "\(id) still refuses to apply based on which surface has focus")
         }
     }
+
+    // MARK: Not rebuilt on every keystroke
+
+    private func makeModel() throws -> AppModel {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("keycache-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let model = AppModel(host: HostContext(),
+                             workspaceFile: dir.appendingPathComponent("workspaces.json"))
+        model.registerCoreActions(with: model.pluginHost.registry)
+        return model
+    }
+
+    /// Resolving a canvas runs every registered matcher and then builds a trie
+    /// from the winner's bindings. That was happening on every key press.
+    @Test func theSameSurfaceAndNodeIsAnsweredFromMemory() throws {
+        let model = try makeModel()
+
+        _ = model.surfaceKeymap(for: .sidebar, showing: nil)
+        let after = model.surfaceKeymapBuilds
+        for _ in 0..<20 { _ = model.surfaceKeymap(for: .sidebar, showing: nil) }
+        #expect(model.surfaceKeymapBuilds == after, "rebuilt for a keystroke that changed nothing")
+
+        // And the answer is still right, not merely fast.
+        let map = model.surfaceKeymap(for: .sidebar, showing: nil)
+        #expect(map.lookup([KeyChord("j")]) == .command("explorer.down"))
+    }
+
+    @Test func movingToAnotherSurfaceRebuildsIt() throws {
+        let model = try makeModel()
+        _ = model.surfaceKeymap(for: .sidebar, showing: nil)
+        let after = model.surfaceKeymapBuilds
+
+        _ = model.surfaceKeymap(for: .inspector, showing: nil)
+        #expect(model.surfaceKeymapBuilds == after + 1)
+        // The inspector claims nothing yet, and says so rather than serving
+        // the sidebar's keys.
+        #expect(model.surfaceKeymap(for: .inspector, showing: nil)
+                    .lookup([KeyChord("j")]) == .unbound)
+    }
+
+    /// A pane showing something else is a different question, and a rename
+    /// makes a new node — which is how a file that becomes a `.typ`, and so
+    /// changes which canvas draws it, also changes this.
+    @Test func aPaneShowingAnotherNodeRebuildsIt() throws {
+        let model = try makeModel()
+        let pane = UUID()
+        let a = try #require(NodeID("file:///tmp/a.txt"))
+        let b = try #require(NodeID("file:///tmp/b.typ"))
+
+        _ = model.surfaceKeymap(for: .pane(pane), showing: a)
+        let after = model.surfaceKeymapBuilds
+        _ = model.surfaceKeymap(for: .pane(pane), showing: a)
+        #expect(model.surfaceKeymapBuilds == after, "the same node rebuilt it")
+
+        _ = model.surfaceKeymap(for: .pane(pane), showing: b)
+        #expect(model.surfaceKeymapBuilds == after + 1, "a different node did not")
+    }
 }

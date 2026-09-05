@@ -309,6 +309,18 @@ final class AppModel {
             if now != focusedSurface { focusedSurface = now }
         }
     }
+    /// The surface keymap last built, and what it was built for.
+    ///
+    /// Stored here because an extension cannot hold one; the reasoning lives
+    /// with `surfaceKeymap(for:showing:)`, which is the only thing that reads
+    /// or writes it.
+    @ObservationIgnored
+    var cachedSurfaceKeys: (surface: SurfaceID, node: NodeID?, map: Keymap)?
+    /// How many times that map has actually been built, for a test to check
+    /// the answer is remembered rather than recomputed.
+    @ObservationIgnored private(set) var surfaceKeymapBuilds = 0
+    func bumpSurfaceKeymapBuilds() { surfaceKeymapBuilds += 1 }
+
     /// The modal keyboard layer. Built here so every surface shares one mode.
     @ObservationIgnored lazy var keys: KeyEngine = {
         let engine = KeyEngine(keymap: DefaultKeymap.make())
