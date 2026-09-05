@@ -113,6 +113,7 @@ Sources/
     TypstPlugin.swift           #   registration, actions, modes, TypstUIState
     TypstCanvas.swift           #   Write/Typeset/Read canvas + inspector + preview
     TypstServices.swift         #   editor-seam impls: tokens, completions, math
+    ProseStyle.swift            #   the typefaces and sizes Write mode offers
   GitPlugin/                    # reference non-file provider (loadable bundle)
     Git.swift                   #   git:// URI model, git CLI, provider, branch anchors
     GitViews.swift              #   commit / list canvases + inspector

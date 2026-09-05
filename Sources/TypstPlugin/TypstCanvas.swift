@@ -157,8 +157,10 @@ struct TypstCanvas: View {
         // that wraps (prose-like source).
         MaximalEditor(
             text: $text,
-            style: mode == .write ? .prose()
-                                  : .code(size: fontSize, wrapLines: true, indentSpaces: 2),
+            style: mode == .write
+                ? .prose(size: TypstUIState.shared.proseSize,
+                         family: TypstUIState.shared.proseFont.family)
+                : .code(size: fontSize, wrapLines: true, indentSpaces: 2),
             tokenizer: tokenizer,
             mathRenderer: TypstMathRenderer.shared,
             completionProvider: fileURL.map(TypstCompletionProvider.init),
@@ -430,6 +432,11 @@ struct TypstDocumentInspector: View {
                     LabeledContent("Words", value: "\(wordCount) \u{00B7} ~\(minutes) min")
                 }
             }
+            // Only in Write mode, which is the only place it changes anything:
+            // Typeset is a source view and reads better monospaced.
+            if uiState.mode(for: fileURL) == .write {
+                Section("Typeface") { typefacePicker }
+            }
             if !links.isEmpty {
                 Section("Links") { rows(links) }
             }
@@ -461,6 +468,32 @@ struct TypstDocumentInspector: View {
             }
         }
         .onDisappear { countTask?.cancel() }
+    }
+
+    /// The faces Write mode can be set in, each row drawn in its own — which
+    /// is the only way a list of typeface names tells you anything.
+    @ViewBuilder
+    private var typefacePicker: some View {
+        Picker("Font", selection: Binding(
+            get: { uiState.proseFont },
+            set: { uiState.proseFont = $0 })) {
+            ForEach(ProseFont.available) { font in
+                Text(font.name)
+                    .font(font.family.map { Font.custom($0, size: 13) }
+                          ?? .system(size: 13, design: .serif))
+                    .tag(font)
+            }
+        }
+        Text(uiState.proseFont.note)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        // Beside the face because it is the same decision: these families are
+        // not the same size at the same size.
+        Stepper(value: Binding(get: { uiState.proseSize },
+                               set: { uiState.proseSize = ProseSize.clamped($0) }),
+                in: ProseSize.range, step: 1) {
+            LabeledContent("Size", value: "\(Int(uiState.proseSize)) pt")
+        }
     }
 
     /// Words in the document as it currently reads. Prefers the open buffer —

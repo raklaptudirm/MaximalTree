@@ -29,8 +29,12 @@ import STTextKitPlus
 /// How an editor should look and behave. Presets cover the two personalities used
 /// in MaximalTree: `.code` (monospaced IDE) and `.prose` (serif manuscript).
 public struct EditorStyle: Equatable {
-    public enum Design {
+    public enum Design: Hashable {
         case monospaced, serif
+        /// A named font family, for prose you want to read in something
+        /// particular. Falls back to the system serif when the family isn't
+        /// installed, so a style outlives the font it names.
+        case family(String)
     }
 
     public var design: Design
@@ -82,8 +86,11 @@ public struct EditorStyle: Equatable {
     }
 
     /// Manuscript, not IDE: no line-number gutter, markup rendered as formatting.
-    public static func prose(size: CGFloat = 15) -> EditorStyle {
-        EditorStyle(design: .serif, size: size, lineSpacing: (size * 0.6).rounded(),
+    ///
+    /// - Parameter family: the typeface to set it in; the system serif when nil.
+    public static func prose(size: CGFloat = 15, family: String? = nil) -> EditorStyle {
+        EditorStyle(design: family.map(Design.family) ?? .serif,
+                    size: size, lineSpacing: (size * 0.6).rounded(),
                     wrapLines: true, indentSpaces: 2, showsLineNumbers: false,
                     rendersMarkup: true)
     }
@@ -93,13 +100,24 @@ public struct EditorStyle: Equatable {
         case .monospaced:
             return .monospacedSystemFont(ofSize: size, weight: .regular)
         case .serif:
-            let base = NSFont.systemFont(ofSize: size)
-            if let descriptor = base.fontDescriptor.withDesign(.serif),
-               let serif = NSFont(descriptor: descriptor, size: size) {
-                return serif
-            }
-            return base
+            return Self.systemSerif(size: size)
+        case .family(let name):
+            // Asking for a family rather than a face leaves the weight and the
+            // italic to `fontVariant(of:)`, which derives them from symbolic
+            // traits — the same path the system serif takes.
+            let descriptor = NSFontDescriptor(fontAttributes: [.family: name])
+            return NSFont(descriptor: descriptor, size: size)
+                ?? Self.systemSerif(size: size)
         }
+    }
+
+    private static func systemSerif(size: CGFloat) -> NSFont {
+        let base = NSFont.systemFont(ofSize: size)
+        if let descriptor = base.fontDescriptor.withDesign(.serif),
+           let serif = NSFont(descriptor: descriptor, size: size) {
+            return serif
+        }
+        return base
     }
 
     var paragraphStyle: NSParagraphStyle {

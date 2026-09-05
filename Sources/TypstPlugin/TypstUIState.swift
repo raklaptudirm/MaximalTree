@@ -63,6 +63,37 @@ final class TypstUIState {
     /// Bumped by "Refresh Agenda"; agenda canvases reload on change.
     var agendaRefresh = 0
 
+    /// The face Write mode sets prose in. App-wide rather than per-document:
+    /// you are choosing how writing looks, not marking up one file.
+    ///
+    /// Observed, so the picker in the inspector and the canvas showing the
+    /// text are the same decision seen twice.
+    var proseFont: ProseFont = .stored {
+        didSet { proseFont.store() }
+    }
+
+    /// How big Write mode sets prose, in points. Stored beside the face,
+    /// because at a given size these families are not the same size.
+    var proseSize: CGFloat = ProseSize.stored {
+        didSet { ProseSize.store(proseSize) }
+    }
+
+    /// Nudge the size, staying inside what is still a manuscript.
+    func stepProseSize(by points: CGFloat) {
+        proseSize = ProseSize.clamped(proseSize + points)
+    }
+
+    /// Step through the installed faces — the fastest way to find the one you
+    /// can read, which is by reading your own prose in each.
+    func cycleProseFont(by offset: Int) {
+        let fonts = ProseFont.available
+        guard fonts.count > 1 else { return }
+        let index = fonts.firstIndex(of: proseFont) ?? 0
+        var next = (index + offset) % fonts.count
+        if next < 0 { next += fonts.count }
+        proseFont = fonts[next]
+    }
+
     func mode(for url: URL?) -> TypstMode {
         guard let url else { return .typeset }
         return modes[url] ?? TypstMode.stored(forFile: url)

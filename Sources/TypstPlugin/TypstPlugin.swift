@@ -42,7 +42,14 @@ final class TypstPlugin: NSObject, Plugin {
                 TypstEngine.warmUp()
                 await SyntaxTokenizer.warmUp()
             },
-            keys: EditorKeys.keys,
+            // The editor's own keys, plus the two this canvas adds: `z` is
+            // where a surface keeps how big or how it looks, here and in the
+            // page and the terminal.
+            keys: EditorKeys.keys + [SurfaceKey("z f", "typst.proseFont.next"),
+                                     SurfaceKey("z F", "typst.proseFont.previous"),
+                                     SurfaceKey("z i", "typst.proseSize.bigger"),
+                                     SurfaceKey("z o", "typst.proseSize.smaller"),
+                                     SurfaceKey("z 0", "typst.proseSize.reset")],
             make: { id, host in AnyView(TypstCanvas(nodeID: id).environment(host)) }
         ))
 
@@ -118,6 +125,37 @@ final class TypstPlugin: NSObject, Plugin {
             ))
         }
 
+        // Trying a face means reading your own prose in it, so stepping
+        // through them beats opening a picker each time. Only in Write mode:
+        // anywhere else this changes nothing you can see.
+        for (id, title, image, step) in [
+            ("typst.proseFont.next", "Next Prose Typeface", "textformat", 1),
+            ("typst.proseFont.previous", "Previous Prose Typeface", "textformat", -1),
+        ] as [(String, String, String, Int)] {
+            registry.register(action: Action(
+                id: id, title: title, systemImage: image,
+                appliesTo: .custom(Self.isWriting), scope: .document,
+                handler: { _ in TypstUIState.shared.cycleProseFont(by: step) }
+            ))
+        }
+
+        for (id, title, image, step) in [
+            ("typst.proseSize.bigger", "Bigger Prose Text", "textformat.size.larger", 1),
+            ("typst.proseSize.smaller", "Smaller Prose Text", "textformat.size.smaller", -1),
+        ] as [(String, String, String, CGFloat)] {
+            registry.register(action: Action(
+                id: id, title: title, systemImage: image,
+                appliesTo: .custom(Self.isWriting), scope: .document,
+                handler: { _ in TypstUIState.shared.stepProseSize(by: step) }
+            ))
+        }
+        registry.register(action: Action(
+            id: "typst.proseSize.reset", title: "Reset Prose Text Size",
+            systemImage: "textformat.size",
+            appliesTo: .custom(Self.isWriting), scope: .document,
+            handler: { _ in TypstUIState.shared.proseSize = ProseSize.standard }
+        ))
+
         for format in TypstEngine.ExportFormat.allCases {
             registry.register(action: Action(
                 id: "typst.export.\(format.rawValue)",
@@ -168,6 +206,15 @@ final class TypstPlugin: NSObject, Plugin {
               id.scheme == "file", id.uri.lowercased().hasSuffix(".typ")
         else { return nil }
         return URL(string: id.uri)
+    }
+
+    /// Whether the context is a document currently being written — which is
+    /// the only mode where the prose face and size are visible, and so the
+    /// only one where changing them is an operation that does anything.
+    @MainActor
+    static func isWriting(_ ctx: ActionContext) -> Bool {
+        guard let url = typFileURL(in: ctx) else { return false }
+        return TypstUIState.shared.mode(for: url) == .write
     }
 
     /// Export the document *as saved on disk* (Write/Read autosave, so this is
