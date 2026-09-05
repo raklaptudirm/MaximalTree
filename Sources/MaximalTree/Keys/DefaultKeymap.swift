@@ -40,6 +40,11 @@ enum DefaultKeymap {
         // Moving in the sidebar is not here: those keys are the sidebar's own
         // and it declares them, the same way a canvas declares its. What is
         // here is what works wherever the keyboard happens to be.
+        //
+        // That is the line a group has to pass. A web page's zoom or a
+        // repeated search does nothing with a folder selected, so those keys
+        // belong to the page and the page declares them; the leader is not a
+        // place to park a command that only ever has one surface to act on.
 
         map.bind("i", to: "mode.insert")
         // The finder. `SPC SPC` is the one you reach for without thinking, so

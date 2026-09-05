@@ -109,6 +109,44 @@ final class WebSession: NSObject {
         webView.load(URLRequest(url: url))
     }
 
+    /// What was last searched for, and how it went.
+    ///
+    /// Kept on the session rather than in the inspector's view state: the
+    /// search outlives the view, and an action has to be able to reach it.
+    var searchText = ""
+    var searchFoundNothing = false
+
+    /// Find the next match, wrapping at the end the way a browser does.
+    func find(_ text: String, forward: Bool = true) {
+        searchText = text
+        guard !text.isEmpty else {
+            searchFoundNothing = false
+            return
+        }
+        let configuration = WKFindConfiguration()
+        configuration.backwards = !forward
+        configuration.wraps = true
+        configuration.caseSensitive = false
+        webView.find(text, configuration: configuration) { [weak self] result in
+            MainActor.assumeIsolated { self?.searchFoundNothing = !result.matchFound }
+        }
+    }
+
+    /// How big the page is drawn, clamped: past these the page stops being
+    /// readable in either direction.
+    func zoom(by step: CGFloat) {
+        webView.pageZoom = min(max(webView.pageZoom + step, 0.5), 3.0)
+    }
+
+    func resetZoom() { webView.pageZoom = 1 }
+
+    /// How big the page is drawn, as a percentage — which is how a browser
+    /// says it and how anyone reading it thinks of it.
+    var zoomPercent: Int { Int((webView.pageZoom * 100).rounded()) }
+
+    /// Whether the page came over a connection that was actually secure.
+    var isSecure: Bool { webView.hasOnlySecureContent }
+
     func goBack() { webView.goBack() }
     func goForward() { webView.goForward() }
     func reload() { webView.reload() }
@@ -344,11 +382,16 @@ final class WebPlugin: NSObject, Plugin {
     }
 
     /// The live session for the web node an action targets (selection first,
-    /// then focus). Never *creates* a session for a page that isn't open.
+    /// then focus). Never *creates* one for a page that isn't open.
+    ///
+    /// It used to, despite saying otherwise: `session(for:)` makes a session
+    /// on first use, and this is called from predicates. Asking whether an
+    /// action applies would start a browser session, and the finder asks about
+    /// every action every time it opens.
     @MainActor
     private static func session(in ctx: ActionContext) -> WebSession? {
         guard let id = ctx.selection.first ?? ctx.focused,
               id.scheme == "http" || id.scheme == "https" else { return nil }
-        return WebSessionStore.shared.session(for: id)
+        return WebSessionStore.shared.existingSession(for: id)
     }
 }

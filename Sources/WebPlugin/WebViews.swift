@@ -226,8 +226,25 @@ struct WebInspector: View {
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
                     }
+                    if let host = url.host() {
+                        LabeledContent("Host", value: host)
+                    }
+                    // Whether it *is* secure, not whether the scheme says so:
+                    // a page loaded over https that pulls something over http
+                    // is not, and the padlock is the thing people read.
+                    LabeledContent("Connection") {
+                        Label(session.isSecure ? "Secure" : "Not secure",
+                              systemImage: session.isSecure ? "lock.fill" : "lock.open")
+                            .foregroundStyle(session.isSecure ? AnyShapeStyle(.secondary)
+                                                             : AnyShapeStyle(Color.orange))
+                    }
+                }
+                if session.zoomPercent != 100 {
+                    LabeledContent("Zoom", value: "\(session.zoomPercent)%")
                 }
             }
+
+            FindSection(session: session)
         }
         .formStyle(.grouped)
         // Seed the field from the live URL, and keep it current as long as the
@@ -261,5 +278,43 @@ struct WebInspector: View {
         }
         .disabled(current == nil)
         .help(bookmarked ? "Remove bookmark" : "Bookmark this page")
+    }
+}
+
+
+/// Finding text on the page.
+///
+/// The search text lives on the session, not here: it outlives this view — you
+/// search, scroll, come back — and the next/previous actions have to be able
+/// to reach it, which a view's state cannot offer them.
+private struct FindSection: View {
+    let session: WebSession
+    @State private var query = ""
+
+    var body: some View {
+        Section("Find") {
+            TextField("Find on page", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { session.find(query) }
+            if session.searchFoundNothing {
+                Text("Not found")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            HStack {
+                Button { session.find(query, forward: false) } label: {
+                    Image(systemName: "chevron.up")
+                }
+                .help("Previous match")
+                Button { session.find(query, forward: true) } label: {
+                    Image(systemName: "chevron.down")
+                }
+                .help("Next match")
+                Spacer()
+            }
+            .buttonStyle(.borderless)
+            .disabled(query.isEmpty)
+        }
+        .onAppear { query = session.searchText }
     }
 }

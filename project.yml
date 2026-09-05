@@ -357,7 +357,7 @@ targets:
       - path: Sources/TypstPlugin/PDFAppearance.swift
       - path: Sources/TypstPlugin/TypstServices.swift
       - path: Sources/TypstPlugin/TypstUIState.swift
-      - path: Sources/WebPlugin/WebCore.swift
+      - Sources/WebPlugin
       - Sources/TerminalPlugin
     dependencies:
       - target: MaximalTree          # hosts the tests; wires TEST_HOST/BUNDLE_LOADER

@@ -19,22 +19,23 @@ import SwiftUI
 
     /// The host's actions plus every plugin this target can construct.
     ///
-    /// Typst and Web are missing on purpose: the test target compiles only
-    /// their view-free core files, so their entry points — and the actions
-    /// registered from them — aren't here to ask. Their ids are excluded from
-    /// the check below rather than asserted against an empty registry.
+    /// Typst is missing on purpose: the test target compiles only its
+    /// view-free core files, so its entry point — and the actions registered
+    /// from it — aren't here to ask. Its ids are excluded from the check below
+    /// rather than asserted against an empty registry.
     private func availableActionIDs(_ model: AppModel) -> Set<String> {
         let registry = model.pluginHost.registry
         model.registerCoreActions(with: registry)
         FileSystemPlugin().register(with: registry)
         GitPlugin().register(with: registry)
         TerminalPlugin().register(with: registry)
+        WebPlugin().register(with: registry)
         return Set(registry.actions.map(\.id))
     }
 
     /// Owned by a plugin this target does not compile the entry point of.
     private func isUnavailableHere(_ id: String) -> Bool {
-        id.hasPrefix("typst.") || id.hasPrefix("web.")
+        id.hasPrefix("typst.")
     }
 
     /// The invariant that keeps the two halves honest. A binding is a string
@@ -50,10 +51,30 @@ import SwiftUI
         let missing = bound.subtracting(known).sorted()
         #expect(missing.isEmpty, "bound to nothing: \(missing.joined(separator: ", "))")
 
-        // The two this target can't register are at least owned by a plugin
+        // The ones this target can't register are at least owned by a plugin
         // that exists, which is all that can be checked from here.
         let elsewhere = DefaultKeymap.make().allCommands.filter(isUnavailableHere)
-        #expect(elsewhere.allSatisfy { $0.hasPrefix("typst.") || $0.hasPrefix("web.") })
+        #expect(elsewhere.allSatisfy { $0.hasPrefix("typst.") })
+    }
+
+    /// The same invariant on the other half of the keymap.
+    ///
+    /// A surface's keys are the natural home for a command that only that
+    /// surface can run, so they carry the ones a leader group has no business
+    /// holding — and they need the same check, or moving a binding out of
+    /// `DefaultKeymap` would quietly move it out of coverage. Both sides come
+    /// from one registry here, so a plugin this target can't construct
+    /// contributes neither keys nor actions and can't fail this by absence.
+    @Test func everySurfaceKeyNamesARegisteredAction() throws {
+        let model = try makeModel()
+        let known = availableActionIDs(model)
+        let registry = model.pluginHost.registry
+        let declared = registry.canvases.flatMap(\.keys)
+            + registry.surfaceKeys.flatMap(\.keys)
+        #expect(declared.count > 20, "surfaces should be declaring keys")
+
+        let missing = Set(declared.map(\.action)).subtracting(known).sorted()
+        #expect(missing.isEmpty, "bound to nothing: \(missing.joined(separator: ", "))")
     }
 
     /// The point of the unification: the host's own operations are in the same

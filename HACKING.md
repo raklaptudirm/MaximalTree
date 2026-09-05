@@ -395,6 +395,12 @@ Resolution order for a key press: a sequence already begun continues in the map 
 began it, then the focused surface's map, then the app's. `SPC` is the app's wherever
 you are — a surface that could shadow the leader could take away the way out of itself.
 
+Which side a command belongs on follows from that: **the leader is for what works
+wherever the keyboard is**, and a command that only ever has one surface to act on is
+that surface's. Zooming a web page or repeating a find means nothing with a folder
+selected, so those are the page's keys and the page declares them — a leader group of
+them would be dead sequences most of the time, and long ones at that.
+
 Everything follows from a key naming an action rather than a surface implementing one:
 the keys are rebindable, they are listed in the finder, they are callable by name with
 `host.perform(_:)`, and which-key shows the resolved answer from one source instead of
