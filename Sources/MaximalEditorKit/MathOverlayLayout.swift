@@ -18,9 +18,11 @@ import STTextKitPlus
 ///    frame is a *union* when the range straddles a line break (which the
 ///    equation's reserved width invites), and a union's top edge belongs to the
 ///    first line — placing the image above where the equation actually sits.
-/// 3. **Lay out the whole prefix, not just the equation** (see
+/// 3. **Lay out the whole prefix, and one character past the equation** (see
 ///    `ensureLayout(upTo:)`) — an absolute y is only as good as everything
-///    above it.
+///    above it, and the fragment an equation *ends* in runs past its last
+///    character. Left estimated, that fragment reports the height TextKit
+///    guessed rather than the taller box a display equation reserves.
 @MainActor
 enum MathOverlayLayout {
     /// The image's frame in layout coordinates, or nil when the equation isn't
@@ -34,7 +36,15 @@ enum MathOverlayLayout {
         guard let contentManager = layoutManager.textContentManager,
               let textRange = NSTextRange(range, in: contentManager)
         else { return nil }
-        layoutManager.ensureLayout(upTo: textRange.endLocation)
+        // One character past the end, not the end itself: the fragment the
+        // equation *ends* in runs past its last character, and TextKit will
+        // happily leave that fragment estimated. An estimated fragment reports
+        // the height TextKit guessed — the natural line height, never the
+        // taller box a display equation reserves — so the last equation in a
+        // document (the one with nothing after it to force the issue) landed
+        // where a plain line of text would have been.
+        let end = contentManager.location(textRange.endLocation, offsetBy: 1)
+        layoutManager.ensureLayout(upTo: end ?? textRange.endLocation)
 
         guard let (fragment, line) = lineFragment(containing: textRange.location,
                                                   in: layoutManager),

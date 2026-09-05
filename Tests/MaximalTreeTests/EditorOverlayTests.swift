@@ -20,12 +20,21 @@ import STTextView
 @MainActor
 @Suite struct EditorOverlayTests {
     /// One fixed image for every equation, so expected geometry is knowable.
+    /// A rendered equation, 40pt tall on purpose.
+    ///
+    /// Taller than a line of prose, which is what a real display equation is —
+    /// a fraction or an integral is not the height of a sentence. That matters
+    /// because the reserved box takes `max(image + 2, natural line height)`,
+    /// and only the image branch of that max exercises the case where TextKit's
+    /// *estimate* for an un-laid-out fragment (which assumes an ordinary line)
+    /// is wrong. A 22pt image sat under the natural height, took the other
+    /// branch, and let a real placement bug through.
     private final class StubMath: EditorMathRenderer {
         let image: NSImage = {
-            let image = NSImage(size: CGSize(width: 48, height: 22))
+            let image = NSImage(size: CGSize(width: 48, height: 40))
             image.lockFocus()
             NSColor.black.setFill()
-            NSRect(x: 0, y: 0, width: 48, height: 22).fill()
+            NSRect(x: 0, y: 0, width: 48, height: 40).fill()
             image.unlockFocus()
             return image
         }()
@@ -127,7 +136,7 @@ import STTextView
         editor.textView.textLayoutManager.ensureLayout(
             for: editor.textView.textLayoutManager.documentRange)
         guard var frame = MathOverlayLayout.frame(
-            forEquationAt: range, image: CGSize(width: 48, height: 22),
+            forEquationAt: range, image: CGSize(width: 48, height: 40),
             imageBaseline: 16, block: block,
             lineHeightMultiple: editor.coordinator.lastStyle?.lineHeightMultiple ?? 1,
             in: editor.textView.textLayoutManager)

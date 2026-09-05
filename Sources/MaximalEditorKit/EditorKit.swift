@@ -87,10 +87,17 @@ public struct EditorStyle: Equatable {
 
     /// Manuscript, not IDE: no line-number gutter, markup rendered as formatting.
     ///
+    /// Leading is a quarter of the size on top of whatever the face asks for,
+    /// which lands the system serif near 1.5× — the ratio a book is set at.
+    /// It was 0.6 and read as a double-spaced draft: the faces already carry
+    /// their own leading (Literata's is 4pt more than New York's at the same
+    /// size), so adding two thirds of the point size on top of that pushed
+    /// every one of them past 1.8×.
+    ///
     /// - Parameter family: the typeface to set it in; the system serif when nil.
     public static func prose(size: CGFloat = 15, family: String? = nil) -> EditorStyle {
         EditorStyle(design: family.map(Design.family) ?? .serif,
-                    size: size, lineSpacing: (size * 0.6).rounded(),
+                    size: size, lineSpacing: (size * 0.25).rounded(),
                     wrapLines: true, indentSpaces: 2, showsLineNumbers: false,
                     rendersMarkup: true)
     }

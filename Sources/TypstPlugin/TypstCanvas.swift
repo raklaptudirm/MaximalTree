@@ -432,11 +432,7 @@ struct TypstDocumentInspector: View {
                     LabeledContent("Words", value: "\(wordCount) \u{00B7} ~\(minutes) min")
                 }
             }
-            // Only in Write mode, which is the only place it changes anything:
-            // Typeset is a source view and reads better monospaced.
-            if uiState.mode(for: fileURL) == .write {
-                Section("Typeface") { typefacePicker }
-            }
+            Section("Typeface") { typefacePicker }
             if !links.isEmpty {
                 Section("Links") { rows(links) }
             }
@@ -493,6 +489,15 @@ struct TypstDocumentInspector: View {
                                set: { uiState.proseSize = ProseSize.clamped($0) }),
                 in: ProseSize.range, step: 1) {
             LabeledContent("Size", value: "\(Int(uiState.proseSize)) pt")
+        }
+        // Shown in every mode, and says so when it isn't in effect. Hiding it
+        // outside Write mode meant finding it required already being in the
+        // mode it configures — and the rest of this app greys a control out
+        // rather than moving it, so a thing stays where you last saw it.
+        if uiState.mode(for: fileURL) != .write {
+            Text("Applies in Write mode; Typeset shows the source, monospaced.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
