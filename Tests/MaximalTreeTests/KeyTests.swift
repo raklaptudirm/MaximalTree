@@ -274,6 +274,49 @@ import SwiftUI
                 "if this ever drops below the ordinary cap, the peek limit is dead weight")
     }
 
+    /// Backspace off the leader asks what the keys do.
+    ///
+    /// It used to take ⌘ held down, which every shortcut in the app presses,
+    /// so the menu kept answering questions nobody had asked. Backspace
+    /// already means "not that, go back" — one step further back than there
+    /// is sequence to undo is the same question.
+    @Test func backspaceOffTheLeaderShowsTheTopLevelKeys() {
+        let (engine, _) = makeEngine()
+        _ = engine.handle(KeyChord("SPC"), editing: false)
+        _ = engine.handle(KeyChord("f"), editing: false)
+        #expect(!engine.isPeeking, "mid-sequence there is a sequence to show")
+
+        // Back to the leader: still a sequence, still no peek.
+        _ = engine.handle(KeyChord("DEL"), editing: false)
+        #expect(!engine.isPeeking)
+
+        // And off it: nothing pending, and the top level on screen.
+        _ = engine.handle(KeyChord("DEL"), editing: false)
+        #expect(engine.isPeeking, "backspacing off the leader showed nothing")
+        #expect(engine.topLevelBindings.map(\.chord.description).sorted() == ["SPC", "j"])
+    }
+
+    /// Any key answers it, including another backspace.
+    @Test func thePeekClosesOnTheNextKey() {
+        let (engine, _) = makeEngine()
+        _ = engine.handle(KeyChord("SPC"), editing: false)
+        _ = engine.handle(KeyChord("DEL"), editing: false)
+        #expect(engine.isPeeking)
+
+        _ = engine.handle(KeyChord("j"), editing: false)
+        #expect(!engine.isPeeking, "the peek outlived the question")
+    }
+
+    @Test func escapeClosesThePeek() {
+        let (engine, _) = makeEngine()
+        _ = engine.handle(KeyChord("SPC"), editing: false)
+        _ = engine.handle(KeyChord("DEL"), editing: false)
+        #expect(engine.isPeeking)
+
+        _ = engine.handle(KeyChord("ESC"), editing: false)
+        #expect(!engine.isPeeking)
+    }
+
     /// The peek shows the keys that mean something with nothing typed — the
     /// plain ones, and the leader among them as the group it opens.
     @Test func theTopLevelKeysCanBeReadWithoutTypingAnything() {

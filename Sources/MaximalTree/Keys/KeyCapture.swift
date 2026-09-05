@@ -38,33 +38,8 @@ struct KeyCapture: ViewModifier {
             private var monitor: Any?
             /// Clicks move the keyboard too, and nothing else tells us.
             private var clicks: Any?
-            /// Watches the modifiers, for the ⌘-held peek.
-            private var flags: Any?
-            /// Distinguishes this press of ⌘ from the next one, so a release
-            /// can't cancel a peek that a later press asked for.
-            private var peekGeneration = 0
-
-            /// How long ⌘ has to be down before the peek appears.
-            ///
-            /// Long enough that ⌘S never flashes it, short enough that holding
-            /// the key to ask a question feels like it answered.
-            private static let peekDelay: TimeInterval = 0.4
-
             func install(model: AppModel) {
                 guard monitor == nil else { return }
-                flags = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
-                    // ⌘ alone: with another modifier down this is someone
-                    // building a shortcut, not asking what there is.
-                    let held = event.modifierFlags.isDisjoint(with: [.control, .option, .shift])
-                        && event.modifierFlags.contains(.command)
-                    MainActor.assumeIsolated { self.setPeek(held, model: model) }
-                    return event
-                }
-                clicks = NSEvent.addLocalMonitorForEvents(
-                    matching: [.leftMouseUp, .rightMouseUp]) { event in
-                    MainActor.assumeIsolated { model.refreshFocusedSurface() }
-                    return event
-                }
                 monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                     // The chord is read out here, because an NSEvent can't
                     // cross into the main actor — everything past this point
@@ -92,33 +67,11 @@ struct KeyCapture: ViewModifier {
                                           surface: model.surfaceKeymap())
             }
 
-            /// Show the leader's menu while ⌘ is held, after a moment.
-            ///
-            /// Deferred rather than immediate: every ⌘ shortcut in the app
-            /// passes through here, and a menu that flickered on each one
-            /// would be worse than not having it. Letting go takes it away at
-            /// once, because by then the question has been answered.
-            @MainActor
-            private func setPeek(_ held: Bool, model: AppModel) {
-                peekGeneration += 1
-                guard held else {
-                    model.keys.isPeeking = false
-                    return
-                }
-                let generation = peekGeneration
-                DispatchQueue.main.asyncAfter(deadline: .now() + Self.peekDelay) { [self] in
-                    guard generation == peekGeneration else { return }
-                    model.keys.isPeeking = true
-                }
-            }
-
             func remove() {
                 if let monitor { NSEvent.removeMonitor(monitor) }
                 if let clicks { NSEvent.removeMonitor(clicks) }
-                if let flags { NSEvent.removeMonitor(flags) }
                 monitor = nil
                 clicks = nil
-                flags = nil
             }
         }
     }

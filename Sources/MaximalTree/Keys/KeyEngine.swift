@@ -25,12 +25,16 @@ final class KeyEngine {
     /// Runs a command id, `count` times where that makes sense.
     var perform: ((String, Int) -> Void)?
 
-    /// Showing what a key would do from here, with nothing typed yet — see
-    /// `KeyCapture`, which sets this while ⌘ is held down.
+    /// Showing what a key would do from here, with nothing typed yet.
     ///
-    /// A modifier is a good place for this: holding one is already how you ask
-    /// a Mac "what else is there", and it costs nothing to ask because letting
-    /// go answers nothing.
+    /// Reached by pressing backspace once more than there are keys to undo:
+    /// backspace walks a sequence back a key at a time, and stepping back off
+    /// the leader lands here, on the keys that mean something with nothing
+    /// typed at all. Asking "what is there" is the same gesture as "not that,
+    /// go back", carried one step further.
+    ///
+    /// It used to appear while ⌘ was held. Every shortcut in the app passes
+    /// through that modifier, so the menu answered questions nobody had asked.
     var isPeeking = false
 
     /// Every key that means something on its own, before any sequence has
@@ -71,6 +75,9 @@ final class KeyEngine {
     ///   get back out — an editor that swallowed every `j` would be unusable,
     ///   and this layer doesn't do the editing modes *inside* text.
     func handle(_ chord: KeyChord, editing: Bool) -> Outcome {
+        // Any key answers the question the peek was asking, including the
+        // backspace that would open it again.
+        isPeeking = false
         if chord == KeyChord("ESC") {
             // Escape always means "back to normal, forget what I was typing".
             let wasPending = !pending.isEmpty || count != nil
@@ -170,10 +177,14 @@ final class KeyEngine {
         guard !shortened.isEmpty,
               case .prefix(let label, let continuations) = keymap.lookup(Array(shortened)) else {
             // Back past the first key is back to nothing pending — but a count
-            // already typed survives, the way it does in vim.
+            // already typed survives, the way it does in vim. And rather than
+            // leaving nothing on screen, show what the keys do from here:
+            // stepping back off the leader is exactly the moment you wanted
+            // the question answered.
             let repeats = count
             reset()
             count = repeats
+            isPeeking = true
             return
         }
         pending = Array(shortened)
