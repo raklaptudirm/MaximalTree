@@ -84,12 +84,10 @@ import STTextView
         var body: some View {
             Group {
                 if mode.write {
-                    HStack(spacing: 0) {
-                        Spacer(minLength: 24)
-                        editor(style: .prose())
-                            .frame(maxWidth: EditorStyle.prose().idealColumnWidth)
-                        Spacer(minLength: 24)
-                    }
+                    // Full width, as the canvas gives it: the editor centres
+                    // its own column by inset so the scroller stays at the
+                    // window edge.
+                    editor(style: .prose())
                 } else {
                     editor(style: .code(size: 12, wrapLines: true, indentSpaces: 2))
                 }

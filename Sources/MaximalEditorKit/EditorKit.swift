@@ -60,6 +60,14 @@ public struct EditorStyle: Equatable {
     public var wrapLines: Bool
     public var indentSpaces: Int
     public var showsLineNumbers: Bool
+    /// When set, the text sits in a centred column of `idealColumnWidth` and
+    /// the view still fills its pane.
+    ///
+    /// The canvas used to do this by framing the editor narrow, which framed
+    /// the *scroll view* narrow with it — so the scroller sat against the
+    /// column instead of the window edge, moving as the measure changed. The
+    /// editor knows its own measure; insetting its content is its job.
+    public var centersColumn: Bool
     /// When set, markup tokens render as live formatting — headings sized and
     /// bolded, `*strong*`/`_emphasis_` styled, `#align` bodies aligned, delimiters
     /// dimmed — instead of syntax colors. The WYSIWYG-ish prose experience.
@@ -68,7 +76,8 @@ public struct EditorStyle: Equatable {
     public init(design: Design, size: CGFloat, lineSpacing: CGFloat = 0,
                 lineHeightMultiple: Double = 1,
                 wrapLines: Bool, indentSpaces: Int, showsLineNumbers: Bool = true,
-                rendersMarkup: Bool = false) {
+                rendersMarkup: Bool = false, centersColumn: Bool = false) {
+        self.centersColumn = centersColumn
         self.design = design
         self.size = size
         self.lineSpacing = lineSpacing
@@ -112,7 +121,7 @@ public struct EditorStyle: Equatable {
         EditorStyle(design: family.map(Design.family) ?? .serif,
                     size: size, lineSpacing: (size * 0.25).rounded(),
                     wrapLines: true, indentSpaces: 2, showsLineNumbers: false,
-                    rendersMarkup: true)
+                    rendersMarkup: true, centersColumn: true)
     }
 
     var font: NSFont {
@@ -339,6 +348,7 @@ public struct MaximalEditor: NSViewRepresentable {
         // zen's dead strip inside the scroll view.
         scrollView.automaticallyAdjustsContentInsets = false
         Self.apply(style: style, to: textView)
+        Self.applyColumnInsets(style: style, in: scrollView)
         context.coordinator.installObservers(for: textView, in: scrollView)
 
         context.coordinator.push(text, into: textView)
@@ -406,6 +416,9 @@ public struct MaximalEditor: NSViewRepresentable {
                 }
                 if styleChanged {
                     Self.apply(style: style, to: textView)
+                    if let scrollView = textView.enclosingScrollView {
+                        Self.applyColumnInsets(style: style, in: scrollView)
+                    }
                     coordinator.invalidateHighlight()
                     coordinator.highlightNow()
                 }
@@ -492,6 +505,30 @@ public struct MaximalEditor: NSViewRepresentable {
             }
             super.setFrameSize(size)
         }
+    }
+
+    /// Centre the text column inside a view that fills its pane.
+    ///
+    /// The text container's own padding, not the scroll view's content insets
+    /// and not a narrower frame. A narrower frame takes the scroll view with
+    /// it, so the scroller rides inward with the measure. Content insets do
+    /// nothing here: a width-tracking `STTextView` sizes itself to the scroll
+    /// view and lays out across the whole of it regardless, which just made
+    /// the lines long. Padding is inside the container, where the line breaker
+    /// reads it.
+    static func applyColumnInsets(style: EditorStyle, in scrollView: NSScrollView) {
+        guard let textView = scrollView.documentView as? STTextView else { return }
+        let padding: CGFloat
+        if style.centersColumn {
+            let available = scrollView.bounds.width
+            padding = max(12, ((available - style.idealColumnWidth) / 2).rounded())
+        } else {
+            padding = 5        // the engine's own default
+        }
+        guard textView.textContainer.lineFragmentPadding != padding else { return }
+        textView.textContainer.lineFragmentPadding = padding
+        textView.needsLayout = true
+        textView.needsDisplay = true
     }
 
     private static func apply(style: EditorStyle, to textView: STTextView) {
@@ -615,6 +652,17 @@ public struct MaximalEditor: NSViewRepresentable {
             observers.append(NotificationCenter.default.addObserver(
                 forName: NSView.frameDidChangeNotification,
                 object: textView, queue: .main, using: reposition))
+            // The column is centred by inset, so it has to be recomputed
+            // whenever the pane changes width.
+            scrollView.postsFrameChangedNotifications = true
+            observers.append(NotificationCenter.default.addObserver(
+                forName: NSView.frameDidChangeNotification,
+                object: scrollView, queue: .main) { [weak self, weak scrollView] _ in
+                    MainActor.assumeIsolated {
+                        guard let self, let scrollView, let style = self.lastStyle else { return }
+                        MaximalEditor.applyColumnInsets(style: style, in: scrollView)
+                    }
+                })
         }
 
         private var repositionScheduled = false

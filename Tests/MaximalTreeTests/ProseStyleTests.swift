@@ -137,6 +137,46 @@ import AppKit
         #expect(garamond < literata)
     }
 
+    /// The column is centred by insetting the content, not by narrowing the
+    /// view — so the scroll view keeps its full width and its scroller stays
+    /// against the window edge whatever the measure is.
+    private func editorScrollView(width: CGFloat) -> NSScrollView {
+        let scrollView = MaximalEditor.EditorTextView.scrollableTextView()
+        scrollView.frame = NSRect(x: 0, y: 0, width: width, height: 400)
+        scrollView.layoutSubtreeIfNeeded()
+        return scrollView
+    }
+
+    private func padding(of scrollView: NSScrollView) -> CGFloat? {
+        (scrollView.documentView as? MaximalEditor.EditorTextView)?
+            .textContainer.lineFragmentPadding
+    }
+
+    @Test func theColumnIsCentredByPaddingNotByNarrowing() throws {
+        let scrollView = editorScrollView(width: 1200)
+        let style = EditorStyle.prose()
+        MaximalEditor.applyColumnInsets(style: style, in: scrollView)
+
+        let expected = ((1200 - style.idealColumnWidth) / 2).rounded()
+        #expect(padding(of: scrollView) == expected)
+        #expect(scrollView.frame.width == 1200, "the view itself must not narrow")
+    }
+
+    /// Narrower than the measure: a margin rather than a negative inset.
+    @Test func aNarrowPaneKeepsAMarginRatherThanOverflowing() throws {
+        let scrollView = editorScrollView(width: 200)
+        MaximalEditor.applyColumnInsets(style: .prose(), in: scrollView)
+        #expect(padding(of: scrollView) == 12)
+    }
+
+    /// Code fills its pane: a gutter and long lines want every point.
+    @Test func aCodeStyleIsNotInset() throws {
+        let scrollView = editorScrollView(width: 1200)
+        MaximalEditor.applyColumnInsets(style: .prose(), in: scrollView)
+        MaximalEditor.applyColumnInsets(style: .code(), in: scrollView)
+        #expect(padding(of: scrollView) == 5, "a style that fills kept a column's padding")
+    }
+
     // MARK: Size
 
     private func withStoredSize(_ body: () -> Void) {

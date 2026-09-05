@@ -143,13 +143,11 @@ struct TypstCanvas: View {
     /// width follows the type, so making the text bigger makes the column
     /// wider and the line still holds about the same number of words.
     private var writeLayout: some View {
-        HStack(spacing: 0) {
-            Spacer(minLength: 24)
-            editor(fontSize: 14)
-                .frame(maxWidth: proseStyle.idealColumnWidth)
-            Spacer(minLength: 24)
-        }
-        .background(Color(nsColor: pageBackground))
+        // Full width on purpose: the editor centres its own column by inset,
+        // so the scroller stays against the window edge instead of riding the
+        // measure inward with the text.
+        editor(fontSize: 14)
+            .background(Color(nsColor: pageBackground))
     }
 
     private var typesetLayout: some View {
