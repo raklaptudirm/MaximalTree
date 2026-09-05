@@ -99,15 +99,19 @@ import STTextView
 
     private struct Editor {
         let scrollView: NSScrollView
-        let textView: STTextView
+        let textView: MaximalEditor.EditorTextView
         let coordinator: MaximalEditor.Coordinator
         let window: NSWindow
     }
 
     /// A live editor in a window, wired the way `makeNSView` wires one.
     private func makeEditor(text: String) -> Editor {
-        let scrollView = STTextView.scrollableTextView()
-        let textView = scrollView.documentView as! STTextView
+        // The app's own subclass, with modal editing live: a motion has to be
+        // able to run, and the view a motion runs against has to be the one
+        // that ships.
+        let scrollView = MaximalEditor.EditorTextView.scrollableTextView()
+        let textView = scrollView.documentView as! MaximalEditor.EditorTextView
+        textView.modalEditing = true
         var storage = text
         let binding = Binding(get: { storage }, set: { storage = $0 })
         let coordinator = MaximalEditor.Coordinator(
@@ -423,6 +427,38 @@ import STTextView
         let after = try #require(topOfViewport())
         #expect(before.offset == after.offset && abs(before.into - after.into) < 1,
                 "a no-op repaint changed the top of the viewport: \(before) -> \(after)")
+    }
+
+    /// A motion takes the view with it.
+    ///
+    /// The counterpart to pinning the viewport across a click, and the reason
+    /// the two cannot share a rule. Assigning the selection notifies
+    /// synchronously, *before* the motion scrolls, so a repaint that anchors on
+    /// what it sees at that moment captures the old viewport and then restores
+    /// it — putting the view back and leaving the caret wherever it went. The
+    /// cursor moves and nothing follows it.
+    @Test func aMotionScrollsTheViewToTheCaret() async throws {
+        var long = document
+        for index in 12..<200 {
+            long += "\n\nParagraph \(index) says $x^\(index)$ and *emphasis* here too, "
+                + "continuing with enough words to wrap onto another line or two."
+        }
+        let editor = makeEditor(text: long)
+        editor.coordinator.highlightNow()
+        await settle()
+
+        editor.textView.textSelection = NSRange(location: 0, length: 0)
+        editor.coordinator.textViewDidChangeSelection(
+            Notification(name: STTextView.didChangeSelectionNotification,
+                         object: editor.textView))
+        await settle()
+        #expect(editor.textView.visibleRect.minY < 1, "should start at the top")
+
+        editor.textView.run(.lastLine, count: 1, mode: .normal)
+        await settle()
+
+        #expect(editor.textView.visibleRect.minY > 100,
+                "G moved the caret and left the view behind at \(editor.textView.visibleRect.minY)")
     }
 
     /// A click through the engine's own mouse handling, rather than a

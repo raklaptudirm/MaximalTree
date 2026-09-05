@@ -179,8 +179,7 @@ public final class EditorController {
     public func applyEdit(range: NSRange, replacement: String, selection: NSRange) {
         guard let textView else { return }
         textView.replaceCharacters(in: range, with: replacement)
-        textView.textSelection = selection
-        textView.scrollToVisible(selection)
+        textView.moveCaret(to: selection)
     }
 
     /// Current text and primary selection, for computing edits.
@@ -197,8 +196,7 @@ public final class EditorController {
         let offset = MaximalEditor.offset(ofLine: line, column: column,
                                           in: textView.text ?? "")
         let range = NSRange(location: offset, length: 0)
-        textView.textSelection = range
-        textView.scrollToVisible(range)
+        textView.moveCaret(to: range)
     }
 }
 
@@ -214,6 +212,19 @@ extension STTextView {
     /// to a heading, a `G`, or a section node opening at its line. Laying the
     /// prefix out first costs the work the jump was going to force anyway; it
     /// just pays for it before choosing where to land rather than after.
+    /// Put the caret here and take the view with it.
+    ///
+    /// Both halves together, because the order is load-bearing: assigning the
+    /// selection notifies synchronously, so anything reacting to it needs to
+    /// know a motion is in progress *before* the scroll rather than after.
+    func moveCaret(to range: NSRange) {
+        let editor = self as? MaximalEditor.EditorTextView
+        editor?.isFollowingCaret = true
+        defer { editor?.isFollowingCaret = false }
+        textSelection = range
+        scrollToVisible(range)
+    }
+
     func scrollToVisible(_ range: NSRange, ensuringLayout: Bool = true) {
         if ensuringLayout, let contentManager = textLayoutManager.textContentManager,
            let textRange = NSTextRange(range, in: contentManager) {
@@ -306,8 +317,7 @@ public struct MaximalEditor: NSViewRepresentable {
             // and laid out gets silently dropped by TextKit 2.
             DispatchQueue.main.async { [weak textView] in
                 guard let textView else { return }
-                textView.textSelection = NSRange(location: offset, length: 0)
-                textView.scrollToVisible(NSRange(location: offset, length: 0))
+                textView.moveCaret(to: NSRange(location: offset, length: 0))
             }
         }
         return scrollView
@@ -390,6 +400,16 @@ public struct MaximalEditor: NSViewRepresentable {
         /// plain text field stays a plain text field.
         public let editing = EditEngine()
         public var modalEditing = false
+        /// True while a command is moving the caret.
+        ///
+        /// A click and a motion both change the selection, and the repaint
+        /// that follows must treat them oppositely: a click pins the view —
+        /// the reader is looking at something and clicking must not move it —
+        /// while `j` or `G` has to take the view *with* the caret. Setting the
+        /// selection notifies synchronously, before this method scrolls, so
+        /// without this the anchor captures the old viewport and the restore
+        /// puts it back, undoing the scroll the motion just asked for.
+        var isFollowingCaret = false
 
         /// Insert mode is plain typing; in a commanding mode the app never
         /// sends keys here at all (see `handleKey`).
@@ -398,6 +418,8 @@ public struct MaximalEditor: NSViewRepresentable {
         }
 
         func apply(_ outcome: EditOutcome) {
+            isFollowingCaret = true
+            defer { isFollowingCaret = false }
             if let edit = outcome.edit {
                 // Through the text view, so undo and the highlighter see it.
                 insertText(edit.replacement, replacementRange: edit.range)
@@ -445,6 +467,12 @@ public struct MaximalEditor: NSViewRepresentable {
         textView.defaultParagraphStyle = style.paragraphStyle
         textView.widthTracksTextView = style.wrapLines
         textView.showsLineNumbers = style.showsLineNumbers
+        // Wrapped text has nowhere to go sideways, so it must not offer a
+        // scroller for going there. It can still *overflow*: the reserved box
+        // for an equation is a kern on its last character, which no line
+        // breaker can wrap, so one line ends up wider than the column and a
+        // horizontal scroller appears under a manuscript.
+        textView.enclosingScrollView?.hasHorizontalScroller = !style.wrapLines
     }
 
     /// Byte offset of a 1-based line/column in `text` (clamped to valid range).
@@ -739,7 +767,11 @@ public struct MaximalEditor: NSViewRepresentable {
             // paragraphs leaves that layout alone, so the anchor is honest
             // again, and it covers what the single-paragraph delta could not:
             // any number of lines above changing height for any reason.
-            captureScrollAnchor()
+            // Unless the caret is what moved the view: then it is already
+            // where the reader asked to be looking.
+            if (textView as? MaximalEditor.EditorTextView)?.isFollowingCaret != true {
+                captureScrollAnchor()
+            }
             lastHighlightedRevealStart = current.location
             for range in [previous, current].compactMap({ $0 }) {
                 let start = min(max(range.location, 0), ns.length)
