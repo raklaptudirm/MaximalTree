@@ -80,6 +80,11 @@ public enum EditorKeys {
         editor.run(.collapseSelection, count: 1, mode: .normal)
     }
 
+    /// Asked for by every plugin whose canvas declares these keys.
+    ///
+    /// Safe to call more than once: the registry keeps one action per id, so
+    /// the vocabulary exists whichever of those plugins is loaded and appears
+    /// once however many of them ask.
     public static func register(with registry: PluginRegistry) {
         for binding in bindings {
             registry.register(action: Action(

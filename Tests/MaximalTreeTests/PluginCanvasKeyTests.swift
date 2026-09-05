@@ -106,13 +106,70 @@ import WebKit
         return model
     }
 
+    /// Runs one of the canvas's commands by the key that would run it.
+    private func press(_ key: String, _ model: RepoCanvasModel, count: Int = 1) {
+        guard let command = GitActions.canvasCommands.first(where: { $0.key == key })
+        else { return }
+        command.run(model, count)
+    }
+
+    /// The commit message is the next thing after the last change, so the
+    /// motion that walks the changes walks into it.
+    @Test func downOffTheLastChangeEntersTheMessage() {
+        let model = model(staged: ["a.swift"], unstaged: ["b.swift"])
+        press("G", model)
+        #expect(model.focus == .changes)
+
+        press("j", model)
+        #expect(model.focus == .message, "j off the last change stayed in the list")
+
+        // Further down is the caret's business inside the message, not another
+        // crossing — there is nothing after it.
+        press("j", model)
+        #expect(model.focus == .message)
+    }
+
+    /// And back out at the top edge, the way `h` off the leftmost surface
+    /// carries on into the sidebar rather than stopping.
+    @Test func upAtTheTopOfTheMessageReturnsToTheChanges() {
+        let model = model(staged: ["a.swift"], unstaged: [])
+        press("j", model)
+        press("j", model)
+        #expect(model.focus == .message)
+        #expect(model.messageCaretIsAtTop, "no editor attached: the caret counts as at the top")
+
+        press("k", model)
+        #expect(model.focus == .changes)
+        #expect(model.selected != nil, "came back to nothing")
+    }
+
+    /// The verbs belong to the changes. Discard especially: it must not throw
+    /// a file away because `x` was typed while describing one.
+    @Test func theChangeVerbsDoNothingWhileTheMessageHasTheKeyboard() {
+        let model = model(staged: [], unstaged: ["b.swift"])
+        press("j", model)
+        let row = model.selected
+        press("j", model)
+        #expect(model.focus == .message)
+
+        for verb in ["x", "s", "RET"] { press(verb, model) }
+        #expect(model.focus == .message, "\(model.focus)")
+        #expect(model.selected == row, "a verb moved the changes from inside the message")
+    }
+
     @Test func itsKeysNameRegisteredActions() {
         let registry = registry()
         let ids = Set(registry.actions.map(\.id))
         let canvas = registry.canvases.first { !$0.keys.isEmpty }
         let keys = canvas?.keys ?? []
 
-        #expect(Set(keys.map(\.sequence)) == ["j", "k", "g g", "G", "RET", "s", "x"])
+        let sequences = Set(keys.map(\.sequence))
+        #expect(sequences.isSuperset(of: ["j", "k", "g g", "G", "RET", "s", "x"]),
+                "its own vocabulary")
+        // And the editor's, because the commit message in this canvas is a
+        // real editor and a canvas gets one key map for all of itself.
+        #expect(sequences.isSuperset(of: ["i", "w", "b", "$"]),
+                "the message cannot be edited with motions it does not claim")
         for key in keys {
             #expect(ids.contains(key.action),
                     "\(key.sequence) names \(key.action), which is not registered")

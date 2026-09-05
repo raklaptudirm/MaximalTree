@@ -85,6 +85,19 @@ public struct EditorStyle: Equatable {
                     wrapLines: wrapLines, indentSpaces: indentSpaces)
     }
 
+    /// A plain box of text: monospaced and wrapped, with no gutter and no
+    /// markup rendering.
+    ///
+    /// The third personality, for the places that want an editor rather than a
+    /// document — a commit message, a description. `.code` would number its
+    /// lines, which says "file" about something that is one paragraph and a
+    /// list, and `.prose` would render its markup, which a message written in
+    /// plain text does not have.
+    public static func plain(size: CGFloat = 12) -> EditorStyle {
+        EditorStyle(design: .monospaced, size: size, lineSpacing: (size * 0.2).rounded(),
+                    wrapLines: true, indentSpaces: 2, showsLineNumbers: false)
+    }
+
     /// Manuscript, not IDE: no line-number gutter, markup rendered as formatting.
     ///
     /// Leading is a quarter of the size on top of whatever the face asks for,
@@ -180,6 +193,25 @@ public final class EditorController {
         guard let textView else { return }
         textView.replaceCharacters(in: range, with: replacement)
         textView.moveCaret(to: selection)
+    }
+
+    /// Put the keyboard in this editor.
+    ///
+    /// A canvas that holds an editor alongside other things needs to be able
+    /// to hand focus to it, and taking the keyboard is the editor's business
+    /// rather than the caller's — the view is not something a plugin can
+    /// reach.
+    @MainActor
+    public func focus() {
+        guard let textView else { return }
+        textView.window?.makeFirstResponder(textView)
+    }
+
+    /// Whether this editor is the one holding the keyboard.
+    @MainActor
+    public var isFocused: Bool {
+        guard let textView else { return false }
+        return textView.window?.firstResponder === textView
     }
 
     /// Current text and primary selection, for computing edits.

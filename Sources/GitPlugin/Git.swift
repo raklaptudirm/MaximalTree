@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import MaximalTreeKit
+import MaximalEditorKit
 
 // MARK: - URI model
 
@@ -423,6 +424,10 @@ final class GitPlugin: NSObject, Plugin {
         ))
 
         registerActions(with: registry)
+        // The repo canvas writes its commit message in the app's editor, so
+        // the actions its keys name have to exist whether or not the plugin
+        // that usually registers them happens to be loaded.
+        EditorKeys.register(with: registry)
 
         registry.register(canvas: CanvasContribution(priority: 10,
             matches: { $0.type == TypeID("git.commit") }) { id, host in

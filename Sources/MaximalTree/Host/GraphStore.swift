@@ -36,10 +36,23 @@ final class Registry: PluginRegistry {
     func register(surfaceKeys keys: SurfaceKeys) { surfaceKeys.append(keys) }
     func register(inspector: InspectorContribution) { inspectors.append(inspector) }
     func register(children: ChildContribution) { childContributions.append(children) }
+    /// One action per id. A later registration replaces an earlier one.
+    ///
+    /// Two plugins can legitimately need the same vocabulary — every canvas
+    /// that shows an editor declares the editor's keys, and the actions behind
+    /// them have to exist whichever of those plugins happens to be loaded. So
+    /// each asks, and the registry keeps one. Appending instead put the same
+    /// command in the finder twice, and a guard inside the *asking* code would
+    /// have to be per-registry to be correct, which is knowledge it doesn't
+    /// have.
     func register(action: Action) {
         var action = action
         action.owner = registeringOwner
-        actions.append(action)
+        if let existing = actions.firstIndex(where: { $0.id == action.id }) {
+            actions[existing] = action
+        } else {
+            actions.append(action)
+        }
     }
 
     /// The plugin that provides `id`'s nodes, if a plugin does.

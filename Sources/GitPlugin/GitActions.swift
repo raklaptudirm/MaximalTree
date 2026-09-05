@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import MaximalTreeKit
+import MaximalEditorKit
 
 /// What you can do to a repository.
 ///
@@ -290,23 +291,54 @@ extension GitActions {
                                  key: String,
                                  run: @MainActor (RepoCanvasModel, Int) -> Void)] = [
         ("git.changeDown", "Next Change", "chevron.down", "j",
-         { model, count in for _ in 0..<count { model.move(1) } }),
+         { model, count in
+            // The same motion in both halves of the canvas: over the changes
+            // it moves the selection, in the message it moves the caret.
+            if model.focus == .message { model.editMessage(.down, count: count) }
+            else { for _ in 0..<count { model.move(1) } } }),
         ("git.changeUp", "Previous Change", "chevron.up", "k",
-         { model, count in for _ in 0..<count { model.move(-1) } }),
+         { model, count in
+            guard model.focus == .message else {
+                for _ in 0..<count { model.move(-1) }
+                return
+            }
+            // At the top of the message there is nowhere further up inside
+            // it, so up leaves — the way `h` off the leftmost surface carries
+            // on into the sidebar rather than stopping at the edge.
+            if model.messageCaretIsAtTop { model.focusChanges() }
+            else { model.editMessage(.up, count: count) } }),
         ("git.changeFirst", "First Change", "chevron.up.2", "g g",
-         { model, _ in model.moveToEdge(last: false) }),
+         { model, _ in
+            if model.focus == .message { model.editMessage(.firstLine, count: 1) }
+            else { model.moveToEdge(last: false) } }),
         ("git.changeLast", "Last Change", "chevron.down.2", "G",
-         { model, _ in model.moveToEdge(last: true) }),
-        ("git.openChange", "Open Change", "doc.text.magnifyingglass", "RET",
-         { model, _ in model.open() }),
+         { model, _ in
+            if model.focus == .message { model.editMessage(.lastLine, count: 1) }
+            else { model.moveToEdge(last: true) } }),
+        // Return does the thing the keys are on: over a change it opens it,
+        // in the message it commits. In insert mode it is still a newline —
+        // the core dispatches no keys while you are typing — so this is the
+        // one you press after escape, having written what you mean.
+        ("git.openChange", "Open Change or Commit", "doc.text.magnifyingglass", "RET",
+         { model, _ in
+            if model.focus == .message { model.commit() } else { model.open() } }),
+        // The remaining verbs are the changes', and mean nothing to a message
+        // — least of all discard, which would throw a file away while you
+        // described it.
         ("git.toggleStage", "Stage or Unstage", "plusminus", "s",
-         { model, _ in model.stageOrUnstage() }),
+         { model, _ in if model.focus == .changes { model.stageOrUnstage() } }),
         ("git.discardChange", "Discard Change", "arrow.uturn.backward", "x",
-         { model, _ in model.discard() }),
+         { model, _ in if model.focus == .changes { model.discard() } }),
     ]
 
     /// The keys the repository canvas claims.
+    ///
+    /// The editor's first, this canvas's second: a canvas gets one map, and
+    /// the message in it is a real editor, so everything an editor does has to
+    /// be reachable. Where the two want the same key — `j`, `k`, `g g`, `G`,
+    /// `x` — this canvas wins and hands the motion on itself, because only it
+    /// knows whether the keyboard is over a diff or inside the message.
     static var canvasKeys: [SurfaceKey] {
-        canvasCommands.map { SurfaceKey($0.key, $0.id) }
+        EditorKeys.keys + canvasCommands.map { SurfaceKey($0.key, $0.id) }
     }
 }

@@ -179,6 +179,10 @@ targets:
     dependencies:
       - target: MaximalTreeKit
         embed: false
+      # The commit message is written in the app's editor, so the motions
+      # inside it are the motions everywhere else.
+      - target: MaximalEditorKit
+        embed: false
     settings:
       base:
         PRODUCT_NAME: Git
