@@ -119,6 +119,19 @@ enum DefaultKeymap {
 
         // Plugin commands worth a key of their own. Ids, nothing more.
         map.bind("SPC g o", to: "git.open")
+        // What you do to a repository, under the group that was already
+        // called git and had one thing in it.
+        map.bind("SPC g s", to: "git.stage")
+        map.bind("SPC g u", to: "git.unstage")
+        map.bind("SPC g a", to: "git.stageAll")
+        map.bind("SPC g c", to: "git.commit")
+        map.bind("SPC g X", to: "git.discard")
+        map.bind("SPC g f", to: "git.fetch")
+        map.bind("SPC g l", to: "git.pull")
+        map.bind("SPC g p", to: "git.push")
+        map.bind("SPC g b", to: "git.checkout")
+        map.bind("SPC g z", to: "git.stash")
+        map.bind("SPC g Z", to: "git.stashPop")
         map.bind("SPC n t", to: "terminal.new")
         map.bind("SPC n n", to: "typst.newNote")
         map.bind("SPC n d", to: "typst.dailyNote")

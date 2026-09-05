@@ -79,6 +79,42 @@ enum Git {
         return String(data: data, encoding: .utf8)
     }
 
+    /// What a command did, when it matters whether it worked.
+    ///
+    /// `run` answers nil for every failure alike, which is all a read needs —
+    /// a branch list that can't be read is an empty list. A write is different:
+    /// "nothing added to commit" and "updates were rejected" are things the
+    /// reader has to be told, and they arrive on stderr.
+    struct Failure: Error {
+        let message: String
+    }
+
+    @discardableResult
+    static func perform(_ repo: String, _ args: [String]) -> Result<String, Failure> {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["-C", repo] + args
+        let out = Pipe(), err = Pipe()
+        process.standardOutput = out
+        process.standardError = err
+        do { try process.run() } catch {
+            return .failure(Failure(message: error.localizedDescription))
+        }
+        // Read before waiting: a pipe that fills up blocks the child forever,
+        // and a rejected push has plenty to say.
+        let output = String(data: out.fileHandleForReading.readDataToEndOfFile(),
+                            encoding: .utf8) ?? ""
+        let problem = String(data: err.fileHandleForReading.readDataToEndOfFile(),
+                             encoding: .utf8) ?? ""
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            let text = problem.trimmingCharacters(in: .whitespacesAndNewlines)
+            return .failure(Failure(message: text.isEmpty
+                                    ? "git \(args.first ?? "") failed" : text))
+        }
+        return .success(output)
+    }
+
     static func looksLikeRepo(_ path: String) -> Bool {
         FileManager.default.fileExists(atPath: path + "/.git")
     }
@@ -385,6 +421,8 @@ final class GitPlugin: NSObject, Plugin {
                 ctx.host.mount(GitRef(repo: path, kind: .repo).uri)
             }
         ))
+
+        registerActions(with: registry)
 
         registry.register(canvas: CanvasContribution(priority: 10,
             matches: { $0.type == TypeID("git.commit") }) { id, host in

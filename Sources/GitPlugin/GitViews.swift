@@ -213,6 +213,8 @@ struct GitInspector: View {
                 if let date = gitDate(node) { LabeledContent("Date", value: date) }
                 if let status = gitString(node, "status") { LabeledContent("Status", value: status) }
             }
+            CommitBox(nodeID: nodeID)
+            GitFailureNotice()
         }
         .formStyle(.grouped)
     }
@@ -230,4 +232,71 @@ private func gitDate(_ node: Node?) -> String? {
         return date.formatted(date: .abbreviated, time: .shortened)
     }
     return nil
+}
+
+
+/// Where a commit message is written.
+///
+/// In the inspector because a canvas is content and a plugin has no window of
+/// its own to put a sheet on — and because the message has to outlive the view
+/// anyway: you type it, stage one more file, and it is still there.
+///
+/// Committing itself is `git.commit`, the same action the menu and the finder
+/// offer; this is only the text field it reads.
+private struct CommitBox: View {
+    let nodeID: NodeID
+    @Environment(HostContext.self) private var host
+    @State private var state = GitUIState.shared
+
+    var body: some View {
+        if let repo = GitActions.repo(of: nodeID),
+           GitRefKindIsRepoScope(nodeID) {
+            Section("Commit") {
+                TextEditor(text: Binding(
+                    get: { state.message(for: repo) },
+                    set: { state.setMessage($0, for: repo) }))
+                    .font(.body.monospaced())
+                    .frame(minHeight: 68)
+                Button {
+                    host.perform("git.commit")
+                } label: {
+                    Label("Commit", systemImage: "checkmark.seal")
+                }
+                .disabled(state.message(for: repo)
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+    }
+}
+
+/// The last thing git refused to do.
+///
+/// A write can fail for reasons only git knows — nothing staged, a rejected
+/// push, a conflicted pull — and those messages are the whole of what makes
+/// the failure actionable. Without somewhere to put them the command simply
+/// appeared to do nothing.
+private struct GitFailureNotice: View {
+    @State private var state = GitUIState.shared
+
+    var body: some View {
+        if let failure = state.failure {
+            Section(failure.operation + " failed") {
+                Text(failure.message)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                Button("Dismiss") { state.clearFailure() }
+            }
+        }
+    }
+}
+
+/// Whether this node stands for the repository rather than one file in it.
+@MainActor
+private func GitRefKindIsRepoScope(_ id: NodeID) -> Bool {
+    guard let ref = GitRef(uri: id.uri) else { return false }
+    switch ref.kind {
+    case .repo, .staged, .unstaged, .branches, .commits: return true
+    default: return false
+    }
 }
