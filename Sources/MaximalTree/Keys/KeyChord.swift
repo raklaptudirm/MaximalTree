@@ -82,6 +82,21 @@ struct KeyChord: Hashable, Sendable, CustomStringConvertible {
                   shift: (named != nil || isLetter) && flags.contains(.shift))
     }
 
+    /// The key as a canvas sees it.
+    ///
+    /// Shift folded back into the letter, because a canvas is handed a key and
+    /// a control flag and nothing else — so without this `G` and `g` arrive
+    /// identically and no canvas can bind both. The editor's `G`, `I` and `A`
+    /// were simply dead, and its `O` and `P` quietly did what `o` and `p` do.
+    ///
+    /// The keymap wants them apart, which is why they are stored that way: a
+    /// bare `G` must not clobber the `g` prefix it would share a node with.
+    /// A canvas has no trie and no prefixes, so it wants them back together.
+    var canvasKey: String {
+        guard shift, key.count == 1, key.first?.isLetter == true else { return key }
+        return key.uppercased()
+    }
+
     var description: String {
         var text = ""
         if control { text += "C-" }

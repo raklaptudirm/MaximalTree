@@ -56,7 +56,7 @@ enum KeyDispatch {
         // begun, which belong to the app wherever the keyboard is.
         let reserved = chord.key == "SPC" || !keys.pending.isEmpty
         if !reserved, let canvas = canvas(),
-           let next = canvas.handleKey(chord.key, control: chord.control, mode: keys.mode) {
+           let next = canvas.handleKey(chord.canvasKey, control: chord.control, mode: keys.mode) {
             // The canvas reports the mode its own command left behind — `i`,
             // `o`, a visual `c` all answer `.insert` — and that answer *is*
             // the app's mode, rather than a second copy of it.

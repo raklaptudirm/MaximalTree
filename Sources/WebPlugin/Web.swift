@@ -72,7 +72,7 @@ final class WebSessionStore {
 @MainActor
 @Observable
 final class WebSession: NSObject {
-    let webView: WKWebView
+    let webView: WebCanvasView
 
     var url: URL?
     var title: String = ""
@@ -86,7 +86,7 @@ final class WebSession: NSObject {
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
 
     init(homeURL: URL?) {
-        webView = WKWebView(frame: .zero)
+        webView = WebCanvasView(frame: .zero, configuration: WKWebViewConfiguration())
         super.init()
         webView.navigationDelegate = self
         webView.uiDelegate = self
