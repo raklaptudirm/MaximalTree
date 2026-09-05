@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import MaximalTreeKit
+import MaximalEditorKit
 
 /// Takes files the system hands the app — a double-click in the Finder, a drop
 /// on the icon, `open -a`.
@@ -326,6 +327,14 @@ final class AppModel {
         let engine = KeyEngine(keymap: DefaultKeymap.make())
         engine.perform = { [weak self] id, count in
             self?.runCommand(id, count: count)
+        }
+        // The mode is app-wide, and a surface reads it through the host — so
+        // the one that changes it tells the other.
+        engine.onModeChange = { [weak self] mode in
+            self?.host._setKeyMode(mode)
+            // Escape is the app's, and leaving insert is when an editor has to
+            // put a selection back. It cannot see the key, so it is told.
+            EditorKeys.appModeChanged(to: mode)
         }
         return engine
     }()
@@ -729,6 +738,7 @@ final class AppModel {
         store.onPerformAction = { [weak self] id, count in
             self?.runCommand(id, count: count)
         }
+        store.onSetKeyMode = { [weak self] mode in self?.keys.setMode(mode) }
         store.onRootsChanged = { [weak self] in
             guard let self else { return }
             self.workspaceStore.reconcileRoots(self.host.roots,

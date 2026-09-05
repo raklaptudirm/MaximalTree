@@ -60,11 +60,29 @@ public struct EditOutcome: Equatable, Sendable {
 }
 
 @MainActor
+/// What the editor can be asked to do.
+///
+/// Named, rather than a key. The engine used to be driven by key strings and
+/// keep its own pending-sequence and count state to parse them — a second,
+/// smaller copy of the modal layer that already existed one level up. A
+/// surface declares which key runs which of these and the core does the rest.
+public enum EditCommand: String, Sendable, CaseIterable {
+    // Motions. Each selects what it crosses, which is the whole grammar: the
+    // motion says what, the verb says what to do with it.
+    case left, right, down, up
+    case wordForward, wordBackward, wordEnd
+    case lineStart, firstNonBlank, lineEnd
+    case selectLine, selectAll
+    case firstLine, lastLine, documentEnd, toLineStart, toLineEnd
+
+    // Verbs, each on whatever is selected.
+    case delete, change, yank, pasteAfter, pasteBefore
+    case insertBefore, insertAfter, insertAtLineStart, insertAtLineEnd
+    case openBelow, openAbove
+    case extendSelection, collapseSelection
+}
+
 public final class EditEngine {
-    /// Digits typed before a motion — `3w` selects across three words.
-    private var count: Int?
-    /// Keys towards a motion that needs a second, which is only `g`.
-    private(set) var pending: [EditKey] = []
     /// The last thing deleted or yanked, and whether it was whole lines.
     private var register: (text: String, linewise: Bool)?
     /// Where the selection is fixed, and where it moves.
@@ -85,11 +103,12 @@ public final class EditEngine {
 
     public init() {}
 
-    /// Feed a key in the mode it arrived in. Returns nil when the key isn't
-    /// ours — in insert mode that is everything, which is how typing stays
-    /// typing.
-    public func handle(_ key: EditKey, mode: EditMode, text: String,
-                       selection: NSRange) -> EditOutcome? {
+    /// Run a named command.
+    ///
+    /// The entry point the app uses. `handle(_ key:)` remains for the tests
+    /// that still speak keys and goes with them.
+    public func perform(_ command: EditCommand, count: Int, mode: EditMode,
+                        text: String, selection: NSRange) -> EditOutcome? {
         if mode != lastMode {
             reset()
             lastMode = mode
@@ -100,50 +119,19 @@ public final class EditEngine {
             anchor = selection.location
             head = selection.location
         }
-        guard let outcome = compute(key, mode: mode, text: text, selection: selection)
-        else { return nil }
+        // Nothing is a command while you are typing. The core does not
+        // dispatch in insert mode, but an action can be run from a list, and
+        // "Delete" from the finder mid-word would be a surprise.
+        guard mode != .insert else { return nil }
+        let ns = text as NSString
+        let repeats = max(count, 1)
+        let outcome = select(command, from: selection, count: repeats, mode: mode, in: ns)
+            .map { EditOutcome(selection: $0, mode: mode) }
+            ?? act(command, mode: mode, selection: selection, count: repeats, in: ns)
+        guard let outcome else { return nil }
         lastMode = outcome.mode
         emitted = outcome.selection
         return outcome
-    }
-
-    private func compute(_ key: EditKey, mode: EditMode, text: String,
-                         selection: NSRange) -> EditOutcome? {
-        let ns = text as NSString
-
-        if key.key == "ESC" {
-            reset()
-            // Back to a bare cursor where the selection was.
-            return EditOutcome(selection: cursor(at: selection.location, in: ns), mode: .normal)
-        }
-        guard mode != .insert else { return nil }
-        // A control chord is a different key from the letter in it, and this
-        // engine binds none of them.
-        guard !key.control else { return nil }
-
-        // Counts. `0` is a motion unless a count is already running.
-        if pending.isEmpty, let digit = Int(key.key), key.key.count == 1,
-           digit > 0 || count != nil {
-            count = (count ?? 0) * 10 + digit
-            return EditOutcome(selection: selection, mode: mode)
-        }
-
-        let sequence = pending + [key]
-        let repeats = count ?? 1
-        defer { if pending.isEmpty { count = nil } }
-
-        // `g` is the one motion that needs a second key.
-        if sequence.count == 1, key.key == "g" {
-            pending = sequence
-            return EditOutcome(selection: selection, mode: mode)
-        }
-
-        if let range = select(sequence, from: selection, count: repeats, mode: mode, in: ns) {
-            pending = []
-            return EditOutcome(selection: range, mode: mode)
-        }
-        pending = []
-        return act(key, mode: mode, selection: selection, count: repeats, in: ns)
     }
 
     // MARK: Selecting
@@ -154,7 +142,7 @@ public final class EditEngine {
     /// so a selection can be grown a piece at a time. Otherwise each motion
     /// starts a new selection, which is what keeps a bare cursor from
     /// dragging everything it passes along with it.
-    private func select(_ sequence: [EditKey], from selection: NSRange, count: Int,
+    private func select(_ command: EditCommand, from selection: NSRange, count: Int,
                         mode: EditMode, in ns: NSString) -> NSRange? {
         let extending = mode == .visual
         // A plain move carries the cursor; a sweep drags a selection behind
@@ -172,41 +160,40 @@ public final class EditEngine {
             return reach(from: start, to: target, in: ns)
         }
 
-        switch sequence.map(\.key) {
-        case ["h"]:
+        switch command {
+        case .left:
             return moved(to: max(head - count, lineStart(at: head, in: ns)))
-        case ["l"]:
+        case .right:
             return moved(to: min(head + count, max(lineEnd(at: head, in: ns) - 1, head)))
-        case ["j"], ["k"]:
-            return moved(to: line(from: head, by: sequence[0].key == "j" ? count : -count,
-                                  in: ns))
+        case .down, .up:
+            return moved(to: line(from: head, by: command == .down ? count : -count, in: ns))
 
         // Words. The selection covers what was crossed, which is the whole
         // point: `w` then `d` deletes the word you can see is selected.
-        case ["w"]:
+        case .wordForward:
             var target = head
             for _ in 0..<count { target = wordForward(from: target, in: ns) }
             return swept(to: target)
-        case ["b"]:
+        case .wordBackward:
             var target = head
             for _ in 0..<count { target = wordBackward(from: target, in: ns) }
             return swept(to: target)
-        case ["e"]:
+        case .wordEnd:
             var target = head
             for _ in 0..<count { target = wordEnd(from: target, in: ns) }
             return swept(to: min(target + 1, ns.length))
 
         // Line pieces.
-        case ["0"]:
+        case .lineStart:
             return swept(to: lineStart(at: head, in: ns))
-        case ["^"]:
+        case .firstNonBlank:
             return swept(to: firstNonBlank(ofLineAt: head, in: ns))
-        case ["$"]:
+        case .lineEnd:
             return swept(to: lineEnd(at: head, in: ns))
 
         // Whole lines. Helix's `x`, which selects rather than deletes — the
         // deleting is `d`'s job, on whatever happens to be selected.
-        case ["x"]:
+        case .selectLine:
             var range = ns.lineRange(for: selection.length > 0 ? selection
                                         : NSRange(location: selection.location, length: 0))
             for _ in 1..<max(count, 1) {
@@ -219,21 +206,27 @@ public final class EditEngine {
             head = NSMaxRange(range)
             return range
 
-        case ["%"]:
+        case .selectAll:
             anchor = 0
             head = ns.length
             return NSRange(location: 0, length: ns.length)
 
-        case ["g", "g"]:
-            return swept(to: count > 1 ? offset(ofLine: count - 1, in: ns) : 0)
-        case ["g", "e"]:
-            return swept(to: lastLineStart(in: ns))
-        case ["g", "h"]:
-            return swept(to: lineStart(at: head, in: ns))
-        case ["g", "l"]:
-            return swept(to: lineEnd(at: head, in: ns))
-        case ["G"]:
-            return swept(to: count > 1 ? offset(ofLine: count - 1, in: ns)
+        // The gotos move rather than sweep. A word motion selects what it
+        // crosses — that is the grammar, and what makes `w d` delete the word
+        // you can see — but a jump to the top of the file is not crossing
+        // anything you meant to select, and `g g` selecting everything above
+        // you is a surprise every time. In visual mode `moved` extends, so
+        // growing a selection to the ends still works.
+        case .firstLine:
+            return moved(to: count > 1 ? offset(ofLine: count - 1, in: ns) : 0)
+        case .documentEnd:
+            return moved(to: lastLineStart(in: ns))
+        case .toLineStart:
+            return moved(to: lineStart(at: head, in: ns))
+        case .toLineEnd:
+            return moved(to: lineEnd(at: head, in: ns))
+        case .lastLine:
+            return moved(to: count > 1 ? offset(ofLine: count - 1, in: ns)
                                        : lastLineStart(in: ns))
 
         default:
@@ -245,45 +238,45 @@ public final class EditEngine {
 
     /// The verbs. Every one of them works on the selection it is handed and
     /// none of them waits for anything.
-    private func act(_ key: EditKey, mode: EditMode, selection: NSRange,
+    private func act(_ command: EditCommand, mode: EditMode, selection: NSRange,
                      count: Int, in ns: NSString) -> EditOutcome? {
         let range = clamp(selection, in: ns)
 
-        switch key.key {
-        case "d":
+        switch command {
+        case .delete:
             register = (ns.substring(with: range), false)
             anchor = range.location
             head = range.location
             return EditOutcome(edit: (range, ""),
                                selection: cursor(at: range.location, in: ns), mode: .normal)
-        case "c":
+        case .change:
             register = (ns.substring(with: range), false)
             return EditOutcome(edit: (range, ""),
                                selection: NSRange(location: range.location, length: 0),
                                mode: .insert)
-        case "y":
+        case .yank:
             register = (ns.substring(with: range), range.length > 0
                         && ns.substring(with: range).hasSuffix("\n"))
             return EditOutcome(selection: range, mode: .normal)
 
         // Insert, at one end of the selection or the other.
-        case "i":
+        case .insertBefore:
             return EditOutcome(selection: NSRange(location: range.location, length: 0),
                                mode: .insert)
-        case "a":
+        case .insertAfter:
             return EditOutcome(selection: NSRange(location: NSMaxRange(range), length: 0),
                                mode: .insert)
-        case "I":
+        case .insertAtLineStart:
             return EditOutcome(
                 selection: NSRange(location: firstNonBlank(ofLineAt: range.location, in: ns),
                                    length: 0), mode: .insert)
-        case "A":
+        case .insertAtLineEnd:
             return EditOutcome(
                 selection: NSRange(location: lineEnd(at: range.location, in: ns), length: 0),
                 mode: .insert)
 
-        case "o", "O":
-            let below = key.key == "o"
+        case .openBelow, .openAbove:
+            let below = command == .openBelow
             let at = below ? lineEnd(at: range.location, in: ns)
                            : lineStart(at: range.location, in: ns)
             let indent = leadingWhitespace(ofLineAt: range.location, in: ns)
@@ -292,24 +285,26 @@ public final class EditEngine {
             return EditOutcome(edit: (NSRange(location: at, length: 0), inserted),
                                selection: NSRange(location: caret, length: 0), mode: .insert)
 
-        case "p", "P":
+        case .pasteAfter, .pasteBefore:
             guard let register else { return EditOutcome(selection: range, mode: mode) }
             if register.linewise {
-                let at = key.key == "p" ? lineEnd(at: range.location, in: ns)
+                let at = command == .pasteAfter ? lineEnd(at: range.location, in: ns)
                                         : lineStart(at: range.location, in: ns)
-                let payload = key.key == "p" ? "\n" + register.text : register.text + "\n"
+                let payload = command == .pasteAfter
+                    ? "\n" + register.text : register.text + "\n"
                 return EditOutcome(edit: (NSRange(location: at, length: 0), payload),
-                                   selection: cursor(at: key.key == "p" ? at + 1 : at, in: ns),
+                                   selection: cursor(at: command == .pasteAfter ? at + 1 : at,
+                                                     in: ns),
                                    mode: .normal)
             }
             // Over the selection for `p`, which is Helix's replace-with-yank.
-            let at = key.key == "p" ? NSMaxRange(range) : range.location
+            let at = command == .pasteAfter ? NSMaxRange(range) : range.location
             return EditOutcome(edit: (NSRange(location: at, length: 0), register.text),
                                selection: NSRange(location: at,
                                                   length: (register.text as NSString).length),
                                mode: .normal)
 
-        case "v":
+        case .extendSelection:
             // Toggle extending. The anchor stays where the selection begins,
             // so the next motion grows from here.
             if mode == .visual { return EditOutcome(selection: range, mode: .normal) }
@@ -317,7 +312,7 @@ public final class EditEngine {
             head = NSMaxRange(range)
             return EditOutcome(selection: range, mode: .visual)
 
-        case ";":
+        case .collapseSelection:
             // Collapse to a bare cursor, keeping where you are.
             anchor = range.location
             head = range.location
@@ -357,76 +352,24 @@ public final class EditEngine {
     }
 
     private func reset() {
-        pending = []
-        count = nil
     }
 }
 
-extension MaximalEditor.EditorTextView: CanvasKeyHandling {
-    /// The keys this editor takes, so which-key can say so.
+extension MaximalEditor.EditorTextView {
+    /// Run a named command against this editor.
     ///
-    /// Written out rather than derived: `EditEngine` decides by pattern-match
-    /// over key sequences, and a switch cannot be asked what it matches. The
-    /// list is beside the switch it describes, and a test walks it to check
-    /// the engine really answers to every key claimed here — which is the part
-    /// that would otherwise drift.
-    public nonisolated var keyBindings: [CanvasKeyBinding] {
-        guard modalEditing else { return [] }
-        return Self.modalBindings
-    }
-
-    /// Helix's grammar: a motion selects, a verb acts on the selection.
-    static let modalBindings: [CanvasKeyBinding] = [
-        // Moving, which is also selecting.
-        .init("h", title: "Left"),
-        .init("l", title: "Right"),
-        .init("j", title: "Down"),
-        .init("k", title: "Up"),
-        .init("w", title: "Next word"),
-        .init("b", title: "Previous word"),
-        .init("e", title: "End of word"),
-        .init("0", title: "Line start"),
-        .init("^", title: "First non-blank"),
-        .init("$", title: "Line end"),
-        .init("x", title: "Select line"),
-        .init("%", title: "Select all"),
-        .init("G", title: "Last line"),
-        .init("g g", title: "First line"),
-        .init("g e", title: "Last line"),
-        .init("g h", title: "Line start"),
-        .init("g l", title: "Line end"),
-
-        // Acting on what is selected.
-        .init("d", title: "Delete"),
-        .init("c", title: "Change"),
-        .init("y", title: "Yank"),
-        .init("p", title: "Paste after"),
-        .init("P", title: "Paste before"),
-        .init("i", title: "Insert before"),
-        .init("a", title: "Insert after"),
-        .init("I", title: "Insert at line start"),
-        .init("A", title: "Insert at line end"),
-        .init("o", title: "Open line below"),
-        .init("O", title: "Open line above"),
-        .init("v", title: "Extend selection"),
-        .init(";", title: "Collapse selection"),
-    ]
-
-    /// The editor's share of the commanding modes: selections and the verbs
-    /// that act on them. What it doesn't understand goes back to the app,
-    /// which is how the leader and every global binding keep working with the
-    /// caret in a document.
-    public func handleKey(_ key: String, control: Bool, mode: KeyMode) -> KeyMode? {
+    /// The whole of what an action needs: the engine works out what the
+    /// command selects or changes, and this applies it.
+    /// - Returns: the mode the command left behind — `i`, `o` and a visual
+    ///   `c` all answer `.insert` — or nil when it did nothing.
+    @discardableResult
+    func run(_ command: EditCommand, count: Int, mode: KeyMode) -> KeyMode? {
         guard modalEditing else { return nil }
-        guard let outcome = editing.handle(EditKey(key, control: control), mode: mode,
-                                           text: text ?? "", selection: textSelection)
-        else {
-            // Nothing to do with it — but a bare character must not fall
-            // through and be *typed*: in a commanding mode the app decides,
-            // and if the app has no binding either, nothing happens.
-            return nil
-        }
+        guard let outcome = editing.perform(command, count: count, mode: mode,
+                                            text: text ?? "", selection: textSelection)
+        else { return nil }
         apply(outcome)
         return outcome.mode
     }
 }
+

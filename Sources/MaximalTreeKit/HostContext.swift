@@ -83,6 +83,21 @@ public final class HostContext {
         return childrenByParent[id] ?? []
     }
 
+    /// The keyboard mode the app is in.
+    ///
+    /// One mode, app-wide: in a commanding mode a key names an action, and in
+    /// insert mode it is text for whatever has focus. A surface's action that
+    /// starts typing — the editor's `i` or `o`, a visual `c` — says so by
+    /// setting this, because there is one mode and it is not the surface's to
+    /// keep a copy of.
+    public private(set) var keyMode: KeyMode = .normal
+
+    /// Host-only: the modal layer reporting where it got to.
+    public func _setKeyMode(_ mode: KeyMode) { keyMode = mode }
+
+    /// Ask the app to change mode.
+    public func setKeyMode(_ mode: KeyMode) { backend?.setKeyMode(mode) }
+
     /// Run any of the app's operations by name.
     ///
     /// Every operation is an action, the host's own included — moving in the
@@ -240,4 +255,5 @@ public protocol GraphBackend: AnyObject {
     func requestMoreChildren(of id: NodeID)
     func requestRelated(of id: NodeID)
     func perform(actionID: String, count: Int)
+    func setKeyMode(_ mode: KeyMode)
 }

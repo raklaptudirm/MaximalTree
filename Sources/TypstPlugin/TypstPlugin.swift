@@ -42,6 +42,7 @@ final class TypstPlugin: NSObject, Plugin {
                 TypstEngine.warmUp()
                 await SyntaxTokenizer.warmUp()
             },
+            keys: EditorKeys.keys,
             make: { id, host in AnyView(TypstCanvas(nodeID: id).environment(host)) }
         ))
 

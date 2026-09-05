@@ -37,10 +37,51 @@ import Foundation
             return self
         }
 
+        /// Keys typed towards a command, and the repeat in front of them.
+        ///
+        /// The engine no longer parses either: the core's trie resolves the
+        /// sequence and carries the count, and the engine is handed a named
+        /// command. This does the same job so the tests can go on reading as
+        /// keys — and, better, it resolves them through the very table the app
+        /// ships, so what these exercise is the real binding.
+        private var pending = ""
+        private var repeat_ = 0
+
         @discardableResult
         private func feed(_ key: String) -> Buffer {
-            guard let outcome = engine.handle(EditKey(key), mode: mode,
-                                              text: text, selection: selection)
+            // Escape is the app's, not the editor's: it means normal mode.
+            if key == "ESC" {
+                let leavingInsert = mode == .insert
+                mode = .normal
+                pending = ""
+                repeat_ = 0
+                // What the app does: leaving insert puts a selection back,
+                // because normal mode always has one.
+                if leavingInsert { return run(.collapseSelection, count: 1) }
+                return self
+            }
+            // A digit before a sequence is a count, unless one is being typed.
+            if pending.isEmpty, key.count == 1, let digit = Int(key),
+               digit > 0 || repeat_ > 0 {
+                repeat_ = repeat_ * 10 + digit
+                return self
+            }
+            let sequence = pending.isEmpty ? key : pending + " " + key
+            guard let command = Self.command(for: sequence) else {
+                // Not a command yet: hold it if anything starts this way.
+                pending = Self.isPrefix(sequence) ? sequence : ""
+                return self
+            }
+            pending = ""
+            let count = max(repeat_, 1)
+            repeat_ = 0
+            return run(command, count: count)
+        }
+
+        @discardableResult
+        private func run(_ command: EditCommand, count: Int) -> Buffer {
+            guard let outcome = engine.perform(command, count: count, mode: mode,
+                                               text: text, selection: selection)
             else { return self }
             mode = outcome.mode
             if let edit = outcome.edit {
@@ -53,6 +94,16 @@ import Foundation
             selection = NSRange(location: start,
                                 length: min(outcome.selection.length, length - start))
             return self
+        }
+
+        /// The command a key sequence runs, from the bindings the app ships.
+        static func command(for sequence: String) -> EditCommand? {
+            EditorKeys.bindings.first { $0.key == sequence }?.command
+        }
+
+        /// Whether anything the editor binds starts this way.
+        static func isPrefix(_ sequence: String) -> Bool {
+            EditorKeys.bindings.contains { $0.key.hasPrefix(sequence + " ") }
         }
 
         /// What is selected, in brackets — which reads better in a failure
@@ -131,9 +182,36 @@ import Foundation
         #expect(Buffer("one\ntwo").type("%").selected == "one\ntwo")
     }
 
-    @Test func ggAndGReachTheEnds() {
-        #expect(Buffer("one\ntwo\nthree", at: 5).type("gg").selected == "one\nt")
-        #expect(Buffer("one\ntwo\nthree").type("G").selected == "one\ntwo\n")
+    /// A goto moves the cursor; it does not drag a selection behind it.
+    /// `g g` used to select everything above you, which is a surprise every
+    /// time — a word motion selects what it crosses, but a jump is not
+    /// crossing anything you meant to keep.
+    @Test func ggAndGMoveTheCursorToTheEnds() {
+        let toTop = Buffer("one\ntwo\nthree", at: 5).type("gg")
+        #expect(toTop.selection.location == 0)
+        #expect(toTop.selected == "o", "the goto swept a selection along")
+
+        let toEnd = Buffer("one\ntwo\nthree").type("G")
+        #expect(toEnd.selection.location == 8)
+        #expect(toEnd.selected == "t")
+    }
+
+    /// In visual mode they still extend, which is how a selection is grown to
+    /// the ends of the file.
+    @Test func aGotoStillExtendsWhileSelecting() {
+        let buffer = Buffer("one\ntwo\nthree", at: 5)
+        buffer.type("v").type("gg")
+        #expect(buffer.mode == .visual)
+        #expect(buffer.selection.location == 0)
+        #expect(buffer.selection.length > 1, "visual mode should have grown the selection")
+    }
+
+    /// The line gotos move too — the same family, the same rule.
+    @Test func theLineGotosMoveAsWell() {
+        let buffer = Buffer("alpha beta\ngamma", at: 6)
+        buffer.type("gh")
+        #expect(buffer.selection.location == 0)
+        #expect(buffer.selected == "a", "g h swept instead of moving")
     }
 
     // MARK: Acting on the selection
@@ -245,25 +323,25 @@ import Foundation
         #expect(buffer.selected == "a")
     }
 
-    /// In insert mode the engine keeps its hands off: everything except
-    /// Escape belongs to the text view.
-    @Test func insertModePassesKeysThrough() {
+    /// In insert mode the engine keeps its hands off. The core does not
+    /// dispatch commands there at all, but an action can be run from a list,
+    /// and "Delete" from the finder mid-word would be a surprise.
+    @Test func nothingIsACommandWhileTyping() {
         let engine = EditEngine()
         let cursor = NSRange(location: 0, length: 1)
-        #expect(engine.handle(EditKey("d"), mode: .insert, text: "abc", selection: cursor) == nil)
-        #expect(engine.handle(EditKey("ESC"), mode: .insert, text: "abc",
-                              selection: cursor)?.mode == .normal)
+        for command in EditCommand.allCases {
+            #expect(engine.perform(command, count: 1, mode: .insert,
+                                   text: "abc", selection: cursor) == nil,
+                    "\(command) acted in insert mode")
+        }
     }
 
-    /// A control chord is not the letter inside it, and the engine binds none
-    /// of them: `C-w` is the app's window prefix, not a word motion.
-    @Test func controlChordsBelongToTheApp() {
-        let engine = EditEngine()
-        let cursor = NSRange(location: 0, length: 1)
-        for letter in ["w", "o", "i", "d", "g"] {
-            #expect(engine.handle(EditKey(letter, control: true), mode: .normal,
-                                  text: "alpha beta", selection: cursor) == nil,
-                    "C-\(letter) should fall through to the app")
+    /// A control chord is the app's — `C-w` is how you leave for another
+    /// surface — so the editor binds none of them.
+    @Test func theEditorBindsNoControlChords() {
+        for binding in EditorKeys.bindings {
+            #expect(!binding.key.contains("C-"),
+                    "\(binding.key) would take a chord the app needs")
         }
     }
 
@@ -276,46 +354,44 @@ import Foundation
     }
 }
 
-/// The editor's declared keys and the keys it actually answers to.
+/// The editor's keys and the commands they name.
 ///
-/// `EditEngine` decides by pattern-matching over key sequences, and a switch
-/// cannot be asked what it matches — so the list which-key shows is written by
-/// hand beside it. This is what keeps the two honest: a key added to the
-/// switch without being listed stays invisible, and a key listed but not
-/// handled is worse, because the overlay promises something that does nothing.
+/// There were two lists once — what `handleKey` implemented and what it
+/// declared for which-key — and a test to check they agreed. They are one
+/// table now, so what is left to check is that the commands in it are ones the
+/// engine answers to, and that the table is well formed.
 @MainActor
-@Suite struct DeclaredEditorKeysTests {
-    private let text = "hello world\nsecond line\nthird line\n"
+@Suite struct EditorBindingTests {
+    private let text = "one\ntwo\nthree\n"
 
-    @Test func theEngineAnswersToEveryKeyTheEditorClaims() {
-        for binding in MaximalEditor.EditorTextView.modalBindings {
+    @Test func theEngineAnswersToEveryCommandTheEditorBinds() {
+        for binding in EditorKeys.bindings {
             let engine = EditEngine()
-            var selection = NSRange(location: 0, length: 0)
-            var outcome: EditOutcome?
-            // A sequence is written with spaces, and every key of it has to
-            // land — `g` alone is pending, `g g` is the motion.
-            for key in binding.key.split(separator: " ") {
-                outcome = engine.handle(EditKey(String(key)), mode: .normal,
-                                        text: text, selection: selection)
-                if let outcome { selection = outcome.selection }
-            }
+            let outcome = engine.perform(binding.command, count: 1, mode: .normal,
+                                         text: text, selection: NSRange(location: 0, length: 1))
             #expect(outcome != nil,
-                    "\(binding.key) — \(binding.title) — is claimed but the engine declines it")
+                    "\(binding.key) names \(binding.command), which the engine declines")
         }
     }
 
-    /// Every claim is for a mode the app actually has, and reads as something.
-    @Test func theClaimsAreWellFormed() {
-        let bindings = MaximalEditor.EditorTextView.modalBindings
-        #expect(!bindings.isEmpty)
-        for binding in bindings {
-            #expect(!binding.title.isEmpty, "\(binding.key) has no label to show")
-            #expect(!binding.key.isEmpty)
+    /// Every command the engine has is reachable. One with no key is a feature
+    /// nobody can use.
+    @Test func everyCommandHasAKey() {
+        let bound = Set(EditorKeys.bindings.map(\.command))
+        for command in EditCommand.allCases {
+            #expect(bound.contains(command), "\(command) has no key")
         }
-        // No duplicates: the overlay identifies rows by key, and two rows with
-        // the same id is a SwiftUI list that drops one silently.
-        let keys = bindings.filter { $0.mode == .normal }.map(\.key)
-        #expect(Set(keys).count == keys.count, "a key is claimed twice")
+    }
+
+    @Test func theTableIsWellFormed() {
+        let keys = EditorKeys.bindings.map(\.key)
+        #expect(Set(keys).count == keys.count, "a key is bound twice")
+        for binding in EditorKeys.bindings {
+            #expect(!binding.key.isEmpty)
+            #expect(!binding.title.isEmpty, "\(binding.key) has no label")
+        }
+        // Action ids follow from the command, so the keys and the
+        // registrations cannot name different things.
+        #expect(EditorKeys.id(for: .wordForward) == "editor.wordForward")
     }
 }
-

@@ -54,9 +54,14 @@ final class KeyEngine {
         case passed
     }
 
+    /// Reports every mode change, so the host context can mirror it for the
+    /// surfaces that read it.
+    var onModeChange: ((KeyMode) -> Void)?
+
     func setMode(_ mode: KeyMode) {
         self.mode = mode
         reset()
+        onModeChange?(mode)
     }
 
     /// Feed a key press.

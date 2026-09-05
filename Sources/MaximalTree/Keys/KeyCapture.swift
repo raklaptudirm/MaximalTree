@@ -89,8 +89,7 @@ struct KeyCapture: ViewModifier {
                 // own keys have to be taken here — nothing downstream will.
                 if model.handleFinderKey(chord) { return true }
                 return KeyDispatch.handle(chord, keys: model.keys,
-                                          surface: model.surfaceKeymap(),
-                                          canvas: KeyFocus.focusedCanvas())
+                                          surface: model.surfaceKeymap())
             }
 
             /// Show the leader's menu while ⌘ is held, after a moment.
@@ -274,7 +273,6 @@ struct KeyWhichKey: View {
             (keys: $0.chord.description, label: label(for: $0.binding))
         }
         return Self.peekRows(
-            canvas: KeyFocus.focusedCanvas()?.keyBindings ?? [],
             surface: mine,
             app: live(keys.topLevelBindings, under: [], keymap: keys.keymap, in: keys).map {
                 (keys: $0.chord.description, label: label(for: $0.binding))
@@ -331,18 +329,12 @@ struct KeyWhichKey: View {
     /// editor inserts *and* leaves the app in insert mode, so greying the app's
     /// "Insert Mode" said the opposite of what pressing it does. Whatever the
     /// canvas takes, the canvas's own row already describes.
-    static func peekRows(canvas: [CanvasKeyBinding],
-                         surface: [(keys: String, label: String)] = [],
+    static func peekRows(surface: [(keys: String, label: String)] = [],
                          app: [(keys: String, label: String)],
                          mode: KeyMode) -> [Row] {
-        let declared = canvas.filter { $0.mode == mode }
-        var taken = Set(declared.map(\.key))
-        taken.formUnion(surface.map(\.keys))
-
+        let taken = Set(surface.map(\.keys))
         return surface.map {
             Row(id: "surface:\($0.keys)", keys: $0.keys, label: $0.label)
-        } + declared.map {
-            Row(id: "canvas:\($0.key)", keys: $0.key, label: $0.title)
         } + app.filter { !taken.contains($0.keys) }.map {
             Row(id: "app:\($0.keys)", keys: $0.keys, label: $0.label)
         }

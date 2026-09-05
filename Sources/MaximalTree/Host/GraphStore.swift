@@ -487,6 +487,11 @@ final class GraphStore: GraphBackend {
         }
     }
 
+    /// A surface's action reporting the mode its command left behind.
+    var onSetKeyMode: ((KeyMode) -> Void)?
+
+    func setKeyMode(_ mode: KeyMode) { onSetKeyMode?(mode) }
+
     /// A plugin driving the app by name — the same path a key takes.
     func perform(actionID: String, count: Int) {
         onPerformAction?(actionID, count)

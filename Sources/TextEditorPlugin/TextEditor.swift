@@ -16,12 +16,14 @@ final class TextEditorPlugin: NSObject, Plugin {
     override init() { super.init() }
 
     func register(with registry: PluginRegistry) {
+        EditorKeys.register(with: registry)
         registry.register(canvas: CanvasContribution(
             priority: 100,                       // beats FileSystem's Quick Look (0)
             matches: Self.handlesAsText(_:),
             // First open pays the highlighter's JS load behind the host's
             // loading indicator, not inside the first paint.
             prepare: { _ in await SyntaxTokenizer.warmUp() },
+            keys: EditorKeys.keys,
             make: { id, host in AnyView(TextEditorCanvas(nodeID: id).environment(host)) }
         ))
     }

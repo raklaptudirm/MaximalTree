@@ -19,8 +19,8 @@ import MaximalTreeKit
 /// canvas that declines less.
 enum KeyRouting {
     enum Destination: Equatable {
-        /// The modal layer: the focused canvas gets first refusal (see
-        /// `CanvasKeyHandling`), then the app's keymap.
+        /// The modal layer: the surface holding the keyboard gets first
+        /// refusal on its declared keys, then the app's keymap.
         case app
         /// Whatever has focus, untouched.
         case focusedView
@@ -41,8 +41,7 @@ enum KeyDispatch {
     /// - Returns: whether the key was consumed, and must not reach AppKit.
     @MainActor
     static func handle(_ chord: KeyChord, keys: KeyEngine,
-                       surface: @autoclosure () -> Keymap = Keymap(),
-                       canvas: @autoclosure () -> CanvasKeyHandling?) -> Bool {
+                       surface: @autoclosure () -> Keymap = Keymap()) -> Bool {
         guard KeyRouting.destination(for: chord, mode: keys.mode) == .app else { return false }
 
         // Escape is one assignment, because there is one mode. Nothing to
@@ -73,18 +72,6 @@ enum KeyDispatch {
             // listable, and callable by name like everything else.
             if keys.handleSurface(chord, map: surface()) { return true }
 
-            // Then the older mechanism, for the canvases still implementing
-            // it. Being replaced surface by surface; when nothing conforms
-            // this goes, and `KeyChord.canvasKey` with it.
-            if let canvas = canvas(),
-               let next = canvas.handleKey(chord.canvasKey, control: chord.control,
-                                           mode: keys.mode) {
-                // The canvas reports the mode its own command left behind —
-                // `i`, `o`, a visual `c` all answer `.insert` — and that
-                // answer *is* the app's mode, not a second copy of it.
-                if next != keys.mode { keys.setMode(next) }
-                return true
-            }
         }
 
         return app(chord, keys)

@@ -229,46 +229,31 @@ import SwiftUI
         #expect(engine.handle(chord("DEL"), editing: false) == .passed)
     }
 
-    /// What the peek shows while a canvas has the keyboard.
+    /// What the peek shows while a surface has the keyboard.
     ///
-    /// The defect this fixes: in a commanding mode the focused canvas is
-    /// offered every key before the app is, so listing the app's bindings
-    /// plainly was a lie — `j` read as "move down the sidebar" while the
-    /// editor took it to move the caret.
-    @Test func thePeekLeadsWithTheCanvasKeysAndMarksWhatItTakes() {
-        let canvas = [
-            CanvasKeyBinding("j", title: "Down"),
-            CanvasKeyBinding("w", title: "Next word"),
-        ]
+    /// The defect this fixes: in a commanding mode the focused surface is
+    /// asked before the app is, so listing the app's bindings plainly was a
+    /// lie — `j` read as "move down the sidebar" while the editor took it to
+    /// move the caret.
+    @Test func thePeekLeadsWithTheSurfacesKeys() {
+        let surface = [(keys: "j", label: "Down"), (keys: "w", label: "Next word")]
         let app = [(keys: "j", label: "Move Down"),
                    (keys: "SPC", label: "+leader"),
                    (keys: "/", label: "Find Anything…")]
 
-        let rows = KeyWhichKey.peekRows(canvas: canvas, app: app, mode: .normal)
+        let rows = KeyWhichKey.peekRows(surface: surface, app: app, mode: .normal)
 
-        // The canvas's own keys come first, as themselves.
-        #expect(rows.prefix(2).map(\.keys) == ["j", "w"])
-        // One row per key: `j` belongs to the canvas here, so the app's `j`
-        // is gone rather than shown greyed beside it.
+        // One row per key, saying what that key does here: `j` is the
+        // surface's, so the app's `j` is gone rather than shown beside it.
         #expect(rows.map(\.keys) == ["j", "w", "SPC", "/"])
         #expect(rows.filter { $0.keys == "j" }.count == 1)
         #expect(rows.first { $0.keys == "j" }?.label == "Down")
     }
 
-    /// Bindings for another mode aren't what would happen in this one.
-    @Test func onlyTheCanvasKeysForTheModeInForceAreShown() {
-        let canvas = [
-            CanvasKeyBinding("j", title: "Down"),
-            CanvasKeyBinding("d", mode: .visual, title: "Delete selection"),
-        ]
-        let rows = KeyWhichKey.peekRows(canvas: canvas, app: [], mode: .normal)
-        #expect(rows.map(\.keys) == ["j"])
-    }
-
-    /// With nothing focused that takes keys, it is the app's list unchanged.
-    @Test func withNoCanvasThePeekIsJustTheApp() {
+    /// With nothing claimed by the surface, it is the app's list unchanged.
+    @Test func withNoSurfaceKeysThePeekIsJustTheApp() {
         let app = [(keys: "j", label: "Move Down"), (keys: "SPC", label: "+leader")]
-        let rows = KeyWhichKey.peekRows(canvas: [], app: app, mode: .normal)
+        let rows = KeyWhichKey.peekRows(app: app, mode: .normal)
         #expect(rows.map(\.keys) == ["j", "SPC"])
         #expect(rows.map(\.label) == ["Move Down", "+leader"])
     }
@@ -280,7 +265,7 @@ import SwiftUI
         let engine = KeyEngine(keymap: DefaultKeymap.make())
         // Both lists at once, which is what the peek shows over an editor.
         let together = engine.topLevelBindings.count
-            + MaximalEditor.EditorTextView.modalBindings.count
+            + EditorKeys.bindings.count
         #expect(together <= KeyWhichKey.peekLimit)
         #expect(together > 18,
                 "if this ever drops below the ordinary cap, the peek limit is dead weight")
@@ -463,124 +448,71 @@ import SwiftUI
     }
 }
 
-/// A canvas's own normal-mode keys.
+/// A surface's own normal-mode keys.
 ///
-/// The editor is not a special case: it adopts the same protocol any canvas
-/// can, and what it declines falls through to the app exactly like anyone
-/// else's.
+/// The editor is not a special case: it declares keys the way the sidebar and
+/// the terminal do, and what it does not claim falls through to the app.
 @MainActor
-@Suite struct CanvasKeyTests {
-    /// Stands in for any canvas — a diff stepping between hunks, a preview
-    /// paging. It consumes `n` and declines everything else.
-    private final class StubCanvas: NSView, CanvasKeyHandling {
-        var consumed: [String] = []
-        /// The mode each handled key arrived in, which is the only way this
-        /// canvas learns of one — it keeps none.
-        var modesSeen: [KeyMode] = []
-
-        func handleKey(_ key: String, control: Bool, mode: KeyMode) -> KeyMode? {
-            guard key == "n" else { return nil }
-            consumed.append(key)
-            modesSeen.append(mode)
-            return mode
-        }
-    }
-
-    @Test func aCanvasHandlesTheKeysItClaims() {
-        let canvas = StubCanvas(frame: .zero)
-        #expect(canvas.handleKey("n", control: false, mode: .normal) == .normal)
-        #expect(canvas.consumed == ["n"])
-    }
-
-    @Test func whatItDeclinesIsLeftForTheApp() {
-        let canvas = StubCanvas(frame: .zero)
-        #expect(canvas.handleKey("j", control: false, mode: .normal) == nil,
-                "a canvas that swallows everything would take the app's bindings with it")
-    }
-
-    /// The mode reaches a canvas as an argument, so there is nothing to keep
-    /// in step and nothing to go stale.
-    @Test func theModeArrivesWithTheKey() {
-        let canvas = StubCanvas(frame: .zero)
-        _ = canvas.handleKey("n", control: false, mode: .normal)
-        _ = canvas.handleKey("n", control: false, mode: .visual)
-        #expect(canvas.modesSeen == [.normal, .visual])
-    }
-
-    /// The editor is reached the same way, through the same protocol.
-    @Test func theEditorIsJustAnotherCanvas() {
-        let editor = MaximalEditor.EditorTextView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
-        editor.modalEditing = true
-        editor.text = "alpha beta"
-        editor.textSelection = NSRange(location: 0, length: 0)
-
-        #expect(editor is CanvasKeyHandling, "the editor should adopt the canvas protocol")
-        let canvas = editor as CanvasKeyHandling
-        #expect(canvas.handleKey("l", control: false, mode: .normal) == .normal,
+@Suite struct SurfaceOwnedKeyTests {
+    /// The editor is driven the way every surface is: a key names a command
+    /// and the command runs. It used to implement the canvas protocol and get
+    /// raw keystrokes.
+    @Test func theEditorRunsNamedCommands() {
+        let editor = makeEditor()
+        #expect(editor.run(.right, count: 1, mode: .normal) == .normal,
                 "the editor declined a motion")
         #expect(editor.textSelection.location == 1)
     }
 
-    /// Not adopting the protocol is allowed and means "keys are the app's" —
-    /// which is what a terminal wants.
-    @Test func aCanvasNeedNotHandleAnything() {
-        let plain = NSView(frame: .zero)
-        #expect(!(plain is CanvasKeyHandling))
+    /// And the count reaches it, which a raw keystroke never carried.
+    @Test func aCountReachesTheEditor() {
+        let editor = makeEditor()
+        _ = editor.run(.right, count: 3, mode: .normal)
+        #expect(editor.textSelection.location == 3)
+    }
+
+    /// Declaring no keys is allowed and means "they are the app's" — which is
+    /// what the inspector says today, and what a canvas showing a picture
+    /// would say forever.
+    @Test func aSurfaceNeedNotClaimAnything() {
+        let contribution = CanvasContribution(matches: { _ in true }) { _, _ in AnyView(EmptyView()) }
+        #expect(contribution.keys.isEmpty)
     }
 
     /// The whole trip a key takes, with a real editor on the other end. Every
     /// mode bug so far lived here, between parts that each tested clean.
-    @Test func theCanvasAnswerBecomesTheAppsMode() {
-        let keys = KeyEngine(keymap: DefaultKeymap.make())
+    @Test func theEditorsCommandReportsTheModeItLeft() {
         let editor = makeEditor()
+        // A motion stays where it was; `i` and `v` say where they went.
+        #expect(editor.run(.right, count: 1, mode: .normal) == .normal)
+        #expect(editor.run(.insertBefore, count: 1, mode: .normal) == .insert)
+        #expect(editor.run(.extendSelection, count: 1, mode: .normal) == .visual)
+    }
 
-        #expect(KeyDispatch.handle(KeyChord("i"), keys: keys, canvas: editor))
-        #expect(keys.mode == .insert, "the editor's `i` should have set the app's mode")
-
-        #expect(KeyDispatch.handle(KeyChord("ESC"), keys: keys, canvas: editor))
+    /// Escape is one assignment, so it needs nothing focused to work — which
+    /// was a real bug when leaving insert meant notifying an object: focus
+    /// moves while typing (a completion panel takes the key window), and the
+    /// canvas still inserting was never told.
+    @Test func escapeIsTheModeAlone() {
+        let keys = KeyEngine(keymap: DefaultKeymap.make())
+        keys.setMode(.insert)
+        #expect(KeyDispatch.handle(KeyChord("ESC"), keys: keys))
         #expect(keys.mode == .normal)
     }
 
-    /// Escape is one assignment now, so it works with no canvas at all — and
-    /// with a different one than the key that entered insert went to. Both
-    /// were real bugs when leaving insert meant notifying an object: focus
-    /// moves while typing (a completion panel takes the key window), and the
-    /// canvas still inserting was never told.
-    @Test func escapeIsTheModesAloneAndNeedsNoCanvas() {
-        for canvas in [nil, StubCanvas(frame: .zero)] {
-            let keys = KeyEngine(keymap: DefaultKeymap.make())
-            keys.setMode(.insert)
-            #expect(KeyDispatch.handle(KeyChord("ESC"), keys: keys, canvas: canvas))
-            #expect(keys.mode == .normal)
-        }
-    }
+    /// A half-typed sequence is the core's now, not the editor's, and a mode
+    /// set anywhere else abandons it rather than letting it finish under rules
+    /// it was never started under.
+    @Test func aHalfTypedSequenceIsAbandonedWhenTheModeChanges() {
+        var map = Keymap()
+        map.bind("g g", to: "editor.firstLine")
+        let keys = KeyEngine(keymap: map)
 
-    /// The editor enters insert on its own recognizance — `i`, `o`, a visual
-    /// `c` — and says so by answering with the mode it left behind, rather
-    /// than by keeping one the app has to ask after.
-    @Test func theEditorAnswersWithTheModeItsCommandLeft() {
-        let editor = makeEditor()
-        let canvas = editor as CanvasKeyHandling
+        _ = keys.handle(KeyChord("g"), editing: false)
+        #expect(!keys.pending.isEmpty, "`g` should be waiting for its second key")
 
-        #expect(canvas.handleKey("l", control: false, mode: .normal) == .normal,
-                "a motion stays in the mode it ran in")
-        #expect(canvas.handleKey("i", control: false, mode: .normal) == .insert)
-        #expect(canvas.handleKey("v", control: false, mode: .normal) == .visual)
-    }
-
-    /// The engine keeps no mode, so one set anywhere else — escape, a
-    /// command, focus arriving — abandons whatever was half-typed rather than
-    /// letting it finish under rules it was never started under.
-    @Test func aHalfTypedCommandIsAbandonedWhenTheModeChangesElsewhere() {
-        let editor = makeEditor()
-        let canvas = editor as CanvasKeyHandling
-
-        #expect(canvas.handleKey("d", control: false, mode: .normal) == .normal,
-                "`d` waits for the motion that says how far")
-        // The app went to insert and came back without the operator running.
-        _ = canvas.handleKey("i", control: false, mode: .normal)
-        #expect(canvas.handleKey("w", control: false, mode: .normal) == .normal)
-        #expect(editor.text == "alpha beta", "the abandoned `d` finished after all")
+        keys.setMode(.insert)
+        #expect(keys.pending.isEmpty, "the half-typed sequence outlived the mode")
     }
 
     private func makeEditor() -> MaximalEditor.EditorTextView {

@@ -38,7 +38,7 @@ import AppKit
         let keys = engine { id, _ in ran.append(id) }
         let map = surface([SurfaceKey("j", "explorer.down")])
 
-        #expect(KeyDispatch.handle(chord("j"), keys: keys, surface: map, canvas: nil))
+        #expect(KeyDispatch.handle(chord("j"), keys: keys, surface: map))
         #expect(ran == ["explorer.down"])
     }
 
@@ -49,7 +49,7 @@ import AppKit
         let keys = engine { id, _ in ran.append(id) }
         let map = surface([SurfaceKey("j", "explorer.down")])
 
-        #expect(KeyDispatch.handle(chord("/"), keys: keys, surface: map, canvas: nil))
+        #expect(KeyDispatch.handle(chord("/"), keys: keys, surface: map))
         #expect(ran == ["finder.all"])
     }
 
@@ -61,9 +61,9 @@ import AppKit
         // Even declared, it never gets the chance.
         let map = surface([SurfaceKey("SPC", "explorer.down")])
 
-        _ = KeyDispatch.handle(chord("SPC"), keys: keys, surface: map, canvas: nil)
-        _ = KeyDispatch.handle(chord("g"), keys: keys, surface: map, canvas: nil)
-        _ = KeyDispatch.handle(chord("c"), keys: keys, surface: map, canvas: nil)
+        _ = KeyDispatch.handle(chord("SPC"), keys: keys, surface: map)
+        _ = KeyDispatch.handle(chord("g"), keys: keys, surface: map)
+        _ = KeyDispatch.handle(chord("c"), keys: keys, surface: map)
         #expect(ran == ["git.commit"], "the surface intercepted the leader")
     }
 
@@ -78,9 +78,9 @@ import AppKit
         let keys = engine { id, _ in ran.append(id) }
         let map = surface([SurfaceKey("g g", "explorer.first")])
 
-        #expect(KeyDispatch.handle(chord("g"), keys: keys, surface: map, canvas: nil))
+        #expect(KeyDispatch.handle(chord("g"), keys: keys, surface: map))
         #expect(ran.isEmpty, "a prefix should not run anything yet")
-        #expect(KeyDispatch.handle(chord("g"), keys: keys, surface: map, canvas: nil))
+        #expect(KeyDispatch.handle(chord("g"), keys: keys, surface: map))
         #expect(ran == ["explorer.first"])
     }
 
@@ -92,8 +92,8 @@ import AppKit
         let map = surface([SurfaceKey("t", "explorer.down")])
 
         // `g t` is the app's; the surface binds `t` alone.
-        _ = KeyDispatch.handle(chord("g"), keys: keys, surface: map, canvas: nil)
-        _ = KeyDispatch.handle(chord("t"), keys: keys, surface: map, canvas: nil)
+        _ = KeyDispatch.handle(chord("g"), keys: keys, surface: map)
+        _ = KeyDispatch.handle(chord("t"), keys: keys, surface: map)
         #expect(ran == ["tab.next"], "the surface took a key mid-sequence")
     }
 
@@ -103,10 +103,10 @@ import AppKit
         let keys = engine { id, _ in ran.append(id) }
         let map = surface([SurfaceKey("g g", "explorer.first")])
 
-        _ = KeyDispatch.handle(chord("g"), keys: keys, surface: map, canvas: nil)
+        _ = KeyDispatch.handle(chord("g"), keys: keys, surface: map)
         // `g` then `/` is nothing in the surface's map. It must not become the
         // app's `/`.
-        #expect(KeyDispatch.handle(chord("/"), keys: keys, surface: map, canvas: nil))
+        #expect(KeyDispatch.handle(chord("/"), keys: keys, surface: map))
         #expect(ran.isEmpty, "a dead end ran something")
         #expect(keys.pending.isEmpty, "the sequence was left half-typed")
     }
@@ -120,8 +120,8 @@ import AppKit
         let keys = engine { _, count in counts.append(count) }
         let map = surface([SurfaceKey("j", "explorer.down")])
 
-        _ = KeyDispatch.handle(chord("5"), keys: keys, surface: map, canvas: nil)
-        _ = KeyDispatch.handle(chord("j"), keys: keys, surface: map, canvas: nil)
+        _ = KeyDispatch.handle(chord("5"), keys: keys, surface: map)
+        _ = KeyDispatch.handle(chord("j"), keys: keys, surface: map)
         #expect(counts == [5])
     }
 

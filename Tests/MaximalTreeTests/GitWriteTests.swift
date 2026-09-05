@@ -169,6 +169,7 @@ import Foundation
             func requestMoreChildren(of id: NodeID) {}
             func requestRelated(of id: NodeID) {}
             func perform(actionID: String, count: Int) {}
+            func setKeyMode(_ mode: KeyMode) {}
         }
         let backend = Backend()
         host.backend = backend
