@@ -23,7 +23,7 @@ struct TypstCanvas: View {
     @State private var editor = EditorController()
     private let uiState = TypstUIState.shared
 
-    private var mode: TypstMode { uiState.mode(for: fileURL) }
+    private var sourceStyle: TypstSourceStyle { uiState.sourceStyle(for: fileURL) }
 
     /// What compiling this document produced. Owned by the document, not by
     /// this view: the preview is another pane on the same thing, and a canvas
@@ -55,13 +55,10 @@ struct TypstCanvas: View {
                 ContentUnavailableView("Can't Open", systemImage: "exclamationmark.triangle",
                                        description: Text(loadError))
             } else {
-                switch mode {
-                case .write: writeLayout
-                case .typeset: typesetLayout
-                }
+                documentBody
             }
 
-            if mode == .typeset && !diagnostics.isEmpty {
+            if sourceStyle == .source && !diagnostics.isEmpty {
                 Divider()
                 DiagnosticsBar(diagnostics: diagnostics) { jump(to: $0) }
             }
@@ -80,7 +77,7 @@ struct TypstCanvas: View {
             if hasErrors {
                 Circle().fill(.red).frame(width: 7, height: 7).padding(10)
                     .help("Compile errors — see Typeset mode")
-            } else if mode == .typeset && dirty {
+            } else if !sourceStyle.autosaves && dirty {
                 Circle().fill(.secondary).frame(width: 7, height: 7).padding(10)
                     .help("Unsaved changes — \u{2318}S")
             }
@@ -100,13 +97,13 @@ struct TypstCanvas: View {
             guard let notice, notice.node == nodeID || notice.node == fileNodeID else { return }
             Task { await reconcileWithDisk() }
         }
-        .onChange(of: mode) { previous, current in
+        .onChange(of: sourceStyle) { previous, current in
             // Entering an autosave mode (or leaving Typeset with edits pending)
             // flushes, so disk always matches what Write/Read show.
             if current.autosaves && dirty { saveToDisk() }
         }
         .onDisappear {
-            if mode.autosaves && dirty && loadedNode == nodeID { saveToDisk() }
+            if sourceStyle.autosaves && dirty && loadedNode == nodeID { saveToDisk() }
             TypstUIState.shared.releaseDocument(for: fileURL)
         }
     }
@@ -141,23 +138,18 @@ struct TypstCanvas: View {
     /// points means a different measure in every face and at every size. The
     /// width follows the type, so making the text bigger makes the column
     /// wider and the line still holds about the same number of words.
-    private var writeLayout: some View {
-        // Full width on purpose: the editor centres its own column by inset,
-        // so the scroller stays against the window edge instead of riding the
-        // measure inward with the text.
-        editor(fontSize: 14)
-            .background(Color(nsColor: pageBackground))
-    }
-
-    /// Typesetting is the source; the pages are the pane next to it.
+    /// One editor, set the way this document is being worked on: a manuscript
+    /// column on the page colour, or the source monospaced.
     ///
-    /// This drew both halves itself, with its own divider and its own drag —
-    /// a split inside a canvas, in an app whose tabs already hold splits. The
-    /// pages are a node now, so `typst.mode.typeset` puts them in the
-    /// neighbouring pane and the tab does the rest: resizing it, moving it,
-    /// closing it, restoring it, and giving each half its own keys.
-    private var typesetLayout: some View {
-        editor(fontSize: 12)
+    /// There were two layouts because one of them also drew the preview. The
+    /// pages are the pane next door now, so what is left is a style.
+    @ViewBuilder
+    private var documentBody: some View {
+        if sourceStyle == .prose {
+            editor(fontSize: 14).background(Color(nsColor: pageBackground))
+        } else {
+            editor(fontSize: 12)
+        }
     }
 
     /// The manuscript's style — the chosen face at the chosen size. Held in
@@ -173,7 +165,7 @@ struct TypstCanvas: View {
         // that wraps (prose-like source).
         MaximalEditor(
             text: $text,
-            style: mode == .write
+            style: sourceStyle == .prose
                 ? proseStyle
                 : .code(size: fontSize, wrapLines: true, indentSpaces: 2),
             tokenizer: tokenizer,
@@ -192,7 +184,7 @@ struct TypstCanvas: View {
             // file is not editing it.
             guard dirty else { return }
             host.pin(nodeID)          // this tab is work now, not a preview
-            if mode.autosaves { scheduleAutosave() }
+            if sourceStyle.autosaves { scheduleAutosave() }
         }
     }
 
@@ -381,11 +373,11 @@ struct TypstDocumentInspector: View {
             // The manipulation surface for what the chrome-free canvas dropped:
             // mode switching (also actions, \u{2325}\u{2318}1/2/3) and stats.
             Section("Document") {
-                Picker("Mode", selection: Binding(
-                    get: { uiState.mode(for: fileURL) },
-                    set: { uiState.setMode($0, for: fileURL) })) {
-                    ForEach(TypstMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
+                Picker("Source", selection: Binding(
+                    get: { uiState.sourceStyle(for: fileURL) },
+                    set: { uiState.setSourceStyle($0, for: fileURL) })) {
+                    ForEach(TypstSourceStyle.allCases) { style in
+                        Text(style.title).tag(style)
                     }
                 }
                 .pickerStyle(.segmented)
@@ -456,8 +448,8 @@ struct TypstDocumentInspector: View {
         // outside Write mode meant finding it required already being in the
         // mode it configures — and the rest of this app greys a control out
         // rather than moving it, so a thing stays where you last saw it.
-        if uiState.mode(for: fileURL) != .write {
-            Text("Applies in Write mode; Typeset shows the source, monospaced.")
+        if uiState.sourceStyle(for: fileURL) != .prose {
+            Text("Applies to prose; the source is set monospaced.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

@@ -1318,3 +1318,65 @@ struct TinymistLiveTests {
         #expect(abs(onScreen.blueComponent - intended.blueComponent) < 0.005)
     }
 }
+
+/// What is left of the modes: how a document's own text is set.
+@MainActor
+@Suite struct TypstSourceStyleTests {
+    private let url = URL(fileURLWithPath: "/tmp/maximaltree-style.typ")
+    private var legacyKey: String { "typst.mode.\(url.absoluteString)" }
+    private var key: String { "typst.sourceStyle.\(url.absoluteString)" }
+
+    private func withCleanDefaults(_ body: () -> Void) {
+        let defaults = UserDefaults.standard
+        let savedLegacy = defaults.string(forKey: legacyKey)
+        let saved = defaults.string(forKey: key)
+        defaults.removeObject(forKey: legacyKey)
+        defaults.removeObject(forKey: key)
+        body()
+        if let savedLegacy { defaults.set(savedLegacy, forKey: legacyKey) }
+        else { defaults.removeObject(forKey: legacyKey) }
+        if let saved { defaults.set(saved, forKey: key) }
+        else { defaults.removeObject(forKey: key) }
+    }
+
+    @Test func aDocumentNobodyHasSetIsSource() {
+        withCleanDefaults {
+            #expect(TypstSourceStyle.stored(forFile: url) == .source)
+        }
+    }
+
+    /// A document that still remembers a mode keeps how it was being worked
+    /// on. Writing was prose; typesetting and reading were the source.
+    @Test func aRememberedModeBecomesTheStyleItMeant() {
+        withCleanDefaults {
+            UserDefaults.standard.set("write", forKey: legacyKey)
+            #expect(TypstSourceStyle.stored(forFile: url) == .prose)
+            // Written back under the new name, so the old one is read once.
+            #expect(UserDefaults.standard.string(forKey: key) == "prose")
+        }
+        withCleanDefaults {
+            UserDefaults.standard.set("typeset", forKey: legacyKey)
+            #expect(TypstSourceStyle.stored(forFile: url) == .source)
+        }
+        withCleanDefaults {
+            UserDefaults.standard.set("read", forKey: legacyKey)
+            #expect(TypstSourceStyle.stored(forFile: url) == .source)
+        }
+    }
+
+    /// A choice made since beats a mode remembered from before.
+    @Test func aStyleAlreadyChosenWinsOverTheOldMode() {
+        withCleanDefaults {
+            UserDefaults.standard.set("write", forKey: legacyKey)
+            TypstSourceStyle.source.store(forFile: url)
+            #expect(TypstSourceStyle.stored(forFile: url) == .source)
+        }
+    }
+
+    /// Prose saves itself; source waits for ⌘S. The one thing the modes
+    /// carried that was never about layout.
+    @Test func proseSavesItselfAndSourceDoesNot() {
+        #expect(TypstSourceStyle.prose.autosaves)
+        #expect(!TypstSourceStyle.source.autosaves)
+    }
+}

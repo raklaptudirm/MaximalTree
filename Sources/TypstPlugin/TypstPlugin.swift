@@ -111,33 +111,38 @@ final class TypstPlugin: NSObject, Plugin {
             }
         ))
 
-        // The canvas is content-only: modes, export, and agenda refresh are
-        // Actions — menu bar (with shortcuts), palette, context menu — plus a
-        // mode picker in the document inspector.
-        let modeShortcuts: [(TypstMode, KeyEquivalent, String)] = [
-            (.write, "1", "square.and.pencil"),
-            (.typeset, "2", "doc.richtext"),
-        ]
-        for (mode, key, image) in modeShortcuts {
-            registry.register(action: Action(
-                id: "typst.mode.\(mode.rawValue)",
-                title: "Typst: \(mode.title) Mode",
-                systemImage: image,
-                appliesTo: .custom { Self.typFileURL(in: $0) != nil },
-                shortcut: KeyboardShortcut(key, modifiers: [.command, .option]),
-                scope: .document,
-                handler: { ctx in
-                    guard let url = Self.typFileURL(in: ctx) else { return }
-                    TypstUIState.shared.setMode(mode, for: url)
-                    // Typesetting means seeing what you are typesetting: the
-                    // pages go in the pane next door, reusing one that already
-                    // has them. The keyboard stays in the source.
-                    if mode == .typeset {
-                        ctx.host.openURIBeside(TypstRef.preview(file: url.path).uri)
-                    }
-                }
-            ))
-        }
+        // The canvas is content-only: what used to be mode switching is these
+        // two actions, plus "Show Pages" above. They no longer share a shape —
+        // one sets how the source is written, the other also puts the pages
+        // beside it — so they are written out rather than looped over a table.
+        registry.register(action: Action(
+            id: "typst.prose",
+            title: "Typst: Prose",
+            systemImage: "square.and.pencil",
+            appliesTo: .custom { Self.typFileURL(in: $0) != nil },
+            shortcut: KeyboardShortcut("1", modifiers: [.command, .option]),
+            scope: .document,
+            handler: { ctx in
+                TypstUIState.shared.setSourceStyle(.prose, for: Self.typFileURL(in: ctx))
+            }
+        ))
+
+        registry.register(action: Action(
+            id: "typst.typeset",
+            title: "Typst: Typeset",
+            systemImage: "doc.richtext",
+            appliesTo: .custom { Self.typFileURL(in: $0) != nil },
+            shortcut: KeyboardShortcut("2", modifiers: [.command, .option]),
+            scope: .document,
+            handler: { ctx in
+                guard let url = Self.typFileURL(in: ctx) else { return }
+                TypstUIState.shared.setSourceStyle(.source, for: url)
+                // Typesetting means seeing what you are typesetting: the pages
+                // go in the pane next door, reusing one that already has them.
+                // The keyboard stays in the source.
+                ctx.host.openURIBeside(TypstRef.preview(file: url.path).uri)
+            }
+        ))
 
         // Trying a face means reading your own prose in it, so stepping
         // through them beats opening a picker each time. Only in Write mode:
@@ -243,7 +248,7 @@ final class TypstPlugin: NSObject, Plugin {
     @MainActor
     static func isWriting(_ ctx: ActionContext) -> Bool {
         guard let url = typFileURL(in: ctx) else { return false }
-        return TypstUIState.shared.mode(for: url) == .write
+        return TypstUIState.shared.sourceStyle(for: url) == .prose
     }
 
     /// Export the document *as saved on disk* (Write/Read autosave, so this is

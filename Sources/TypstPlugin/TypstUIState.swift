@@ -1,37 +1,44 @@
 import Foundation
 
-/// Reading is no longer one of these.
+/// How a document's source is shown.
 ///
-/// A document's pages are a node — the same document under another name — so
-/// "Read" is a pane showing that node rather than a third way for one canvas
-/// to draw itself. A file whose stored mode was `read` decodes as nothing and
-/// falls to the default below, which is the migration.
-enum TypstMode: String, CaseIterable, Identifiable {
-    case write, typeset
+/// What is left of the three modes. Reading became a pane on the document's
+/// pages and typesetting became that pane beside the source, so the only thing
+/// still per-document is which way its own text is set: as a manuscript, or as
+/// the source it actually is. Which panes are open is the tab's business now,
+/// not a property of the file.
+enum TypstSourceStyle: String, CaseIterable, Identifiable {
+    case prose, source
     var id: String { rawValue }
 
-    var title: String {
-        switch self {
-        case .write: return "Write"
-        case .typeset: return "Typeset"
-        }
+    var title: String { self == .prose ? "Prose" : "Source" }
+
+    /// Prose is note-taking and saves itself; editing source is deliberate and
+    /// waits for ⌘S. The one distinction the modes carried that was never
+    /// about layout, so it stays.
+    var autosaves: Bool { self == .prose }
+
+    private static func key(for url: URL) -> String {
+        "typst.sourceStyle.\(url.absoluteString)"
     }
 
-    /// Write and Read behave like a notes app (autosave); Typeset keeps explicit
-    /// save points.
-    var autosaves: Bool { self != .typeset }
-
-    // Keyed by the *file*, not the opened node, so a document keeps its mode
-    // whether opened directly or through one of its section/task nodes.
-    static func stored(forFile url: URL?) -> TypstMode {
-        guard let url else { return .typeset }
-        return UserDefaults.standard.string(forKey: "typst.mode.\(url.absoluteString)")
-            .flatMap(TypstMode.init(rawValue:)) ?? .typeset
+    static func stored(forFile url: URL?) -> TypstSourceStyle {
+        guard let url else { return .source }
+        if let raw = UserDefaults.standard.string(forKey: key(for: url)),
+           let style = TypstSourceStyle(rawValue: raw) { return style }
+        // A document that still remembers a mode: writing was prose, and
+        // everything else was the source. Written back under the new name, so
+        // this is asked once per document and never again.
+        guard let legacy = UserDefaults.standard
+            .string(forKey: "typst.mode.\(url.absoluteString)") else { return .source }
+        let migrated: TypstSourceStyle = legacy == "write" ? .prose : .source
+        migrated.store(forFile: url)
+        return migrated
     }
 
     func store(forFile url: URL?) {
         guard let url else { return }
-        UserDefaults.standard.set(rawValue, forKey: "typst.mode.\(url.absoluteString)")
+        UserDefaults.standard.set(rawValue, forKey: Self.key(for: url))
     }
 }
 
@@ -43,7 +50,7 @@ enum TypstMode: String, CaseIterable, Identifiable {
 final class TypstUIState {
     static let shared = TypstUIState()
 
-    private var modes: [URL: TypstMode] = [:]
+    private var styles: [URL: TypstSourceStyle] = [:]
 
     /// Each open document: its live text, and what compiling it produced.
     ///
@@ -163,14 +170,14 @@ final class TypstUIState {
         proseFont = fonts[next]
     }
 
-    func mode(for url: URL?) -> TypstMode {
-        guard let url else { return .typeset }
-        return modes[url] ?? TypstMode.stored(forFile: url)
+    func sourceStyle(for url: URL?) -> TypstSourceStyle {
+        guard let url else { return .source }
+        return styles[url] ?? TypstSourceStyle.stored(forFile: url)
     }
 
-    func setMode(_ mode: TypstMode, for url: URL?) {
+    func setSourceStyle(_ style: TypstSourceStyle, for url: URL?) {
         guard let url else { return }
-        modes[url] = mode
-        mode.store(forFile: url)
+        styles[url] = style
+        style.store(forFile: url)
     }
 }
