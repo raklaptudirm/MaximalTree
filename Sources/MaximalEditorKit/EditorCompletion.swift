@@ -6,6 +6,9 @@ import STTextView
 // engine's built-in completion window; the coordinator triggers it while
 // typing inside completable contexts.
 
+/// One completion the editor can offer. `replaceRange` (UTF-16, against the
+/// text the provider was called with) is what inserting replaces; nil means
+/// "the identifier being typed", which the editor computes itself.
 public struct EditorCompletion: Sendable {
     public let label: String
     public let detail: String?
@@ -27,9 +30,6 @@ public struct EditorCompletion: Sendable {
 public protocol EditorCompletionProvider: AnyObject, Sendable {
     func completions(in text: String, at offset: Int) async -> [EditorCompletion]
 }
-
-/// A rendered equation and where its typographic baseline sits (points from
-/// the image's top) — the editor aligns that to the text's own baseline.
 
 // MARK: - Completion list items
 

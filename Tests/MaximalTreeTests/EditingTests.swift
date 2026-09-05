@@ -178,6 +178,30 @@ import Foundation
         #expect(Buffer("one\ntwo\nthree").type("2x").selected == "one\ntwo\n")
     }
 
+    /// `g e` is the end of the document. It used to answer exactly what `G`
+    /// answers — the *start* of the last line — so the app shipped two keys
+    /// for one place and no key for the end of the file.
+    @Test func goToEndReachesTheEndOfTheDocument() {
+        let buffer = Buffer("one\ntwo\nthree").type("ge")
+        #expect(buffer.selection.location == ("one\ntwo\nthree" as NSString).length)
+        // And that is somewhere G does not go.
+        #expect(Buffer("one\ntwo\nthree").type("G").selection.location == 8)
+    }
+
+    /// What goes in the register follows one rule, whichever verb filled it.
+    /// Delete recorded "never whole lines" while yank worked it out from the
+    /// text, so `x d p` put the line back inside another one while `x y p`
+    /// put it on its own — the same selection, the same paste, two answers.
+    @Test func deletingAndYankingFillTheRegisterTheSameWay() {
+        let deleted = Buffer("one\ntwo\nthree").type("xdp").text
+        let yanked = Buffer("one\ntwo\nthree").type("xyp").text
+        #expect(deleted == "two\none\nthree", "d then p: \(deleted)")
+        #expect(yanked == "one\none\ntwo\nthree", "y then p: \(yanked)")
+        // Neither leaves a blank line behind: a linewise paste goes *between*
+        // lines, and the register already carries the newline that makes one.
+        #expect(!deleted.contains("\n\n") && !yanked.contains("\n\n"))
+    }
+
     @Test func percentSelectsEverything() {
         #expect(Buffer("one\ntwo").type("%").selected == "one\ntwo")
     }

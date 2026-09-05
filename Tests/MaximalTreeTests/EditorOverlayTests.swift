@@ -46,8 +46,16 @@ import STTextView
         }
     }
 
-    /// Marks every `$…$` as inline math and every heading line as a heading, so
-    /// a repaint has real concealment work to do.
+    /// Marks every `$…$` as inline math, every `*…*` as strong, and every
+    /// heading line as a heading — so a repaint has real concealment work to
+    /// do.
+    ///
+    /// The strong runs matter more than they look. Concealment is what makes a
+    /// paragraph change *height* when it gains or loses its reveal: delimiters
+    /// collapse to a near-zero font off the caret's line and come back on it.
+    /// A tokenizer that emits only math conceals almost nothing, so the
+    /// document barely reflows and a test built on it cannot show a lurch it
+    /// never causes.
     private final class StubTokenizer: EditorTokenizer {
         func tokens(in text: String) -> [(range: NSRange, kind: EditorTokenKind)] {
             let ns = text as NSString
@@ -70,6 +78,20 @@ import STTextView
                 tokens.append((range, .math(block: trimmed == ns.substring(with: range))))
                 search = NSRange(location: close.upperBound,
                                  length: ns.length - close.upperBound)
+            }
+            // `*…*` as strong, whose delimiters conceal off the caret's line.
+            var stars = NSRange(location: 0, length: ns.length)
+            while stars.length > 0 {
+                let open = ns.range(of: "*", options: [], range: stars)
+                guard open.location != NSNotFound else { break }
+                let rest = NSRange(location: open.upperBound,
+                                   length: ns.length - open.upperBound)
+                let close = ns.range(of: "*", options: [], range: rest)
+                guard close.location != NSNotFound else { break }
+                tokens.append((NSRange(location: open.location,
+                                       length: close.upperBound - open.location), .strong))
+                stars = NSRange(location: close.upperBound,
+                                length: ns.length - close.upperBound)
             }
             return tokens
         }
@@ -351,6 +373,116 @@ import STTextView
         #expect(clickedAfter == clickedBefore,
                 "the clicked paragraph itself moved: \(clickedBefore) -> \(clickedAfter)")
         #expect(editor.textView.visibleRect.minY == scrollBefore, "the click scrolled")
+    }
+
+    /// A repaint that changes nothing must not move the view.
+    ///
+    /// The isolating case, with no click and no reveal in it: scroll far down,
+    /// repaint the document exactly as it already looks, and see whether the
+    /// line you were reading is still where it was. If this moves, the cause
+    /// is the *whole-document* repaint itself — setting attributes across the
+    /// file invalidates its layout, and TextKit re-estimates the prefix above
+    /// the viewport it has not laid out — and no amount of compensating for a
+    /// paragraph's reveal can help, because no reveal changed.
+    @Test func aRepaintThatChangesNothingDoesNotMoveTheView() async throws {
+        var long = document
+        for index in 12..<90 {
+            long += "\n\nParagraph \(index) says $x^\(index)$ and *emphasis* here too, "
+                + "continuing with enough words to wrap onto another line or two."
+        }
+        let editor = makeEditor(text: long)
+        editor.coordinator.highlightNow()
+        await settle()
+
+        // Measured the way the reader sees it, and *without* forcing layout:
+        // which line is at the top of the viewport, and how far into it. Asking
+        // for a document-wide layout to measure would lay out the prefix whose
+        // re-estimation is the thing under test, and the test would pass by
+        // having destroyed its own subject.
+        let lm = editor.textView.textLayoutManager
+        func topOfViewport() -> (offset: Int, into: CGFloat)? {
+            guard let anchor = ViewportAnchor.capture(
+                in: lm, visible: editor.textView.visibleRect),
+                  let cm = lm.textContentManager else { return nil }
+            return (cm.offset(from: cm.documentRange.location, to: anchor.location),
+                    anchor.offset)
+        }
+
+        editor.textView.scroll(CGPoint(x: 0, y: 4000))
+        editor.scrollView.reflectScrolledClipView(editor.scrollView.contentView)
+        await settle()
+
+        let before = try #require(topOfViewport())
+
+        // The same paint, over the same text, with the same caret: nothing
+        // about what is on screen should differ afterwards.
+        editor.coordinator.invalidateHighlight()
+        editor.coordinator.highlightNow()
+        await settle()
+
+        let after = try #require(topOfViewport())
+        #expect(before.offset == after.offset && abs(before.into - after.into) < 1,
+                "a no-op repaint changed the top of the viewport: \(before) -> \(after)")
+    }
+
+    /// A click through the engine's own mouse handling, rather than a
+    /// selection assigned by hand.
+    ///
+    /// Worth having — every other test here skips that path — but be clear
+    /// about what it does *not* cover: the reported viewport lurch does not
+    /// reproduce in a window that never draws. Measured in the running app, a
+    /// click collapses TextKit's laid-out extent (9435pt to 2879pt) and the
+    /// line at a stationary scroll offset moves forward by a thousand
+    /// characters. Headless, the layout survives the repaint and nothing
+    /// moves, so this asserts the click path works, not that the lurch is
+    /// gone.
+    ///
+    /// Every other test here assigns `textSelection` and calls the delegate by
+    /// hand, which skips the engine's own mouse handling — and that handling is
+    /// where a selection change can route into the engine's scroll-to-visible,
+    /// which corrects the content size and, for a target outside the viewport,
+    /// re-anchors TextKit's own viewport. Both move content under a fixed
+    /// scroll offset with no reveal involved, which is what the report says.
+    @Test func clickingWhileScrolledDownDoesNotMoveTheView() async throws {
+        var long = document
+        for index in 12..<200 {
+            long += "\n\nParagraph \(index) says $x^\(index)$ and *emphasis* here too, "
+                + "continuing with enough words to wrap onto another line or two."
+        }
+        let editor = makeEditor(text: long)
+        editor.coordinator.highlightNow()
+        await settle()
+
+        let lm = editor.textView.textLayoutManager
+        func topOfViewport() -> (offset: Int, into: CGFloat)? {
+            guard let anchor = ViewportAnchor.capture(
+                in: lm, visible: editor.textView.visibleRect),
+                  let cm = lm.textContentManager else { return nil }
+            return (cm.offset(from: cm.documentRange.location, to: anchor.location),
+                    anchor.offset)
+        }
+
+        editor.textView.scroll(CGPoint(x: 0, y: 3000))
+        editor.scrollView.reflectScrolledClipView(editor.scrollView.contentView)
+        await settle()
+
+        let before = try #require(topOfViewport())
+
+        // A click a third of the way down whatever is on screen.
+        let visible = editor.textView.visibleRect
+        let point = CGPoint(x: visible.midX, y: visible.minY + visible.height / 3)
+        let inWindow = editor.textView.convert(point, to: nil)
+        let down = try #require(NSEvent.mouseEvent(
+            with: .leftMouseDown, location: inWindow, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: editor.window.windowNumber, context: nil,
+            eventNumber: 1, clickCount: 1, pressure: 1))
+        editor.textView.mouseDown(with: down)
+        await settle()
+
+        let after = try #require(topOfViewport())
+        #expect(before.offset == after.offset && abs(before.into - after.into) < 1,
+                "the click moved the viewport: \(before) -> \(after)")
     }
 
     /// Clicking with the caret far above the viewport must not shift the view.

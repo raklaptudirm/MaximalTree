@@ -109,10 +109,7 @@ public final class EditEngine {
     /// that still speak keys and goes with them.
     public func perform(_ command: EditCommand, count: Int, mode: EditMode,
                         text: String, selection: NSRange) -> EditOutcome? {
-        if mode != lastMode {
-            reset()
-            lastMode = mode
-        }
+        lastMode = mode
         // Not ours: someone clicked, or searched. Both ends start again from
         // what they left.
         if emitted != selection {
@@ -220,7 +217,7 @@ public final class EditEngine {
         case .firstLine:
             return moved(to: count > 1 ? offset(ofLine: count - 1, in: ns) : 0)
         case .documentEnd:
-            return moved(to: lastLineStart(in: ns))
+            return moved(to: ns.length)
         case .toLineStart:
             return moved(to: lineStart(at: head, in: ns))
         case .toLineEnd:
@@ -244,19 +241,18 @@ public final class EditEngine {
 
         switch command {
         case .delete:
-            register = (ns.substring(with: range), false)
+            remember(ns.substring(with: range))
             anchor = range.location
             head = range.location
             return EditOutcome(edit: (range, ""),
                                selection: cursor(at: range.location, in: ns), mode: .normal)
         case .change:
-            register = (ns.substring(with: range), false)
+            remember(ns.substring(with: range))
             return EditOutcome(edit: (range, ""),
                                selection: NSRange(location: range.location, length: 0),
                                mode: .insert)
         case .yank:
-            register = (ns.substring(with: range), range.length > 0
-                        && ns.substring(with: range).hasSuffix("\n"))
+            remember(ns.substring(with: range))
             return EditOutcome(selection: range, mode: .normal)
 
         // Insert, at one end of the selection or the other.
@@ -288,14 +284,22 @@ public final class EditEngine {
         case .pasteAfter, .pasteBefore:
             guard let register else { return EditOutcome(selection: range, mode: mode) }
             if register.linewise {
-                let at = command == .pasteAfter ? lineEnd(at: range.location, in: ns)
-                                        : lineStart(at: range.location, in: ns)
-                let payload = command == .pasteAfter
-                    ? "\n" + register.text : register.text + "\n"
+                // Whole lines land between lines, never inside one — so paste
+                // at a line boundary and let the text carry its own newline.
+                // Adding one on top of the newline the register already ends
+                // with is where the blank line after every linewise paste came
+                // from.
+                let line = ns.lineRange(for: NSRange(location: range.location, length: 0))
+                let at = command == .pasteAfter ? NSMaxRange(line) : line.location
+                var payload = register.text
+                if !payload.hasSuffix("\n") { payload += "\n" }
+                // Pasting after a last line that ends without one: the document
+                // has no boundary there yet, so make one.
+                if at == ns.length, at > 0, ns.character(at: at - 1) != 10 {
+                    payload = "\n" + payload
+                }
                 return EditOutcome(edit: (NSRange(location: at, length: 0), payload),
-                                   selection: cursor(at: command == .pasteAfter ? at + 1 : at,
-                                                     in: ns),
-                                   mode: .normal)
+                                   selection: cursor(at: at, in: ns), mode: .normal)
             }
             // Over the selection for `p`, which is Helix's replace-with-yank.
             let at = command == .pasteAfter ? NSMaxRange(range) : range.location
@@ -351,7 +355,14 @@ public final class EditEngine {
         return NSRange(location: start, length: min(range.length, ns.length - start))
     }
 
-    private func reset() {
+    /// What `p` will paste, and whether it pastes as whole lines.
+    ///
+    /// One rule for all three verbs that fill it. Delete used to record
+    /// "never linewise" while yank worked it out from the text, so `x d p`
+    /// put the line back in the middle of another one and `x y p` did not —
+    /// the same selection, the same paste, two answers.
+    private func remember(_ text: String) {
+        register = (text, text.hasSuffix("\n"))
     }
 }
 

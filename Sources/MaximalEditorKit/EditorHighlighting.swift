@@ -56,10 +56,10 @@ public protocol EditorTokenizer: AnyObject {
     func tokens(in text: String) -> [(range: NSRange, kind: EditorTokenKind)]
 }
 
-/// One completion the editor can offer. `replaceRange` (UTF-16, against the
-/// text the provider was called with) is what inserting replaces; nil means
-/// "the identifier being typed", which the editor computes itself.
-
+/// Token colors, resolved per appearance. Values carried over from the previous
+/// Xcode-like themes so highlighting looks unchanged across the engine swap.
+/// Presentation kinds map onto semantic colors for code styles; in markup-rendering
+/// styles most of them are drawn as *formatting* instead (see the coordinator).
 enum TokenPalette {
     static func color(for kind: EditorTokenKind, dark: Bool) -> NSColor? {
         switch kind {

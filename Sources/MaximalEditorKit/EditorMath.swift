@@ -4,6 +4,8 @@ import AppKit
 // equation source into baseline-annotated images the editor floats over
 // reserved space. See the coordinator's renderMath/layoutMathOverlays.
 
+/// A rendered equation and where its typographic baseline sits (points from
+/// the image's top) — the editor aligns that to the text's own baseline.
 public struct RenderedEquation {
     public let image: NSImage
     public let baseline: CGFloat
@@ -27,8 +29,3 @@ public protocol EditorMathRenderer: AnyObject {
                       block: Bool,
                       completion: @escaping @MainActor () -> Void) -> RenderedEquation?
 }
-
-/// Token colors, resolved per appearance. Values carried over from the previous
-/// Xcode-like themes so highlighting looks unchanged across the engine swap.
-/// Presentation kinds map onto semantic colors for code styles; in markup-rendering
-/// styles most of them are drawn as *formatting* instead (see the coordinator).

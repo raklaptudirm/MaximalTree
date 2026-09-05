@@ -180,7 +180,7 @@ public final class EditorController {
         guard let textView else { return }
         textView.replaceCharacters(in: range, with: replacement)
         textView.textSelection = selection
-        textView.scrollRangeToVisible(selection)
+        textView.scrollToVisible(selection)
     }
 
     /// Current text and primary selection, for computing edits.
@@ -198,7 +198,28 @@ public final class EditorController {
                                           in: textView.text ?? "")
         let range = NSRange(location: offset, length: 0)
         textView.textSelection = range
-        textView.scrollRangeToVisible(range)
+        textView.scrollToVisible(range)
+    }
+}
+
+// MARK: - Scrolling somewhere far
+
+extension STTextView {
+    /// Scroll a range into view, having first laid out everything above it.
+    ///
+    /// TextKit 2 lays out lazily and *estimates* the height of everything it
+    /// has not reached, so the y of a location far from the viewport is a
+    /// guess. Scrolling to a guess puts the view roughly there, and the real
+    /// layout that follows moves the text underneath — the lurch after a jump
+    /// to a heading, a `G`, or a section node opening at its line. Laying the
+    /// prefix out first costs the work the jump was going to force anyway; it
+    /// just pays for it before choosing where to land rather than after.
+    func scrollToVisible(_ range: NSRange, ensuringLayout: Bool = true) {
+        if ensuringLayout, let contentManager = textLayoutManager.textContentManager,
+           let textRange = NSTextRange(range, in: contentManager) {
+            textLayoutManager.ensureLayout(upTo: textRange.endLocation)
+        }
+        scrollRangeToVisible(range)
     }
 }
 
@@ -286,7 +307,7 @@ public struct MaximalEditor: NSViewRepresentable {
             DispatchQueue.main.async { [weak textView] in
                 guard let textView else { return }
                 textView.textSelection = NSRange(location: offset, length: 0)
-                textView.scrollRangeToVisible(NSRange(location: offset, length: 0))
+                textView.scrollToVisible(NSRange(location: offset, length: 0))
             }
         }
         return scrollView
@@ -328,15 +349,18 @@ public struct MaximalEditor: NSViewRepresentable {
         // that changes the style, so it's the one that repaints synchronously
         // from inside layout. Hand the work to the next runloop turn instead,
         // where the engine owns its own layout again.
-        let text = self.text
         let style = self.style
         DispatchQueue.main.async { [weak textView] in
             MainActor.assumeIsolated {
                 guard let textView else { return }
-                // Re-checked here, not captured: the buffer may have caught up
-                // (or moved on) while this hop was in flight.
-                if !coordinator.isEditing, textView.text != text {
-                    coordinator.push(text, into: textView)
+                // Read at hop time, never captured. A keystroke can land in
+                // this one runloop turn, and the text this update was handed
+                // is then already a version behind — pushing it would take the
+                // character back out from under the reader. Ask the binding
+                // what it says *now*, which is the whole point of re-checking.
+                let latest = coordinator.boundText
+                if !coordinator.isEditing, textView.text != latest {
+                    coordinator.push(latest, into: textView)
                 }
                 if styleChanged {
                     Self.apply(style: style, to: textView)
@@ -382,7 +406,7 @@ public struct MaximalEditor: NSViewRepresentable {
             let start = min(max(outcome.selection.location, 0), length)
             textSelection = NSRange(location: start,
                                     length: min(outcome.selection.length, length - start))
-            scrollRangeToVisible(NSRange(location: start, length: 0))
+            scrollToVisible(NSRange(location: start, length: 0))
         }
 
 
@@ -440,6 +464,9 @@ public struct MaximalEditor: NSViewRepresentable {
     @MainActor
     public final class Coordinator: NSObject, @preconcurrency STTextViewDelegate {
         private let text: Binding<String>
+        /// What the binding says right now — for the deferred half of
+        /// `updateNSView`, which must not act on a value it captured.
+        var boundText: String { text.wrappedValue }
         private let tokenizer: EditorTokenizer?
         private let mathRenderer: EditorMathRenderer?
         private let completionProvider: EditorCompletionProvider?
@@ -566,12 +593,34 @@ public struct MaximalEditor: NSViewRepresentable {
             guard !pendingMath.isEmpty,
                   let contentManager = textView.textLayoutManager.textContentManager
             else { return }
+            // Assigning the whole text is not an edit, and the engine reports
+            // it as one: an insertion of the entire document at zero. Sliding
+            // every equation forward by the length of the document is how the
+            // ranges ended up past the end of the text they described, and the
+            // only reason nothing showed it is that the next full repaint
+            // rebuilt the list from scratch. Nothing here survives a wholesale
+            // replacement anyway — every image describes text that is gone.
             let edited = NSRange(affectedCharRange, in: contentManager)
+            let length = ((textView.text ?? "") as NSString).length
+            if isPushingText || edited.location == 0 && edited.length == 0
+                && (replacementString as NSString).length == length {
+                // And repaint from scratch rather than leaving nothing: the
+                // list is rebuilt from the document the engine has *finished*
+                // announcing, which is the ordering the paint that ran from
+                // the selection notification could not have seen.
+                pendingMath.removeAll()
+                invalidateHighlight()
+                highlightNow()
+                return
+            }
             let delta = (replacementString as NSString).length - edited.length
             pendingMath = pendingMath.compactMap { entry in
                 MathOverlayLayout.adjust(entry.range, forEditIn: edited, delta: delta)
                     .map { (range: $0, equation: entry.equation, block: entry.block) }
             }
+            // A range that no longer fits the text cannot be placed and must
+            // not be carried: whatever moved it was wrong about the document.
+            pendingMath.removeAll { NSMaxRange($0.range) > length }
             // A tick later: the edit's layout has to settle before frames are real.
             DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated { self?.layoutMathOverlays() }
@@ -642,10 +691,68 @@ public struct MaximalEditor: NSViewRepresentable {
             let moved = paragraph.location != revealedParagraph?.location
             let previous = revealedParagraph
             revealedParagraph = paragraph
-            if moved {
+            guard moved else { return }
+            // Two paragraphs change when the caret crosses a line: the one
+            // losing its reveal and the one gaining it. Repainting the whole
+            // document for that sets every font and paragraph style in the
+            // file, which invalidates the file's layout — and TextKit answers
+            // by throwing away what it had laid out and laying out the
+            // viewport alone. Measured in the app: the laid-out extent
+            // collapsed from 9435pt to 2879pt on one click, and with the
+            // prefix above the reader an estimate again, the line sitting at
+            // an unchanged scroll offset moved forward by a thousand
+            // characters. Nothing scrolled; the document slid underneath.
+            //
+            // So paint the two paragraphs and leave the rest of the layout
+            // alone. Only when the text is exactly what the last full paint
+            // saw — typing a newline also moves the caret to a new paragraph,
+            // and there the tokens have changed everywhere, so that case falls
+            // through to the debounced full repaint as before.
+            if textView.text == lastHighlightedText {
+                repaintReveal(from: previous, to: paragraph, on: textView)
+            } else {
                 repaintFollowsCaret = true
                 pendingRevealLoss = previous
                 highlightNow()
+            }
+        }
+
+        /// Repaint just the paragraphs a caret move changed.
+        ///
+        /// The incremental half of `highlightNow`, built from the same `paint`
+        /// — which was written for it, and had lost its only caller. It keeps
+        /// the same bookkeeping: the reveal position the next full paint
+        /// compares against, the height compensation for a paragraph above the
+        /// viewport, and the overlay pass a tick later once TextKit has laid
+        /// the new attributes out.
+        private func repaintReveal(from previous: NSRange?, to current: NSRange,
+                                   on textView: STTextView) {
+            guard let tokenizer else { return }
+            let content = textView.text ?? ""
+            let ns = content as NSString
+            let style = lastStyle ?? .code()
+            // Pin the top of the viewport, rather than compensating for the
+            // one paragraph that lost its reveal. Compensation was the only
+            // thing available while a caret repaint invalidated the whole
+            // document — an absolute anchor is worthless when every position
+            // above the reader is about to be re-estimated. Painting two
+            // paragraphs leaves that layout alone, so the anchor is honest
+            // again, and it covers what the single-paragraph delta could not:
+            // any number of lines above changing height for any reason.
+            captureScrollAnchor()
+            lastHighlightedRevealStart = current.location
+            for range in [previous, current].compactMap({ $0 }) {
+                let start = min(max(range.location, 0), ns.length)
+                let clamped = NSRange(location: start,
+                                      length: min(range.length, ns.length - start))
+                paint(clamped, style: style, content: content, ns: ns,
+                      tokenizer: tokenizer, on: textView)
+            }
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.layoutMathOverlays()
+                    self?.restoreScrollAnchor()
+                }
             }
         }
 
@@ -671,6 +778,19 @@ public struct MaximalEditor: NSViewRepresentable {
         /// No-ops when nothing changed.
         func highlightNow() {
             guard let textView, let tokenizer else { return }
+            // Taken before the no-op check, never after: these describe the
+            // repaint that was *asked for*, and a repaint that turns out to
+            // change nothing still answers for them. Left set, they would tell
+            // the next repaint — an image landing, a theme switch — that the
+            // reader had just typed or clicked, and it would skip the anchoring
+            // that keeps the page still.
+            let followsCaret = repaintFollowsCaret
+            let followsReader = repaintFollowsEdit || followsCaret
+            let revealLoss = pendingRevealLoss
+            repaintFollowsEdit = false
+            repaintFollowsCaret = false
+            pendingRevealLoss = nil
+
             let content = textView.text ?? ""
             if content == lastHighlightedText && isDark == lastHighlightedDark
                 && revealedParagraph?.location == lastHighlightedRevealStart { return }
@@ -697,12 +817,6 @@ public struct MaximalEditor: NSViewRepresentable {
             // paragraphs already in view, so there is nothing to compensate
             // for; anchoring is for images landing and theme switches, where
             // heights change under a passive reader.
-            let followsCaret = repaintFollowsCaret
-            let followsReader = repaintFollowsEdit || followsCaret
-            let revealLoss = pendingRevealLoss
-            repaintFollowsEdit = false
-            repaintFollowsCaret = false
-            pendingRevealLoss = nil
             if followsCaret {
                 captureHeightCompensation(of: revealLoss)
             } else if !followsReader {
@@ -1049,6 +1163,12 @@ public struct MaximalEditor: NSViewRepresentable {
         private func applyHeightCompensation() {
             guard let (location, before) = pendingHeightCompensation, let textView else { return }
             pendingHeightCompensation = nil
+            // Measure after the layout the repaint asked for, not before it.
+            // A paragraph whose attributes changed is only flagged dirty; until
+            // the pass runs it still reports the height it had, the delta is
+            // zero, and nothing compensates for a change that is about to
+            // happen anyway.
+            textView.layoutSubtreeIfNeeded()
             guard let frame = paragraphFrame(at: location, in: textView.textLayoutManager)
             else { return }
             let delta = frame.height - before
@@ -1083,6 +1203,12 @@ public struct MaximalEditor: NSViewRepresentable {
             guard let (anchor, caretWasVisible) = pendingScrollAnchor else { return }
             pendingScrollAnchor = nil
             guard let textView else { return }
+            // Same rule as the height compensation: measure after the layout
+            // the repaint asked for. A paragraph whose attributes changed is
+            // only flagged dirty, so until the pass runs the anchored line
+            // still reports where it used to be and the restore corrects to a
+            // position that is about to stop being true.
+            textView.layoutSubtreeIfNeeded()
             if let targetY = ViewportAnchor.targetY(for: anchor,
                                                     in: textView.textLayoutManager) {
                 let visible = textView.visibleRect
@@ -1094,7 +1220,7 @@ public struct MaximalEditor: NSViewRepresentable {
             // Revealing the caret's paragraph makes it taller, which can push the
             // caret below the fold even though the view didn't move.
             if caretWasVisible, !caretIsVisible(in: textView) {
-                textView.scrollRangeToVisible(
+                textView.scrollToVisible(
                     NSRange(location: textView.textSelection.location, length: 0))
             }
         }
