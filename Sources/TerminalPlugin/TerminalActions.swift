@@ -27,6 +27,22 @@ enum TerminalActions {
         session(for: ctx.targets)?.view.perform(action: action)
     }
 
+    /// Moving the scrollback — the one thing a terminal claims for itself in
+    /// a commanding mode. It swallows every key while you type at it, but
+    /// there the app's bindings are what you want, and nothing else can move
+    /// its scrollback.
+    ///
+    /// Actions like any other, so they are listed, rebindable and callable by
+    /// name; the keys that run them are declared on the canvas below.
+    static let scrolling: [(id: String, title: String, key: String, action: String)] = [
+        ("terminal.scrollDown", "Scroll Down", "j", "scroll_page_lines:1"),
+        ("terminal.scrollUp", "Scroll Up", "k", "scroll_page_lines:-1"),
+        ("terminal.scrollHalfDown", "Half Page Down", "d", "scroll_page_fractional:0.5"),
+        ("terminal.scrollHalfUp", "Half Page Up", "u", "scroll_page_fractional:-0.5"),
+        ("terminal.scrollTop", "Top of Scrollback", "g g", "scroll_to_top"),
+        ("terminal.scrollBottom", "Bottom of Scrollback", "G", "scroll_to_bottom"),
+    ]
+
     /// The actions that are a straight hand-off to libghostty.
     ///
     /// Clearing a screen and resizing a font are the terminal's business and
@@ -51,6 +67,18 @@ enum TerminalActions {
 extension TerminalPlugin {
     @MainActor
     func registerSessionActions(with registry: PluginRegistry) {
+        for item in TerminalActions.scrolling {
+            registry.register(action: Action(
+                id: item.id, title: item.title, systemImage: "scroll",
+                appliesTo: .custom { TerminalActions.isLiveSession($0) },
+                // Not in any menu: forty motions would bury the handful of
+                // things that belong there. Searchable, and bound to a key.
+                scope: .document, surfaces: [.palette]
+            ) { ctx in
+                TerminalActions.perform(item.action, on: ctx)
+            })
+        }
+
         for item in TerminalActions.passthrough {
             registry.register(action: Action(
                 id: item.id, title: item.title, systemImage: item.image,

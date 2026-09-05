@@ -23,6 +23,14 @@ final class WebSessionStore {
     /// Favicon PNGs by host, fetched once per host per run.
     @ObservationIgnored private var favicons: [String: Data?] = [:]
 
+    /// The session for `id` if it already has one, without making one.
+    ///
+    /// An action's predicate must not create a web view as a side effect of
+    /// asking whether it applies: the finder asks about every action every
+    /// time it is opened, and that would start a browser session for each page
+    /// in the list.
+    func existingSession(for id: NodeID) -> WebSession? { sessions[id] }
+
     /// The session for `id`, created (and pointed at `id`'s URL) on first use.
     func session(for id: NodeID) -> WebSession {
         if let existing = sessions[id] {
@@ -72,7 +80,7 @@ final class WebSessionStore {
 @MainActor
 @Observable
 final class WebSession: NSObject {
-    let webView: WebCanvasView
+    let webView: WKWebView
 
     var url: URL?
     var title: String = ""
@@ -86,7 +94,7 @@ final class WebSession: NSObject {
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
 
     init(homeURL: URL?) {
-        webView = WebCanvasView(frame: .zero, configuration: WKWebViewConfiguration())
+        webView = WKWebView(frame: .zero)
         super.init()
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -187,10 +195,14 @@ final class WebPlugin: NSObject, Plugin {
 
     func register(with registry: PluginRegistry) {
         registry.register(provider: WebProvider())
+        WebKeys.register(with: registry)
 
         registry.register(canvas: CanvasContribution(
             priority: 0,
             matches: { $0.type == TypeID("web.page") },
+            // Declared on the contribution so the canvas that draws is the
+            // canvas whose keys apply.
+            keys: WebKeys.keys,
             make: { id, host in AnyView(WebCanvas(nodeID: id).environment(host)) }
         ))
         registry.register(canvas: CanvasContribution(

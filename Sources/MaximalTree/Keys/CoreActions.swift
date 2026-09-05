@@ -89,8 +89,24 @@ extension AppModel {
     /// here does nothing rather than something surprising — which is also how
     /// the explorer motions stay the sidebar's own.
     func runCommand(_ id: String, count: Int = 1) {
-        guard let action = action(id), canRun(action) else { return }
-        perform(action, count: count)
+        guard let action = action(id) else { return }
+        let targets = keyTargets()
+        guard canRun(action, targets: targets) else { return }
+        perform(action, targets: targets, count: count)
+    }
+
+    /// What a key press acts on.
+    ///
+    /// The surface holding the keyboard says what "this" means. A pane means
+    /// the node it is showing; the sidebar and the inspector mean the
+    /// selection, which is what they are about.
+    ///
+    /// Without this a key pressed in a terminal acted on whatever happened to
+    /// be selected in the tree — a different node, or none — which is why a
+    /// canvas could only ever have implemented its own keys.
+    private func keyTargets() -> [NodeID]? {
+        guard case .pane = Surfaces.focused(), let node = focusedPaneNode() else { return nil }
+        return [node]
     }
 
     /// The keys the sidebar claims.

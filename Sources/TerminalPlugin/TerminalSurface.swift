@@ -20,13 +20,6 @@ final class TerminalSurfaceView: NSView {
     /// way to the right node.
     var sessionID: NodeID?
 
-    /// Half of a `g g`, waiting for the second key.
-    fileprivate var pendingG: Bool {
-        get { _pendingG }
-        set { _pendingG = newValue }
-    }
-    private var _pendingG = false
-
     /// Whether libghostty accepted this view and gave it a surface.
     var hasLiveSurface: Bool { surface != nil }
 
@@ -261,32 +254,6 @@ final class TerminalSurfaceView: NSView {
                                   Self.mods(event.modifierFlags))
     }
 
-    // MARK: The terminal's own keys
-
-    /// Scrolling the scrollback in a commanding mode.
-    ///
-    /// A terminal takes every key while you are typing at it — that is insert
-    /// mode, and the modal layer hands keys straight to the view without
-    /// asking. In a commanding mode it takes almost nothing, because the app's
-    /// bindings are what you want there; what it does claim is the scrollback,
-    /// which nothing else can move.
-    ///
-    /// Everything else is declined, so `SPC`, surface movement and the rest
-    /// keep working with the keyboard in a terminal.
-    /// Each key names one of libghostty's own binding actions, so the amounts
-    /// are the terminal's rather than this side's guess at them. Faking a
-    /// wheel was the first attempt and it was wrong twice over: a
-    /// non-precision delta is counted in notches, not points, so one "line"
-    /// scrolled a page and a half page scrolled several.
-    static let scrollBindings: [(binding: CanvasKeyBinding, action: String)] = [
-        (.init("j", title: "Scroll down"), "scroll_page_lines:1"),
-        (.init("k", title: "Scroll up"), "scroll_page_lines:-1"),
-        (.init("d", title: "Half page down"), "scroll_page_fractional:0.5"),
-        (.init("u", title: "Half page up"), "scroll_page_fractional:-0.5"),
-        (.init("g g", title: "Top of scrollback"), "scroll_to_top"),
-        (.init("G", title: "Bottom of scrollback"), "scroll_to_bottom"),
-    ]
-
     override func scrollWheel(with event: NSEvent) {
         guard let surface else { return }
         // Bit 0 says the deltas are precise (a trackpad, not a wheel notch),
@@ -494,25 +461,3 @@ struct TerminalCanvas: NSViewRepresentable {
 }
 
 
-extension TerminalSurfaceView: CanvasKeyHandling {
-    var keyBindings: [CanvasKeyBinding] { Self.scrollBindings.map(\.binding) }
-
-    func handleKey(_ key: String, control: Bool, mode: KeyMode) -> KeyMode? {
-        guard !control else { return nil }
-        // `g` waits for its second key, as it does everywhere else.
-        if pendingG {
-            pendingG = false
-            guard key == "g" else { return nil }
-            perform(action: "scroll_to_top")
-            return mode
-        }
-        if key == "g" {
-            pendingG = true
-            return mode
-        }
-        guard let match = Self.scrollBindings.first(where: { $0.binding.key == key })
-        else { return nil }
-        perform(action: match.action)
-        return mode
-    }
-}

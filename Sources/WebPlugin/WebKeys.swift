@@ -2,72 +2,58 @@ import AppKit
 import WebKit
 import MaximalTreeKit
 
-/// The page's own keys.
-///
-/// A `WKWebView` subclass rather than an extension on the class itself: the
-/// modal layer finds a canvas by walking up from the first responder, and the
-/// responder inside a web view is one of WebKit's own subviews — so the thing
-/// it walks up to has to be ours to conform.
+/// The page's own keys, as actions.
 ///
 /// Scrolling goes through JavaScript because macOS `WKWebView` keeps its
-/// scroll view to itself. That also makes the keys behave the way the page
-/// expects: `window.scrollBy` respects scroll-behavior and inner scrollers,
-/// where nudging a scroll view would not.
+/// scroll view to itself — and because `window.scrollBy` respects the page's
+/// inner scrollers and its scroll-behaviour, where nudging a scroll view
+/// would not.
 ///
-/// No repeat counts: `handleKey` isn't given one, and a canvas that wants them
-/// has to count digits itself the way the editor does. Scrolling by a fixed
-/// step is the honest simple thing until something needs otherwise.
-final class WebCanvasView: WKWebView, CanvasKeyHandling {
+/// These were a `WKWebView` subclass implementing `handleKey`, which is why
+/// the subclass existed at all. Now the core resolves the key and runs the
+/// action, so a plain web view will do and the keys are rebindable, listable
+/// and callable by name like everything else.
+@MainActor
+enum WebKeys {
     /// A line, and most of a screen — the amounts every vim-flavoured browser
     /// extension settled on.
     private static let line = 64
     private static let halfPage = "window.innerHeight / 2"
 
-    static let bindings: [CanvasKeyBinding] = [
-        .init("j", title: "Scroll down"),
-        .init("k", title: "Scroll up"),
-        .init("d", title: "Half page down"),
-        .init("u", title: "Half page up"),
-        .init("G", title: "Bottom of page"),
-        .init("g g", title: "Top of page"),
-        .init("H", title: "Back"),
-        .init("L", title: "Forward"),
-        .init("r", title: "Reload"),
+    /// id, title, the key that runs it, and what it does to the page.
+    static let scrolling: [(id: String, title: String, key: String, script: String)] = [
+        ("web.scrollDown", "Scroll Down", "j", "window.scrollBy(0, \(line))"),
+        ("web.scrollUp", "Scroll Up", "k", "window.scrollBy(0, -\(line))"),
+        ("web.halfPageDown", "Half Page Down", "d", "window.scrollBy(0, \(halfPage))"),
+        ("web.halfPageUp", "Half Page Up", "u", "window.scrollBy(0, -(\(halfPage)))"),
+        ("web.top", "Top of Page", "g g", "window.scrollTo(0, 0)"),
+        ("web.bottom", "Bottom of Page", "G", "window.scrollTo(0, document.body.scrollHeight)"),
     ]
 
-    var keyBindings: [CanvasKeyBinding] { Self.bindings }
-
-    /// `g` waits for a second key, the way it does everywhere else in the app.
-    private var pendingG = false
-
-    func handleKey(_ key: String, control: Bool, mode: KeyMode) -> KeyMode? {
-        guard !control else { return nil }
-        if pendingG {
-            pendingG = false
-            guard key == "g" else { return nil }
-            scroll(to: "0")
-            return mode
-        }
-        switch key {
-        case "j": scroll(by: "\(Self.line)")
-        case "k": scroll(by: "-\(Self.line)")
-        case "d": scroll(by: Self.halfPage)
-        case "u": scroll(by: "-(\(Self.halfPage))")
-        case "G": scroll(to: "document.body.scrollHeight")
-        case "g": pendingG = true
-        case "H": goBack()
-        case "L": goForward()
-        case "r": reload()
-        default: return nil
-        }
-        return mode
+    /// The keys the page claims, for its canvas contribution to declare.
+    static var keys: [SurfaceKey] {
+        scrolling.map { SurfaceKey($0.key, $0.id) }
+            + [SurfaceKey("H", "web.back"),
+               SurfaceKey("L", "web.forward"),
+               SurfaceKey("r", "web.reload")]
     }
 
-    private func scroll(by amount: String) {
-        evaluateJavaScript("window.scrollBy(0, \(amount))")
+    /// The session a node stands for, if it has one.
+    static func session(for targets: [NodeID]) -> WebSession? {
+        targets.compactMap { WebSessionStore.shared.existingSession(for: $0) }.first
     }
 
-    private func scroll(to position: String) {
-        evaluateJavaScript("window.scrollTo(0, \(position))")
+    static func register(with registry: PluginRegistry) {
+        for item in scrolling {
+            registry.register(action: Action(
+                id: item.id, title: item.title, systemImage: "scroll",
+                appliesTo: .custom { session(for: $0.targets) != nil },
+                // Searchable and bindable, but not in a menu: a page's
+                // scrolling is not something anyone goes to the menu bar for.
+                scope: .document, surfaces: [.palette]
+            ) { ctx in
+                session(for: ctx.targets)?.webView.evaluateJavaScript(item.script)
+            })
+        }
     }
 }

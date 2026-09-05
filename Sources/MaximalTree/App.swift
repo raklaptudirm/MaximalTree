@@ -655,7 +655,9 @@ final class AppModel {
 
     /// Whether this action can be run against what is in front of you — what
     /// greys out a menu item, and what keeps the finder from offering it.
-    func canRun(_ action: Action) -> Bool { context(for: action, targets: nil) != nil }
+    func canRun(_ action: Action, targets: [NodeID]? = nil) -> Bool {
+        context(for: action, targets: targets) != nil
+    }
 
     /// Run an action from a surface that lists them — a menu, the finder.
     ///

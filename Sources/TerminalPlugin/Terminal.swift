@@ -75,7 +75,11 @@ final class TerminalPlugin: NSObject, Plugin {
 
         registry.register(canvas: CanvasContribution(
             priority: 0,
-            matches: { $0.type == TypeID("terminal.session") }
+            matches: { $0.type == TypeID("terminal.session") },
+            // Declared here so the canvas that draws is the canvas whose keys
+            // apply. The core resolves them and runs the action; nothing in
+            // this plugin sees a keystroke in a commanding mode.
+            keys: TerminalActions.scrolling.map { SurfaceKey($0.key, $0.id) }
         ) { id, host in
             TerminalSessions.shared.host = host
             guard let session = TerminalSessions.shared.session(for: id) else {

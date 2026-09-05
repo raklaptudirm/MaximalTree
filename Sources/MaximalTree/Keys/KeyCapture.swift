@@ -298,7 +298,7 @@ struct KeyWhichKey: View {
                       keymap: Keymap,
                       in keys: KeyEngine) -> [(chord: KeyChord, binding: KeyBinding)] {
         Self.live(bindings, under: prefix, keymap: keymap) { [model] id in
-            model.action(id).map(model.canRun) ?? false
+            model.action(id).map { model.canRun($0) } ?? false
         }
     }
 
