@@ -1,14 +1,19 @@
 import Foundation
 
+/// Reading is no longer one of these.
+///
+/// A document's pages are a node — the same document under another name — so
+/// "Read" is a pane showing that node rather than a third way for one canvas
+/// to draw itself. A file whose stored mode was `read` decodes as nothing and
+/// falls to the default below, which is the migration.
 enum TypstMode: String, CaseIterable, Identifiable {
-    case write, typeset, read
+    case write, typeset
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .write: return "Write"
         case .typeset: return "Typeset"
-        case .read: return "Read"
         }
     }
 

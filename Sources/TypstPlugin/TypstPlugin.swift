@@ -117,7 +117,6 @@ final class TypstPlugin: NSObject, Plugin {
         let modeShortcuts: [(TypstMode, KeyEquivalent, String)] = [
             (.write, "1", "square.and.pencil"),
             (.typeset, "2", "doc.richtext"),
-            (.read, "3", "book"),
         ]
         for (mode, key, image) in modeShortcuts {
             registry.register(action: Action(
@@ -178,8 +177,11 @@ final class TypstPlugin: NSObject, Plugin {
         registry.register(action: Action(
             id: "typst.preview",
             title: "Show Pages",
-            systemImage: "doc.richtext",
+            systemImage: "book",
             appliesTo: .custom { Self.typFileURL(in: $0) != nil },
+            // Where Read mode's key went: it opens the document's pages,
+            // which is what reading it was.
+            shortcut: KeyboardShortcut("3", modifiers: [.command, .option]),
             scope: .document,
             handler: { ctx in
                 guard let url = Self.typFileURL(in: ctx) else { return }

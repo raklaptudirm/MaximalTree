@@ -59,7 +59,6 @@ struct TypstCanvas: View {
                 switch mode {
                 case .write: writeLayout
                 case .typeset: typesetLayout
-                case .read: previewColumn
                 }
             }
 

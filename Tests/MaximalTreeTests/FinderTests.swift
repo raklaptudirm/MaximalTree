@@ -534,3 +534,47 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
         #expect(FinderFiles.items(under: [missing]).isEmpty)
     }
 }
+
+/// Which open tabs the buffer list shows, once identities are counted.
+@MainActor
+@Suite struct FinderIdentityTests {
+    private func id(_ uri: String) -> NodeID { NodeID(uri)! }
+
+    /// A document's pages are the document. Two tabs, two names, one entry —
+    /// and it goes to the tab showing the name the thing is known by.
+    @Test func twoNamesForOneThingAreListedOnce() {
+        let file = id("file:///notes/doc.typ")
+        let pages = id("typst://preview?file=/notes/doc.typ")
+        let editorTab = UUID(), pagesTab = UUID()
+
+        let listed = FinderIdentities.collapse([(pagesTab, pages), (editorTab, file)]) {
+            $0 == pages ? [file] : []
+        }
+        #expect(listed.count == 1)
+        #expect(listed.first?.id == file, "listed the pages over the document")
+        #expect(listed.first?.tab == editorTab, "would have gone to the wrong tab")
+    }
+
+    /// The pages open on their own: still one entry, under the document's
+    /// name, going to the only tab there is.
+    @Test func thePagesAloneAreListedUnderTheDocument() {
+        let file = id("file:///notes/doc.typ")
+        let pages = id("typst://preview?file=/notes/doc.typ")
+        let tab = UUID()
+
+        let listed = FinderIdentities.collapse([(tab, pages)]) {
+            $0 == pages ? [file] : []
+        }
+        #expect(listed.count == 1)
+        #expect(listed.first?.canonical == file, "shown under its own name")
+        #expect(listed.first?.id == pages, "opening it must reach the tab that exists")
+    }
+
+    /// Things that are not each other stay separate, in the order they were.
+    @Test func unrelatedTabsAreUntouched() {
+        let a = id("file:///a.txt"), b = id("file:///b.txt")
+        let first = UUID(), second = UUID()
+        let listed = FinderIdentities.collapse([(first, a), (second, b)]) { _ in [] }
+        #expect(listed.map(\.id) == [a, b])
+    }
+}

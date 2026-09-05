@@ -126,14 +126,28 @@ extension AppModel {
         return url.deletingLastPathComponent().lastPathComponent
     }
 
+    /// One entry per *thing* that is open, not per tab showing one.
+    ///
+    /// A node that answers to another name is that thing — a typst document's
+    /// pages are the document, the way a repository is its directory. So two
+    /// tabs on two names list once, under the name the thing is known by, and
+    /// picking it goes to the tab showing that name if one is open. Listing
+    /// both would say there are two documents open, which contradicts what
+    /// declaring the identity claimed.
     private func tabItems() -> [FinderItem] {
-        navigation.tabs.compactMap { tab in
-            guard let id = tab.current, let node = host.node(id) else { return nil }
-            return FinderItem(id: "tab:\(tab.id)", title: node.label,
-                              subtitle: folder(of: id),
-                              systemImage: node.icon?.systemName ?? "square.on.square",
-                              effect: .open(id.uri))
+        let open = navigation.tabs.compactMap { tab -> (tab: UUID, id: NodeID)? in
+            guard let id = tab.current, host.node(id) != nil else { return nil }
+            return (tab.id, id)
         }
+        return FinderIdentities.collapse(open) { host.node($0)?.identities ?? [] }
+            .compactMap { entry in
+                guard let node = host.node(entry.id) else { return nil }
+                let subject = host.node(entry.canonical) ?? node
+                return FinderItem(id: "tab:\(entry.tab)", title: subject.label,
+                                  subtitle: folder(of: entry.canonical),
+                                  systemImage: node.icon?.systemName ?? "square.on.square",
+                                  effect: .open(entry.id.uri))
+            }
     }
 
     /// Last-use order, like the switcher it stands in for: the one you were
@@ -181,6 +195,38 @@ extension AppModel {
         @unknown default:
             // A newer SDK's effect this build doesn't know how to do.
             return
+        }
+    }
+}
+
+
+/// One entry per *thing* that is open, not per tab showing one.
+///
+/// A node that answers to another name is that thing — a typst document's
+/// pages are the document, the way a repository is its directory. Two tabs on
+/// two names are one entry, under the name the thing is known by, and picking
+/// it goes to the tab showing that name when one is open. Listing both would
+/// say two documents are open, which is the opposite of what declaring the
+/// identity claimed.
+///
+/// Pure, so the rule can be checked without a window — the same reason
+/// `ActionTargets.variants` is.
+enum FinderIdentities {
+    static func collapse(_ open: [(tab: UUID, id: NodeID)],
+                         identities: (NodeID) -> [NodeID])
+        -> [(tab: UUID, id: NodeID, canonical: NodeID)] {
+        let canonical = open.map { entry in
+            (tab: entry.tab, id: entry.id, canonical: identities(entry.id).first ?? entry.id)
+        }
+        var listed: Set<NodeID> = []
+        return canonical.compactMap { entry in
+            guard !listed.contains(entry.canonical) else { return nil }
+            // Prefer the tab showing the thing under its own name — the
+            // document rather than its pages — wherever one is open.
+            let preferred = canonical.first { $0.id == entry.canonical } ?? entry
+            guard preferred.tab == entry.tab else { return nil }
+            listed.insert(entry.canonical)
+            return preferred
         }
     }
 }
