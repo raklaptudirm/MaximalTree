@@ -93,7 +93,7 @@ import STTextView
         // so they're part of the behaviour under test.
         coordinator.installObservers(for: textView, in: scrollView)
 
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+        let window = TestWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
                               styleMask: [.titled], backing: .buffered, defer: false)
         scrollView.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
         scrollView.contentView.postsBoundsChangedNotifications = true

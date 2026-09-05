@@ -12,8 +12,34 @@ final class OpenFilesDelegate: NSObject, NSApplicationDelegate {
     /// too small — SwiftUI orders a remembered frame front when a file
     /// arrives, and a shell that can't fit in it aborts the process.
     func applicationWillFinishLaunching(_ notification: Notification) {
-        MainActor.assumeIsolated { WindowFloor.watch() }
+        MainActor.assumeIsolated {
+            WindowFloor.watch()
+            Self.stayOutOfTheWayUnderTest()
+        }
         claimOpenDocuments()
+    }
+
+    /// Under XCTest, be an app nobody has to look at.
+    ///
+    /// The suite runs *inside* this app — it is the test host — so a plain run
+    /// launched a full window over whatever the reader was working on and took
+    /// the keyboard with it. `.accessory` keeps it out of the Dock and out of
+    /// the way; its own windows are ordered off as they appear, since the
+    /// scene still builds one and nothing in the tests wants it.
+    ///
+    /// Not `.prohibited`, which forbids windows outright: several suites need
+    /// a real window to get TextKit to lay anything out.
+    @MainActor
+    private static func stayOutOfTheWayUnderTest() {
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        else { return }
+        NSApp.setActivationPolicy(.accessory)
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didUpdateNotification, object: nil, queue: .main) { note in
+            guard let window = note.object as? NSWindow,
+                  window.identifier?.rawValue.contains("AppWindow") == true else { return }
+            MainActor.assumeIsolated { window.orderOut(nil) }
+        }
     }
 
     /// Set once the model exists. Static because AppKit builds the delegate

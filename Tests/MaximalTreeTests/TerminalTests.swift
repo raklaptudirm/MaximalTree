@@ -130,7 +130,7 @@ import Foundation
         let store = makeStore()
         let session = store.create(directory: NSTemporaryDirectory())
 
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
+        let window = TestWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
                               styleMask: [.titled], backing: .buffered, defer: false)
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
         window.contentView = container
@@ -156,7 +156,7 @@ import Foundation
         let store = makeStore()
         let session = store.create(directory: NSTemporaryDirectory())
 
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
+        let window = TestWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = session.view
         window.orderFrontRegardless()
@@ -228,7 +228,7 @@ import Foundation
         let start = NSTemporaryDirectory()
         let session = store.create(directory: start)
 
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
+        let window = TestWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = session.view
         window.orderFrontRegardless()
@@ -430,7 +430,7 @@ import Foundation
         let store = TerminalSessions()
         let session = store.create(directory: NSTemporaryDirectory(),
                                    initialInput: "echo \(marker)\n")
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 400),
+        let window = TestWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 400),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = session.view
         window.orderFrontRegardless()
@@ -468,7 +468,7 @@ import Foundation
         let session = TerminalSessions.shared.create(directory: NSTemporaryDirectory(),
                                                      initialInput: "sleep 1; exit\n")
         let id = session.id
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 400),
+        let window = TestWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 400),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = session.view
         window.orderFrontRegardless()
@@ -504,7 +504,7 @@ import Foundation
         let store = TerminalSessions()
         let session = store.create(directory: NSTemporaryDirectory(),
                                    initialInput: "echo \"seen<$GIT_EDITOR>end\"\n")
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 400),
+        let window = TestWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 400),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = session.view
         window.orderFrontRegardless()
@@ -553,7 +553,7 @@ import Foundation
         let session = store.create(
             directory: repo.path,
             initialInput: "git -c user.email=t@e.com -c user.name=T commit\n")
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 500),
+        let window = TestWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 500),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = session.view
         window.orderFrontRegardless()
@@ -583,7 +583,7 @@ import Foundation
     @Test func aSurfaceAttachesToAViewAndSpawnsAShell() async throws {
         try #require(GhosttyApp.shared.app != nil)
 
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
+        let window = TestWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
                               styleMask: [.titled], backing: .buffered, defer: false)
         let view = TerminalSurfaceView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
         view.workingDirectory = NSTemporaryDirectory()

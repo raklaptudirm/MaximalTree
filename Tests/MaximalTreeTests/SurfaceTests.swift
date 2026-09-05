@@ -49,7 +49,7 @@ import SwiftUI
 
         let host = NSHostingView(rootView: content)
         host.frame = NSRect(x: 0, y: 0, width: 400, height: 200)
-        let window = NSWindow(contentRect: host.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: host.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = host
         host.layoutSubtreeIfNeeded()
@@ -96,7 +96,7 @@ import SwiftUI
 
         let host = NSHostingView(rootView: content)
         host.frame = NSRect(x: 0, y: 0, width: 200, height: 200)
-        let window = NSWindow(contentRect: host.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: host.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = host
         host.layoutSubtreeIfNeeded()
@@ -143,7 +143,7 @@ import SwiftUI
 
         let host = NSHostingView(rootView: content)
         host.frame = NSRect(x: 0, y: 0, width: 800, height: 400)
-        let window = NSWindow(contentRect: host.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: host.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = host
         host.layoutSubtreeIfNeeded()
@@ -194,7 +194,7 @@ import SwiftUI
 
         let host = NSHostingView(rootView: content)
         host.frame = NSRect(x: 0, y: 0, width: 500, height: 300)
-        let window = NSWindow(contentRect: host.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: host.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = host
         window.makeKeyAndOrderFront(nil)
@@ -234,7 +234,7 @@ import SwiftUI
 
         let host = NSHostingView(rootView: content)
         host.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
-        let window = NSWindow(contentRect: host.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: host.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = host
         host.layoutSubtreeIfNeeded()
@@ -297,7 +297,7 @@ import SwiftUI
 @MainActor
 @Suite struct SurfacePersistenceTests {
     private func window() -> NSWindow {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+        let window = TestWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
         return window

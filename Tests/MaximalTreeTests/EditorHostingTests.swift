@@ -177,7 +177,7 @@ import STTextView
         let hosting = NSHostingView(rootView: Shell(
             mode: mode, text: text,
             tokenizer: StubTokenizer(), math: StubMath()))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1310, height: 850),
+        let window = TestWindow(contentRect: NSRect(x: 0, y: 0, width: 1310, height: 850),
                               styleMask: [.titled, .resizable],
                               backing: .buffered, defer: false)
         window.contentView = hosting
@@ -221,7 +221,7 @@ import STTextView
         let hosting = NSHostingView(rootView: Shell(
             mode: mode, text: text,
             tokenizer: StubTokenizer(), math: StubMath()))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1310, height: 850),
+        let window = TestWindow(contentRect: NSRect(x: 0, y: 0, width: 1310, height: 850),
                               styleMask: [.titled, .resizable],
                               backing: .buffered, defer: false)
         window.contentView = hosting
@@ -255,7 +255,7 @@ import STTextView
         // Sized so the write column sits at its maxWidth boundary — where the
         // editor's width is negotiable and a content-derived intrinsic size can
         // oscillate the constraint solver.
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1310, height: 850),
+        let window = TestWindow(contentRect: NSRect(x: 0, y: 0, width: 1310, height: 850),
                               styleMask: [.titled, .resizable],
                               backing: .buffered, defer: false)
         window.contentView = hosting
@@ -359,7 +359,7 @@ import STTextView
         textView.widthTracksTextView = style.wrapLines
         textView.text = String(repeating: "let value = compute(everything) ; ", count: 40)
 
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
+        let window = TestWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         scrollView.frame = NSRect(x: 0, y: 0, width: 500, height: 300)
         window.contentView = scrollView
@@ -395,7 +395,7 @@ import STTextView
         textView.text = String(repeating: "let value = compute(everything) ; ", count: 40)
             + "\nshort\nalso short\n"
 
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
+        let window = TestWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         scrollView.frame = NSRect(x: 0, y: 0, width: 500, height: 300)
         window.contentView = scrollView
@@ -430,7 +430,7 @@ import STTextView
         }
         let hosting = NSHostingView(rootView: CanvasShape(
             text: String(repeating: "let value = compute(everything) ; ", count: 40)))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
+        let window = TestWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.contentView = hosting
         window.orderFrontRegardless()
@@ -475,7 +475,7 @@ import STTextView
         }
         let hosting = NSHostingView(rootView: Host(
             text: String(repeating: "let value = compute(everything) ; ", count: 40)))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
+        let window = TestWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.contentView = hosting
         window.orderFrontRegardless()
