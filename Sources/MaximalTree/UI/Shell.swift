@@ -200,6 +200,9 @@ struct InspectorPane: View {
                             section.contribution.make(section.id, host)
                         }
                     }
+                    // From inside, because the scroll view is SwiftUI's and
+                    // the only way to it is upwards.
+                    .background(InspectorScrollAccessor())
                 }
             }
         } else {

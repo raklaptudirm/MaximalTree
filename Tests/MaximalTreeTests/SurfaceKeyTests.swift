@@ -198,10 +198,10 @@ import AppKit
 
         _ = model.surfaceKeymap(for: .inspector, showing: nil)
         #expect(model.surfaceKeymapBuilds == after + 1)
-        // The inspector claims nothing yet, and says so rather than serving
-        // the sidebar's keys.
+        // And it is the inspector's own map, not the sidebar's served again:
+        // `j` means something in both, and different things.
         #expect(model.surfaceKeymap(for: .inspector, showing: nil)
-                    .lookup([KeyChord("j")]) == .unbound)
+                    .lookup([KeyChord("j")]) == .command("inspector.scrollDown"))
     }
 
     /// A pane showing something else is a different question, and a rename

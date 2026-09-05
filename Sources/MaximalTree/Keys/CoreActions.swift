@@ -127,6 +127,21 @@ extension AppModel {
         SurfaceKey("g p", "node.parent"),
     ]
 
+    /// The keys the inspector claims.
+    ///
+    /// Reading, not acting. Its sections are arbitrary plugin SwiftUI, so
+    /// there is no selection to walk and nothing generic to activate — but a
+    /// long inspector you could not reach the bottom of without the mouse was
+    /// the last hole in getting around by keyboard alone.
+    static let inspectorKeys: [SurfaceKey] = [
+        SurfaceKey("j", "inspector.scrollDown"),
+        SurfaceKey("k", "inspector.scrollUp"),
+        SurfaceKey("d", "inspector.halfPageDown"),
+        SurfaceKey("u", "inspector.halfPageUp"),
+        SurfaceKey("g g", "inspector.top"),
+        SurfaceKey("G", "inspector.bottom"),
+    ]
+
     /// Actions the host contributes itself.
     ///
     /// Node manipulation that belongs to no plugin because it rides the generic
@@ -171,6 +186,7 @@ extension AppModel {
         // key of its own. Now it claims them, and the actions say nothing
         // about surfaces at all.
         registry.register(surfaceKeys: SurfaceKeys(.sidebar, Self.sidebarKeys))
+        registry.register(surfaceKeys: SurfaceKeys(.inspector, Self.inspectorKeys))
 
         registry.register(action: Action(
             id: "core.rename",
@@ -199,6 +215,22 @@ extension AppModel {
             model.keys.setMode(.insert)
         }
         act("editor.focus", "Focus Editor") { model, _ in model.focusEditor() }
+
+        // MARK: Reading the inspector
+        act("inspector.scrollDown", "Scroll Inspector Down") { _, ctx in
+            InspectorScroll.by(lines: CGFloat(ctx.count))
+        }
+        act("inspector.scrollUp", "Scroll Inspector Up") { _, ctx in
+            InspectorScroll.by(lines: -CGFloat(ctx.count))
+        }
+        act("inspector.halfPageDown", "Inspector Half Page Down") { _, _ in
+            InspectorScroll.byHalfPage(1)
+        }
+        act("inspector.halfPageUp", "Inspector Half Page Up") { _, _ in
+            InspectorScroll.byHalfPage(-1)
+        }
+        act("inspector.top", "Top of Inspector") { _, _ in InspectorScroll.toTop() }
+        act("inspector.bottom", "Bottom of Inspector") { _, _ in InspectorScroll.toBottom() }
         act("explorer.focus", "Focus Explorer") { model, _ in model.focus(.sidebar) }
         act("inspector.focus", "Focus Inspector") { model, _ in model.focus(.inspector) }
 

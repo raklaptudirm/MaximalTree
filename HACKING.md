@@ -57,6 +57,7 @@ driven:
 project.yml                     # XcodeGen project definition — THE source of truth
 Sources/
   MaximalEditorKit/             # the ONE target touching the editor engine (STTextView)
+    EditorKeys.swift            #   the editor's commands as actions + their keys
     EditorKit.swift             #   MaximalEditor view + style + controller + coordinator
                                 #   (markup rendering, concealment, math overlays,
                                 #   completion triggering, scroll anchoring)
@@ -74,8 +75,10 @@ Sources/
     IconView.swift              #   NodeIconView + tint→Color (shared by host + plugins)
     Mutation.swift              #   GraphMutation, NodeChange, MutatingNodeProvider
     HostContext.swift           #   @Observable HostContext + GraphBackend seam
-    Interface.swift             #   Action (+shortcut), Canvas/Inspector/Child
-                                #   contributions, Plugin, Registry
+    KeyMode.swift               #   the app's one mode (normal/insert/visual)
+    Interface.swift             #   Action (+shortcut), SurfaceKey/SurfaceKeys,
+                                #   Canvas/Inspector/Child contributions,
+                                #   Plugin, Registry
   MaximalTree/                  # the host app
     App.swift                   #   @main, AppModel wiring
     Host/                       #   Registry, GraphStore, HostBroker, NavigationModel, Workspace, PluginHost
@@ -91,7 +94,8 @@ Sources/
                                 #   sequences, counts), KeyChord (Emacs notation),
                                 #   KeyRouting/KeyDispatch (who gets a key),
                                 #   KeyCapture (the event monitor + which-key),
-                                #   CoreActions (every operation the host owns),
+                                #   CoreActions (every operation the host owns,
+                                #   and the sidebar's own keys),
                                 #   DefaultKeymap (the keys it ships with)
   FileSystemPlugin/             # reference provider plugin (loadable bundle)
     FileSystem.swift            #   provider, mutations, symlink anchors, FSEvents
@@ -375,15 +379,32 @@ and bindings are written in Emacs notation (`C-w`, `SPC g s`). `Keymap` is a tri
 the interesting question isn't only "what does `SPC g s` do" but "I have typed `SPC g`,
 what now" — which is what which-key shows and what makes a leader learnable.
 
-The routing rule is **the mode decides, not the view**. In a commanding mode the
-focused canvas is offered the key first (`CanvasKeyHandling`) and the app's keymap
-takes whatever it declines; in insert mode every key belongs to whatever has focus.
-Deciding by view instead was two bugs in a row — first the editor wasn't recognised,
-then every canvas was and the leader stopped working anywhere.
+The routing rule is **the mode decides, not the view**. In a commanding mode a key
+names an action; in insert mode every key belongs to whatever has focus. Deciding by
+view instead was two bugs in a row — first the editor wasn't recognised, then every
+canvas was and the leader stopped working anywhere.
 
-A canvas also *declares* what it takes (`keyBindings`), so which-key can tell the
-truth: with the editor focused, `j` moves the caret, and listing the sidebar's `j`
-plainly would be a lie.
+**A surface declares its keys; no surface ever sees a keystroke.** A canvas declares
+them on its `CanvasContribution` (`keys: [SurfaceKey]`), which is what keeps the canvas
+that *draws* and the canvas whose keys apply from ever being two different things — with
+a matcher of its own they could disagree, and nothing would say so. The sidebar and the
+inspector have no contribution to hang keys on, so they register `SurfaceKeys(.sidebar,
+…)`; those are the host's own.
+
+Resolution order for a key press: a sequence already begun continues in the map that
+began it, then the focused surface's map, then the app's. `SPC` is the app's wherever
+you are — a surface that could shadow the leader could take away the way out of itself.
+
+Everything follows from a key naming an action rather than a surface implementing one:
+the keys are rebindable, they are listed in the finder, they are callable by name with
+`host.perform(_:)`, and which-key shows the resolved answer from one source instead of
+a declaration kept in step with an implementation. It was two mechanisms until recently
+— a canvas handling raw keystrokes, and the sidebar (which could not) carrying a
+predicate on ten actions naming the surface they applied to. The predicate is gone, and
+so is `CanvasKeyHandling`.
+
+A surface's action that starts typing says so by setting `HostContext.keyMode`: there
+is one mode, and it is not a surface's to keep a copy of.
 
 Keys arrive through one local event monitor (`KeyCapture`), not SwiftUI's
 `onKeyPress` — bindings have to work wherever focus is, including where a field editor
@@ -687,8 +708,8 @@ Known gaps, roughly in order:
 - **Parameterised actions** — an action takes a target node but not an argument, so
   "switch to workspace X" is a string-encoded id (`workspace.select:<uuid>`) that the
   finder unpacks by prefix. The one place the single id space leaks.
-- **Only the editor declares its keys** — the terminal and web canvases take keys
-  without saying which, so which-key can't describe them the way it does the editor.
+- **The inspector has no keys** — every other surface declares some; it is the one
+  place you still cannot reach from the keyboard alone.
 - **One shell window** — there is one `AppModel`, so a second window of the main
   scene is a duplicate view of the same workspace and tabs rather than a second
   place to work.
