@@ -63,6 +63,12 @@ struct TypstCanvas: View {
                 Divider()
                 DiagnosticsBar(diagnostics: diagnostics) { jump(to: $0) }
             }
+            // An export's own diagnostics, in any mode — you can export from
+            // Write and Read too, and a failure there was silent.
+            if let report = TypstUIState.shared.exportReport(for: fileURL) {
+                Divider()
+                DiagnosticsBar(diagnostics: report.diagnostics) { jump(to: $0) }
+            }
         }
         // The one piece of status the canvas keeps: a corner dot for compile
         // errors (any mode) or unsaved changes (explicit-save Typeset). All
@@ -253,9 +259,7 @@ struct TypstCanvas: View {
     /// The folders the user mounted, which is the scope a document is allowed
     /// to import from — a file may sit several directories down and still
     /// belong to the workspace above it (see TypstProject).
-    private var mountedRoots: [URL] {
-        host.roots.compactMap { $0.scheme == "file" ? URL(string: $0.uri) : nil }
-    }
+    private var mountedRoots: [URL] { TypstProject.mountedRoots(in: host) }
 
     /// A phony node (section/task) was opened onto this canvas: jump to its
     /// line. The nonce guard makes each jump one-shot — re-renders and later

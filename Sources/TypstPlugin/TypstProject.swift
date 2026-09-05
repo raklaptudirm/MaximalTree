@@ -1,4 +1,5 @@
 import Foundation
+import MaximalTreeKit
 
 /// Where a document's *project* begins.
 ///
@@ -24,6 +25,18 @@ enum TypstProject {
     ///
     /// Never above a mounted root: everything under the root is readable by
     /// the compiled document, and the workspace is the boundary the user drew.
+    /// The folders the user mounted, as file URLs — the scope a document is
+    /// allowed to import from.
+    ///
+    /// Derived in one place because deriving it in two is how the export path
+    /// came to compile against a narrower root than the preview: a document
+    /// several directories down still belongs to the workspace above it, and
+    /// a caller that forgets says `../notes.typ` would escape the project.
+    @MainActor
+    static func mountedRoots(in host: HostContext) -> [URL] {
+        host.roots.compactMap { $0.scheme == "file" ? URL(string: $0.uri) : nil }
+    }
+
     static func root(for document: URL, mountedRoots: [URL] = []) -> URL {
         let directory = document.deletingLastPathComponent().standardizedFileURL
         let workspace = enclosingRoot(of: directory, in: mountedRoots)

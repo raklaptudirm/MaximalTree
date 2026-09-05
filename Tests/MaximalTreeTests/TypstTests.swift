@@ -793,16 +793,77 @@ struct TinymistLiveTests {
         try "world".write(to: doc.deletingLastPathComponent()
             .appendingPathComponent("data.txt"), atomically: true, encoding: .utf8)
         let output = await TypstEngine.compile(source: "#read(\"data.txt\")",
-                                               documentURL: doc)
+                                               documentURL: doc, mountedRoots: [])
         #expect(output.pdf != nil)
         #expect(output.diagnostics.isEmpty)
+    }
+
+    /// An export's outcome is kept, and shown on the canvas of the document
+    /// that produced it. It used to be discarded at the call site, so a
+    /// document that could not compile and one that wrote a file looked
+    /// identical: nothing on screen either way.
+    @MainActor
+    @Test func anExportReportsItselfToItsOwnDocument() {
+        let state = TypstUIState.shared
+        defer { state.clearExportReport() }
+        let document = URL(fileURLWithPath: "/tmp/note.typ")
+        let other = URL(fileURLWithPath: "/tmp/elsewhere.typ")
+
+        state.exportReport = TypstUIState.ExportReport(
+            document: document, destination: URL(fileURLWithPath: "/tmp/note.pdf"),
+            diagnostics: [TypstDiagnostic(severity: .error, line: 3, column: 1,
+                                          message: "unknown variable")])
+        #expect(state.exportReport(for: document)?.failed == true)
+        #expect(state.exportReport(for: other) == nil, "another document's canvas")
+        #expect(state.exportReport(for: nil) == nil)
+
+        // Nothing to say is nothing to show — a clean export is the file
+        // appearing, not a bar reporting that it did.
+        state.exportReport = TypstUIState.ExportReport(
+            document: document, destination: URL(fileURLWithPath: "/tmp/note.pdf"),
+            diagnostics: [])
+        #expect(state.exportReport(for: document) == nil)
+    }
+
+    /// A document may sit below the folder it belongs to, and reach above
+    /// itself for what it imports. The scope that makes that legal is the set
+    /// of mounted roots — and the export path used to take the default of
+    /// none, so the project root became the document's own directory and
+    /// anything above it "would escape project root". The preview passed the
+    /// roots and worked; export did not and did not.
+    @Test func exportUsesTheMountedRootAsTheProjectScope() async throws {
+        let workspace = try tempDocURL().deletingLastPathComponent()
+        let sub = workspace.appendingPathComponent("sub", isDirectory: true)
+        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        try "Shared prose.".write(to: workspace.appendingPathComponent("notes.typ"),
+                                  atomically: true, encoding: .utf8)
+        let doc = sub.appendingPathComponent("doc.typ")
+        let source = "#include \"../notes.typ\"\n= Title"
+        try source.write(to: doc, atomically: true, encoding: .utf8)
+        let destination = sub.appendingPathComponent("out.pdf")
+
+        // Without the workspace, the root is `sub` and the include escapes it.
+        let escaped = await TypstEngine.export(source: source, documentURL: doc,
+                                               format: .pdf, to: destination,
+                                               mountedRoots: [])
+        #expect(escaped.contains { $0.severity == .error },
+                "a parent import outside every root should be refused")
+
+        // With it, the root is the workspace and the include is inside.
+        let allowed = await TypstEngine.export(source: source, documentURL: doc,
+                                               format: .pdf, to: destination,
+                                               mountedRoots: [workspace])
+        #expect(allowed.filter { $0.severity == .error }.isEmpty,
+                "refused inside its own workspace: \(allowed.map(\.message))")
+        #expect(FileManager.default.fileExists(atPath: destination.path))
     }
 
     @Test func exportsPDF() async throws {
         let doc = try tempDocURL()
         let dest = doc.deletingLastPathComponent().appendingPathComponent("out.pdf")
         let diagnostics = await TypstEngine.export(
-            source: "= Hello", documentURL: doc, format: .pdf, to: dest)
+            source: "= Hello", documentURL: doc, format: .pdf, to: dest,
+            mountedRoots: [])
         #expect(diagnostics.filter { $0.severity == .error }.isEmpty)
         let data = try Data(contentsOf: dest)
         #expect(data.starts(with: Array("%PDF".utf8)))
@@ -813,7 +874,7 @@ struct TinymistLiveTests {
         let dest = doc.deletingLastPathComponent().appendingPathComponent("out.svg")
         let diagnostics = await TypstEngine.export(
             source: "= Page One\n#pagebreak()\n= Page Two",
-            documentURL: doc, format: .svg, to: dest)
+            documentURL: doc, format: .svg, to: dest, mountedRoots: [])
         #expect(diagnostics.filter { $0.severity == .error }.isEmpty)
         let svg = try String(contentsOf: dest, encoding: .utf8)
         #expect(svg.contains("<svg"))   // both pages, stacked in one file
@@ -824,7 +885,8 @@ struct TinymistLiveTests {
         let dir = doc.deletingLastPathComponent()
         let dest = dir.appendingPathComponent("out.png")
         let diagnostics = await TypstEngine.export(
-            source: "one\n#pagebreak()\ntwo", documentURL: doc, format: .png, to: dest)
+            source: "one\n#pagebreak()\ntwo", documentURL: doc, format: .png, to: dest,
+            mountedRoots: [])
         #expect(diagnostics.filter { $0.severity == .error }.isEmpty)
         let magic: [UInt8] = [0x89, 0x50, 0x4E, 0x47]
         for page in 1...2 {
@@ -840,7 +902,8 @@ struct TinymistLiveTests {
         let doc = try tempDocURL()
         let dest = doc.deletingLastPathComponent().appendingPathComponent("one.png")
         let diagnostics = await TypstEngine.export(
-            source: "just one page", documentURL: doc, format: .png, to: dest)
+            source: "just one page", documentURL: doc, format: .png, to: dest,
+            mountedRoots: [])
         #expect(diagnostics.filter { $0.severity == .error }.isEmpty)
         #expect(FileManager.default.fileExists(atPath: dest.path))
     }
@@ -849,7 +912,8 @@ struct TinymistLiveTests {
         let doc = try tempDocURL()
         let dest = doc.deletingLastPathComponent().appendingPathComponent("bad.svg")
         let diagnostics = await TypstEngine.export(
-            source: "#nonexistent()", documentURL: doc, format: .svg, to: dest)
+            source: "#nonexistent()", documentURL: doc, format: .svg, to: dest,
+            mountedRoots: [])
         #expect(diagnostics.contains { $0.severity == .error && $0.line == 1 })
         #expect(!FileManager.default.fileExists(atPath: dest.path))
     }
@@ -866,7 +930,8 @@ struct TinymistLiveTests {
         #task(done: true, due: "2026-07-20", tags: ("errands",))[Post letter]
         """
         let output = await TypstEngine.compile(source: source,
-                                               documentURL: try tempDocURL())
+                                               documentURL: try tempDocURL(),
+                                               mountedRoots: [])
         #expect(output.diagnostics.filter { $0.severity == .error }.isEmpty)
         #expect(output.pdf != nil)
     }

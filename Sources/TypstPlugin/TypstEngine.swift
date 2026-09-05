@@ -31,7 +31,7 @@ enum TypstEngine {
     /// the async facade canvases use for live preview. The engine is the only
     /// compiler; an internal failure surfaces as a diagnostic, never a hang.
     static func compile(source: String, documentURL: URL,
-                        mountedRoots: [URL] = []) async -> Output {
+                        mountedRoots: [URL]) async -> Output {
         await Task.detached(priority: .userInitiated) {
             let root = TypstProject.root(for: documentURL, mountedRoots: mountedRoots)
             return compile(source: source, root: root,
@@ -58,7 +58,7 @@ enum TypstEngine {
     /// no errors among them means the export happened.
     static func export(source: String, documentURL: URL,
                        format: ExportFormat, to destination: URL,
-                       mountedRoots: [URL] = []) async -> [TypstDiagnostic] {
+                       mountedRoots: [URL]) async -> [TypstDiagnostic] {
         await Task.detached(priority: .userInitiated) {
             exportSync(source: source, documentURL: documentURL,
                        format: format, to: destination, mountedRoots: mountedRoots)
@@ -67,7 +67,7 @@ enum TypstEngine {
 
     static func exportSync(source: String, documentURL: URL,
                            format: ExportFormat, to destination: URL,
-                           mountedRoots: [URL] = []) -> [TypstDiagnostic] {
+                           mountedRoots: [URL]) -> [TypstDiagnostic] {
         let root = TypstProject.root(for: documentURL, mountedRoots: mountedRoots)
         let mainPath = TypstProject.mainPath(of: documentURL, in: root)
         func failure(_ message: String) -> [TypstDiagnostic] {

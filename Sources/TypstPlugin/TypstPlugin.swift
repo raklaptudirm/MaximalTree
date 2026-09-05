@@ -223,6 +223,10 @@ final class TypstPlugin: NSObject, Plugin {
     static func export(_ format: TypstEngine.ExportFormat, in ctx: ActionContext) {
         guard let url = typFileURL(in: ctx),
               let source = try? String(contentsOf: url, encoding: .utf8) else { return }
+        // The same scope the preview compiles in. Without it the project root
+        // is the document's own directory, and anything the document reaches
+        // for above itself — `../notes.typ` — escapes it.
+        let roots = TypstProject.mountedRoots(in: ctx.host)
         let panel = NSSavePanel()
         switch format {
         case .pdf: panel.allowedContentTypes = [.pdf]
@@ -234,10 +238,25 @@ final class TypstPlugin: NSObject, Plugin {
         if format == .png {
             panel.message = "Multi-page documents export one PNG per page."
         }
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
-        Task {
-            _ = await TypstEngine.export(source: source, documentURL: url,
-                                         format: format, to: destination)
+        // Off this runloop turn: the action may have come from a menu item or
+        // the palette, and running a modal panel while AppKit is still
+        // dismissing one of those is how a save panel fails to appear at all.
+        DispatchQueue.main.async {
+            guard panel.runModal() == .OK, let destination = panel.url else { return }
+            Task { @MainActor in
+                let diagnostics = await TypstEngine.export(
+                    source: source, documentURL: url,
+                    format: format, to: destination, mountedRoots: roots)
+                // What the engine said, kept rather than dropped. The canvas
+                // shows it; without this an export that could not compile and
+                // one that wrote a file were the same silence.
+                TypstUIState.shared.exportReport = TypstUIState.ExportReport(
+                    document: url, destination: destination, diagnostics: diagnostics)
+                if diagnostics.contains(where: { $0.severity == .error }) {
+                    NSLog("[TypstPlugin] export to \(destination.path) failed: "
+                          + diagnostics.map(\.message).joined(separator: "; "))
+                }
+            }
         }
     }
 

@@ -63,6 +63,32 @@ final class TypstUIState {
     /// Bumped by "Refresh Agenda"; agenda canvases reload on change.
     var agendaRefresh = 0
 
+    /// How the last export went, for the canvas of the document it came from.
+    ///
+    /// Exporting reaches the engine, which answers with diagnostics — a
+    /// compile error, a font it could not find, a destination it could not
+    /// write. Those used to be discarded at the call site, so a failed export
+    /// and a successful one looked exactly alike: nothing happened, and the
+    /// file was or wasn't there.
+    struct ExportReport: Equatable {
+        let document: URL
+        let destination: URL
+        let diagnostics: [TypstDiagnostic]
+        var failed: Bool { diagnostics.contains { $0.severity == .error } }
+    }
+
+    var exportReport: ExportReport?
+
+    /// The report to show on this document's canvas, if it is the one that
+    /// exported and the export had something to say.
+    func exportReport(for url: URL?) -> ExportReport? {
+        guard let url, let report = exportReport, report.document == url,
+              !report.diagnostics.isEmpty else { return nil }
+        return report
+    }
+
+    func clearExportReport() { exportReport = nil }
+
     /// The face Write mode sets prose in. App-wide rather than per-document:
     /// you are choosing how writing looks, not marking up one file.
     ///
