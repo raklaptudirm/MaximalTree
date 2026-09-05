@@ -291,12 +291,64 @@ import PDFKit
     }
 }
 
+/// The preview node: a document's pages under a second name.
+@MainActor
+@Suite struct TypstPreviewNodeTests {
+    private func tempDoc() throws -> URL {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("typst-preview-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let doc = dir.appendingPathComponent("doc.typ")
+        try "= Title".write(to: doc, atomically: true, encoding: .utf8)
+        return doc
+    }
+
+    /// The claim the whole design rests on. The pages are not a thing derived
+    /// from the document — they *are* the document, under another name — so
+    /// every action the file understands reaches a pane showing them, and any
+    /// list of things shows one entry rather than two.
+    @Test func thePagesClaimTheDocumentAsTheirIdentity() throws {
+        let doc = try tempDoc()
+        defer { try? FileManager.default.removeItem(at: doc.deletingLastPathComponent()) }
+        let node = TypstProvider.previewNode(file: doc)
+
+        #expect(node.type == TypeID("typst.preview"))
+        #expect(node.identities == [NodeID(doc.standardizedFileURL.absoluteString)!],
+                "the pages answer to no other name: \(node.identities)")
+        #expect(node.label == "doc", "shown under the document's own name")
+        #expect(!node.hasChildren)
+    }
+
+    /// A phony node still has to be a real file underneath, the same check the
+    /// sections and tasks make.
+    @Test func itResolvesForAFileAndNotForADirectory() throws {
+        let doc = try tempDoc()
+        let dir = doc.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let provider = TypstProvider()
+
+        #expect(provider.resolve(TypstRef.preview(file: doc.path).uri) != nil)
+        #expect(provider.resolve(TypstRef.preview(file: dir.path).uri) == nil)
+        #expect(provider.resolve(TypstRef.preview(file: "/nowhere/gone.typ").uri) == nil)
+    }
+
+    /// It is one document, not a container of anything.
+    @Test func itHasNoChildren() async throws {
+        let doc = try tempDoc()
+        defer { try? FileManager.default.removeItem(at: doc.deletingLastPathComponent()) }
+        let id = try #require(NodeID(TypstRef.preview(file: doc.path).uri))
+        let page = await TypstProvider().children(of: id, page: nil)
+        #expect(page.items.isEmpty)
+    }
+}
+
 @Suite struct TypstRefTests {
     @Test func urisRoundTripAndCanonicalize() throws {
         let refs = [
             TypstRef.section(file: "/Users/x/my notes/doc.typ", line: 12),
             TypstRef.task(file: "/Users/x/doc.typ", index: 3),
             TypstRef.agenda(dir: "/Users/x/notes"),
+            TypstRef.preview(file: "/Users/x/my notes/doc.typ"),
         ]
         for ref in refs {
             #expect(TypstRef(uri: ref.uri) == ref)

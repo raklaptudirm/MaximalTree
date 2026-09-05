@@ -361,6 +361,8 @@ targets:
       - path: Sources/TypstPlugin/PDFAppearance.swift
       - path: Sources/TypstPlugin/TypstServices.swift
       - path: Sources/TypstPlugin/TypstUIState.swift
+      - path: Sources/TypstPlugin/TypstDocument.swift
+      - path: Sources/TypstPlugin/TypstProvider.swift
       - path: Sources/TypstPlugin/ProseStyle.swift
       - Sources/WebPlugin
       - Sources/TerminalPlugin

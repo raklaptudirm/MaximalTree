@@ -16,7 +16,7 @@ struct TypstProvider: NodeProvider {
         else { return nil }
         switch ref.kind {
         case .agenda: guard isDirectory.boolValue else { return nil }
-        case .section, .task: guard !isDirectory.boolValue else { return nil }
+        case .section, .task, .preview: guard !isDirectory.boolValue else { return nil }
         }
         return NodeID(ref.uri)
     }
@@ -24,6 +24,8 @@ struct TypstProvider: NodeProvider {
     func node(for id: NodeID) async -> Node? {
         guard let ref = TypstRef(uri: id.uri) else { return nil }
         switch ref.kind {
+        case .preview:
+            return Self.previewNode(file: ref.fileURL)
         case .agenda:
             return Self.agendaNode(dir: ref.fileURL)
         case .section, .task:
@@ -47,7 +49,7 @@ struct TypstProvider: NodeProvider {
     func children(of id: NodeID, page cursor: Cursor?) async -> Page<Node> {
         guard let ref = TypstRef(uri: id.uri) else { return Page(items: []) }
         switch ref.kind {
-        case .task:
+        case .task, .preview:
             return Page(items: [])
         case .section:
             let items = Self.outline(ofFileAt: ref.fileURL)
@@ -116,6 +118,23 @@ struct TypstProvider: NodeProvider {
                                     : NodeIcon("circle", tint: .secondary),
                     attributes: attrs,
                     anchor: fileAnchor(file: file, line: task.line))
+    }
+
+    /// The document's rendered pages.
+    ///
+    /// Declares the file as its identity, the way the agenda declares its
+    /// folder: these are one document under two names, so everything the file
+    /// can do — save, rename, reveal, export — works from a pane showing the
+    /// pages, run against the identity that understands it. It also means a
+    /// list of *things* shows this once, under the document's own name, rather
+    /// than as a second entry pretending to be a second file.
+    static func previewNode(file: URL) -> Node {
+        Node(id: NodeID(canonical: TypstRef.preview(file: file.path).uri),
+             type: TypeID("typst.preview"),
+             label: file.deletingPathExtension().lastPathComponent,
+             icon: NodeIcon("doc.richtext", tint: .accent),
+             hasChildren: false,
+             identities: [NodeID(file.standardizedFileURL.absoluteString)].compactMap { $0 })
     }
 
     static func agendaNode(dir: URL) -> Node {

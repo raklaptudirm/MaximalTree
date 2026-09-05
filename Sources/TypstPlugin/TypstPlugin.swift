@@ -71,6 +71,14 @@ final class TypstPlugin: NSObject, Plugin {
         // Sections and tasks are *phony* nodes (NodeAnchor): the host resolves
         // an open to the file node's one canvas and posts a "line=N" fragment —
         // no per-heading canvas, no per-heading editing buffer.
+        // The document's pages, under their own name. Phase 3 puts this beside
+        // the editor; today it is a pane of its own.
+        registry.register(canvas: CanvasContribution(
+            priority: 150,
+            matches: { $0.type == TypeID("typst.preview") },
+            prepare: { _ in TypstEngine.warmUp() },
+            make: { id, host in AnyView(TypstPreviewCanvas(nodeID: id).environment(host)) }
+        ))
         registry.register(canvas: CanvasContribution(
             priority: 150,
             matches: { $0.type == TypeID("typst.agenda") },
@@ -166,6 +174,18 @@ final class TypstPlugin: NSObject, Plugin {
                 handler: { ctx in Self.export(format, in: ctx) }
             ))
         }
+
+        registry.register(action: Action(
+            id: "typst.preview",
+            title: "Show Pages",
+            systemImage: "doc.richtext",
+            appliesTo: .custom { Self.typFileURL(in: $0) != nil },
+            scope: .document,
+            handler: { ctx in
+                guard let url = Self.typFileURL(in: ctx) else { return }
+                ctx.host.openURI(TypstRef.preview(file: url.path).uri)
+            }
+        ))
 
         registry.register(action: Action(
             id: "typst.agenda.refresh",

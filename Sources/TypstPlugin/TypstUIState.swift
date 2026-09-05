@@ -40,25 +40,45 @@ final class TypstUIState {
 
     private var modes: [URL: TypstMode] = [:]
 
-    /// The live buffer of each open document, published by its canvas on every
-    /// edit. The inspector's stats are derived from the text you can see, not
-    /// from what happens to be on disk — those differ for as long as an edit is
-    /// unsaved, which is exactly when someone is watching a word count.
-    private var buffers: [URL: String] = [:]
+    /// Each open document: its live text, and what compiling it produced.
+    ///
+    /// The buffer used to be a bare dictionary of strings, published so the
+    /// inspector's word count could read the text on screen rather than what
+    /// happened to be on disk. It carries the compile now too, because a
+    /// document can be looked at from more than one pane and neither of them
+    /// should own it — see `TypstDocument`.
+    private var documents: [URL: TypstDocument] = [:]
+
+    /// The document for a file, made if this is the first look at it.
+    func document(for url: URL) -> TypstDocument {
+        if let existing = documents[url] { return existing }
+        let document = TypstDocument(url: url)
+        documents[url] = document
+        return document
+    }
+
+    /// The document, only if something already has it open — for the views
+    /// that report on a document rather than showing one.
+    func existingDocument(for url: URL?) -> TypstDocument? {
+        url.flatMap { documents[$0] }
+    }
 
     func buffer(for url: URL?) -> String? {
-        guard let url else { return nil }
-        return buffers[url]
+        existingDocument(for: url)?.buffer
     }
 
     func setBuffer(_ text: String, for url: URL?) {
         guard let url else { return }
-        buffers[url] = text
+        document(for: url).setBuffer(text, compileAfter: .zero)
     }
 
     func clearBuffer(for url: URL?) {
         guard let url else { return }
-        buffers[url] = nil
+        // Phase 3 note: with an editor and a preview open on one document this
+        // has to count its readers, or closing either takes the document from
+        // under the other. One pane today, so the last look is the only look.
+        documents[url]?.cancel()
+        documents[url] = nil
     }
     /// Bumped by "Refresh Agenda"; agenda canvases reload on change.
     var agendaRefresh = 0

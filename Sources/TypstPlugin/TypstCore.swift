@@ -210,9 +210,14 @@ enum TypstEdit {
 ///   typst://section?file=<path>&line=<n>
 ///   typst://task?file=<path>&index=<n>
 ///   typst://agenda?dir=<path>
+///   typst://preview?file=<path>
 struct TypstRef: Equatable {
     enum Kind: String {
         case section, task, agenda
+        /// The document's rendered pages — the same document under another
+        /// name, not a thing derived from it, which is why the node claims
+        /// the file as an identity (see `TypstProvider`).
+        case preview
     }
 
     let kind: Kind
@@ -228,6 +233,9 @@ struct TypstRef: Equatable {
     }
     static func agenda(dir: String) -> TypstRef {
         TypstRef(kind: .agenda, path: dir, line: nil, index: nil)
+    }
+    static func preview(file: String) -> TypstRef {
+        TypstRef(kind: .preview, path: file, line: nil, index: nil)
     }
 
     init(kind: Kind, path: String, line: Int?, index: Int?) {
@@ -253,6 +261,9 @@ struct TypstRef: Equatable {
         case .agenda:
             guard let dir = query("dir") else { return nil }
             self = .agenda(dir: dir)
+        case .preview:
+            guard let file = query("file") else { return nil }
+            self = .preview(file: file)
         }
     }
 
@@ -269,6 +280,8 @@ struct TypstRef: Equatable {
                                      URLQueryItem(name: "index", value: index.map(String.init))]
         case .agenda:
             components.queryItems = [URLQueryItem(name: "dir", value: path)]
+        case .preview:
+            components.queryItems = [URLQueryItem(name: "file", value: path)]
         }
         return components.string ?? "typst://\(kind.rawValue)"
     }

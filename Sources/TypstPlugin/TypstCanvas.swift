@@ -25,12 +25,16 @@ struct TypstCanvas: View {
 
     private var mode: TypstMode { uiState.mode(for: fileURL) }
 
-    @State private var preview: PDFDocument?
-    @State private var previewData: Data?
-    @State private var diagnostics: [TypstDiagnostic] = []
-    @State private var compiling = false
+    /// What compiling this document produced. Owned by the document, not by
+    /// this view: the preview is another pane on the same thing, and a canvas
+    /// that owned the output would mean two compiles or a preview that only
+    /// worked while its editor was on screen.
+    private var document: TypstDocument? {
+        fileURL.map { TypstUIState.shared.document(for: $0) }
+    }
+    private var preview: PDFDocument? { document?.preview }
+    private var diagnostics: [TypstDiagnostic] { document?.diagnostics ?? [] }
     @State private var editorFraction: CGFloat = 0.5
-    @State private var compileTask: Task<Void, Never>?
     @State private var autosaveTask: Task<Void, Never>?
     @State private var consumedFragment: UUID?
     /// The file's contents when it changed on disk under unsaved edits. Blocks
@@ -89,7 +93,6 @@ struct TypstCanvas: View {
             conflict = nil
             await load()
             loadedNode = nodeID
-            TypstUIState.shared.setBuffer(text, for: fileURL)
             if loadError == nil { scheduleCompile(delay: .zero) }
             handleFragment()   // a phony-node open may have posted before we existed
         }
@@ -192,7 +195,6 @@ struct TypstCanvas: View {
             guard loadedNode == nodeID else { return }
             // Publish the buffer so views outside the canvas (the inspector's
             // word count) reflect what's on screen rather than what's on disk.
-            TypstUIState.shared.setBuffer(text, for: fileURL)
             scheduleCompile(delay: .milliseconds(400))
             // Taking the disk version leaves text == saved, and following a
             // file is not editing it.
@@ -291,9 +293,6 @@ struct TypstCanvas: View {
 
     private func load() async {
         loadError = nil
-        preview = nil
-        previewData = nil
-        diagnostics = []
         guard let url = fileURL else { loadError = "Not a file."; return }
         do {
             // Off-main: a large document must not stall the app loop while the
@@ -382,27 +381,15 @@ struct TypstCanvas: View {
 
     // MARK: Compilation
 
+    /// Hand the text to the document and let it compile.
+    ///
+    /// The import scope goes with it: only a canvas has a host to ask, and a
+    /// compile rooted at the document's own directory is the mistake the
+    /// export path made — a note that includes `../notes.typ` escapes it.
     private func scheduleCompile(delay: Duration) {
-        compileTask?.cancel()
-        guard let url = fileURL else { return }
-        let source = text
-        compileTask = Task {
-            if delay > .zero {
-                try? await Task.sleep(for: delay)
-                guard !Task.isCancelled else { return }
-            }
-            compiling = true
-            let output = await TypstEngine.compile(source: source, documentURL: url,
-                                                   mountedRoots: mountedRoots)
-            guard !Task.isCancelled else { compiling = false; return }
-            compiling = false
-            diagnostics = output.diagnostics
-            if let pdf = output.pdf {
-                previewData = pdf
-                preview = PDFDocument(data: pdf)
-            }
-            // On error, keep showing the last good preview alongside the diagnostics.
-        }
+        guard let document else { return }
+        document.mountedRoots = mountedRoots
+        document.setBuffer(text, compileAfter: delay)
     }
 
     private func jump(to diagnostic: TypstDiagnostic) {
@@ -600,6 +587,61 @@ private struct DiagnosticsBar: View {
             .padding(.vertical, 4)
         }
         .frame(maxHeight: 76)
+    }
+}
+
+/// A document's rendered pages, as a canvas of its own.
+///
+/// The other half of the split, and the reason the preview is a node: two
+/// panes on two names for one document, rather than one canvas drawing both
+/// halves and multiplexing a single key map between them.
+///
+/// It compiles nothing itself — the document does — but it does make sure a
+/// compile has happened, because the pages may be opened without the editor
+/// ever having been.
+struct TypstPreviewCanvas: View {
+    let nodeID: NodeID
+    @Environment(HostContext.self) private var host
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var fileURL: URL? { TypstRef(uri: nodeID.uri).map(\.fileURL) }
+    private var document: TypstDocument? {
+        fileURL.map { TypstUIState.shared.document(for: $0) }
+    }
+
+    var body: some View {
+        Group {
+            if let preview = document?.preview {
+                PDFPreview(document: preview, dark: colorScheme == .dark)
+            } else if document?.hasErrors == true {
+                ContentUnavailableView(
+                    "Compile Failed", systemImage: "exclamationmark.triangle",
+                    description: Text("The errors are on the source, beside this."))
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .task(id: nodeID) { await ensureCompiled() }
+    }
+
+    /// Pages for a document nothing has opened for editing.
+    ///
+    /// Read mode is this canvas alone, so the buffer may be empty and no
+    /// compile scheduled. Reading the file here is not the editor's job being
+    /// duplicated — the editor publishes what is on screen, and this is what
+    /// to show when there is no screen with it on.
+    private func ensureCompiled() async {
+        guard let url = fileURL, let document else { return }
+        document.mountedRoots = TypstProject.mountedRoots(in: host)
+        guard document.preview == nil else { return }
+        if document.buffer.isEmpty {
+            let text = await Task.detached(priority: .userInitiated) {
+                (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+            }.value
+            document.setBuffer(text, compileAfter: .zero)
+        } else {
+            document.compile()
+        }
     }
 }
 
