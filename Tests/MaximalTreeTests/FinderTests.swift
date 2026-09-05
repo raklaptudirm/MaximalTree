@@ -382,16 +382,21 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
 
     /// The letters an ordinary query is made of are commands in the mode the
     /// finder used to open in, which is the whole reason it opens in another.
-    /// "git" alone is three of them.
-    @Test func theQueryIsMadeOfKeysTheKeymapWouldHaveTaken() {
-        let map = DefaultKeymap.make()
+    /// "git" alone is three of them — one from the app's map, two from the
+    /// sidebar's, which is exactly why the finder cannot rely on either being
+    /// empty.
+    @Test func theQueryIsMadeOfKeysSomeKeymapWouldHaveTaken() {
+        let app = DefaultKeymap.make()
+        var sidebar = Keymap()
+        for key in AppModel.sidebarKeys { sidebar.bind(key.sequence, to: key.action) }
+
         for letter in ["g", "i", "o", "j", "k", "l", "h", "G"] {
             guard let chord = KeyChord(parsing: letter) else { continue }
-            #expect(map.lookup([chord]) != .unbound,
-                    "\(letter) is bound, so typing it needs insert mode")
+            let taken = app.lookup([chord]) != .unbound || sidebar.lookup([chord]) != .unbound
+            #expect(taken, "\(letter) is bound somewhere, so typing it needs insert mode")
         }
         // And the leader, which would otherwise start a sequence mid-word.
-        #expect(map.lookup([KeyChord("SPC")]) != .unbound)
+        #expect(app.lookup([KeyChord("SPC")]) != .unbound)
     }
 
     /// The picker's own keys have to be taken by the monitor.

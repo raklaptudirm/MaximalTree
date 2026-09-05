@@ -122,6 +122,39 @@ final class KeyEngine {
         }
     }
 
+    /// Run a key against a surface's own map.
+    ///
+    /// Sequences within a surface's map work the same way the app's do — `g g`
+    /// is two keys there too — so the pending state is shared. What differs is
+    /// only which map answered.
+    ///
+    /// - Returns: whether the surface took it.
+    func handleSurface(_ chord: KeyChord, map: Keymap) -> Bool {
+        switch map.lookup(pending + [chord]) {
+        case .command(let id):
+            let repeats = count ?? 1
+            reset()
+            perform?(id, repeats)
+            return true
+        case .prefix(let label, let continuations):
+            pending = pending + [chord]
+            prefixLabel = label
+            self.continuations = continuations
+            isSurfaceSequence = true
+            return true
+        case .unbound:
+            return false
+        }
+    }
+
+    /// Whether the sequence in progress belongs to a surface's map rather than
+    /// the app's — so the next key is looked up where the first one was.
+    private(set) var isSurfaceSequence = false
+
+    /// Abandon a sequence that led nowhere, without leaving its keys to be
+    /// read as something else.
+    func cancelSequence() { reset() }
+
     /// Drop the last chord and put the state back to what it was before it.
     ///
     /// Re-looked-up rather than remembered: the label and the continuations
@@ -144,6 +177,7 @@ final class KeyEngine {
     }
 
     private func reset() {
+        isSurfaceSequence = false
         pending = []
         count = nil
         continuations = []

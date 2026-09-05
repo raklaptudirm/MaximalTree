@@ -41,6 +41,7 @@ enum KeyDispatch {
     /// - Returns: whether the key was consumed, and must not reach AppKit.
     @MainActor
     static func handle(_ chord: KeyChord, keys: KeyEngine,
+                       surface: @autoclosure () -> Keymap = Keymap(),
                        canvas: @autoclosure () -> CanvasKeyHandling?) -> Bool {
         guard KeyRouting.destination(for: chord, mode: keys.mode) == .app else { return false }
 
@@ -51,19 +52,46 @@ enum KeyDispatch {
             return true
         }
 
-        // The focused canvas gets first refusal — its own motions, its own
-        // operators — but never the leader or the rest of a sequence already
-        // begun, which belong to the app wherever the keyboard is.
-        let reserved = chord.key == "SPC" || !keys.pending.isEmpty
-        if !reserved, let canvas = canvas(),
-           let next = canvas.handleKey(chord.canvasKey, control: chord.control, mode: keys.mode) {
-            // The canvas reports the mode its own command left behind — `i`,
-            // `o`, a visual `c` all answer `.insert` — and that answer *is*
-            // the app's mode, rather than a second copy of it.
-            if next != keys.mode { keys.setMode(next) }
+        // A sequence already begun continues in the map that began it. Asking
+        // the other one halfway through would resolve `g g` in the sidebar
+        // against the app's `g` group, which is a different `g` entirely.
+        if !keys.pending.isEmpty {
+            guard keys.isSurfaceSequence else { return app(chord, keys) }
+            if keys.handleSurface(chord, map: surface()) { return true }
+            // A dead end in the surface's map is still the surface's: half a
+            // sequence must not leak out as a stray app binding.
+            keys.cancelSequence()
             return true
         }
 
+        // Nothing pending. The surface holding the keyboard gets first
+        // refusal, except on the leader, which is the app's wherever you are.
+        if chord.key != "SPC" {
+            // Its declared keys: the surface says what it claims and the core
+            // runs the action, so no surface sees a raw keystroke in a
+            // commanding mode. That is what makes its keys rebindable,
+            // listable, and callable by name like everything else.
+            if keys.handleSurface(chord, map: surface()) { return true }
+
+            // Then the older mechanism, for the canvases still implementing
+            // it. Being replaced surface by surface; when nothing conforms
+            // this goes, and `KeyChord.canvasKey` with it.
+            if let canvas = canvas(),
+               let next = canvas.handleKey(chord.canvasKey, control: chord.control,
+                                           mode: keys.mode) {
+                // The canvas reports the mode its own command left behind —
+                // `i`, `o`, a visual `c` all answer `.insert` — and that
+                // answer *is* the app's mode, not a second copy of it.
+                if next != keys.mode { keys.setMode(next) }
+                return true
+            }
+        }
+
+        return app(chord, keys)
+    }
+
+    @MainActor
+    private static func app(_ chord: KeyChord, _ keys: KeyEngine) -> Bool {
         switch keys.handle(chord, editing: false) {
         case .consumed, .pendingSequence: return true
         case .passed: return false

@@ -81,20 +81,43 @@ import SwiftUI
     /// The shipped map is what most of this is for.
     @Test func theDefaultMapBindsWhatItPromises() {
         let map = DefaultKeymap.make()
-        #expect(map.lookup(chords("j")) == .command("explorer.down"))
         #expect(map.lookup(chords("SPC SPC")) == .command("finder.nodes"))
-        #expect(map.lookup(chords("SPC w v")) == .command("pane.splitRight"))
+        #expect(map.lookup(chords("SPC s v")) == .command("pane.splitRight"))
         #expect(map.lookup(chords("SPC g o")) == .command("git.open"))
         #expect(map.lookup(chords("g t")) == .command("tab.next"))
-        if case .prefix(let label, _) = map.lookup(chords("SPC b")) {
-            #expect(label == "buffer")
+        if case .prefix(let label, _) = map.lookup(chords("SPC t")) {
+            #expect(label == "tab")
         } else {
-            Issue.record("SPC b should be a group")
+            Issue.record("SPC t should be a group")
         }
     }
 
-    /// Movement at each scale the app has one: between surfaces, tabs, nodes,
-    /// and workspaces. Bound twice over where Vim and Doom disagree about the
+    /// The groups are named for the app's own nouns.
+    ///
+    /// They were Doom's for a while — `w` window, `b` buffer, `p` project —
+    /// and the comments spent their time translating. There is one window
+    /// here, so a group called window could only have meant something else.
+    @Test func theGroupsAreTheAppsOwnNouns() {
+        let map = DefaultKeymap.make()
+        let expected = ["f": "file", "s": "surface", "t": "tab",
+                        "w": "workspace", "n": "new", "g": "git", "T": "terminal"]
+        for (key, noun) in expected {
+            guard case .prefix(let label, _) = map.lookup(chords("SPC \(key)")) else {
+                Issue.record("SPC \(key) should be the \(noun) group")
+                continue
+            }
+            #expect(label == noun, "SPC \(key) reads as \(label)")
+        }
+        // And the words that no longer describe anything are gone.
+        for retired in ["b", "p"] {
+            #expect(map.lookup(chords("SPC \(retired)")) == .unbound,
+                    "SPC \(retired) still leads somewhere")
+        }
+    }
+
+    /// Movement at each scale the app has one: between surfaces, tabs, and
+    /// workspaces. Moving *within* the sidebar is the sidebar's own and lives
+    /// in its surface map, not here. Bound twice over where Vim and Doom disagree about the
     /// prefix, since both sets of fingers show up here.
     @Test func everyScaleOfMovementIsBound() {
         let map = DefaultKeymap.make()
@@ -102,21 +125,19 @@ import SwiftUI
             "C-w h": "surface.left", "C-w j": "surface.down",
             "C-w k": "surface.up", "C-w l": "surface.right",
             "C-w w": "surface.next", "C-w W": "surface.previous",
-            "SPC w h": "surface.left", "SPC w l": "surface.right",
-            "SPC b n": "tab.next", "SPC b p": "tab.previous",
-            "SPC b h": "tab.first", "SPC b l": "tab.last",
+            "SPC s h": "surface.left", "SPC s l": "surface.right",
+            "SPC s n": "surface.next", "SPC s p": "surface.previous",
+            "SPC t n": "tab.next", "SPC t p": "tab.previous",
+            "SPC t h": "tab.first", "SPC t l": "tab.last",
             "g t": "tab.next", "g T": "tab.previous",
-            "j": "explorer.down", "k": "explorer.up",
-            "}": "node.nextSibling", "{": "node.previousSibling",
-            "g p": "node.parent",
-            "g g": "explorer.first", "G": "explorer.last",
             "g w": "workspace.next", "g W": "workspace.previous",
-            "SPC p n": "workspace.next", "SPC p p": "finder.workspaces",
+            "SPC w n": "workspace.next", "SPC w w": "finder.workspaces",
+            "SPC w p": "workspace.previous",
             // The finder. The key you reach for without thinking goes to the
             // tree in front of you; searching everything is its own.
             "SPC SPC": "finder.nodes", "SPC /": "finder.all",
             "M-x": "finder.actions",
-            "SPC f f": "finder.files", "SPC b b": "finder.buffers",
+            "SPC f f": "finder.files", "SPC t t": "finder.buffers",
         ]
         for (keys, command) in expected {
             #expect(map.lookup(chords(keys)) == .command(command),

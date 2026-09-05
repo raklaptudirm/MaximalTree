@@ -20,6 +20,37 @@ import MaximalTreeKit
 /// belong in a list you can search, but forty motions in the menu bar would
 /// bury the handful of things that belong there.
 extension AppModel {
+    /// The keys the surface holding the keyboard claims.
+    ///
+    /// Built fresh each time rather than cached: which surface has the
+    /// keyboard, and what its pane is showing, both change under the reader,
+    /// and a remembered map is a map of somewhere else. It is a handful of
+    /// bindings through a trie — cheaper than working out when to invalidate.
+    ///
+    /// A canvas's keys come from the contribution that actually drew it, so
+    /// the canvas on screen and the keys that work cannot disagree.
+    func surfaceKeymap() -> Keymap {
+        var map = Keymap()
+        for key in claimedKeys() {
+            map.bind(key.sequence, to: key.action)
+        }
+        return map
+    }
+
+    private func claimedKeys() -> [SurfaceKey] {
+        guard let store else { return [] }
+        switch Surfaces.focused() {
+        case .sidebar:
+            return store.surfaceKeys.filter { $0.surface == .sidebar }.flatMap(\.keys)
+        case .inspector:
+            return store.surfaceKeys.filter { $0.surface == .inspector }.flatMap(\.keys)
+        case .pane(let id):
+            guard let node = navigation.activeTab.root.pane(id)?.current.flatMap({ host.node($0) })
+            else { return [] }
+            return store.canvas(for: node)?.keys ?? []
+        }
+    }
+
     /// Run an operation by id, from a key or from a plugin.
     ///
     /// Applicable ones only, so a key bound to something that doesn't apply
@@ -29,6 +60,24 @@ extension AppModel {
         guard let action = action(id), canRun(action) else { return }
         perform(action, count: count)
     }
+
+    /// The keys the sidebar claims.
+    ///
+    /// Named rather than inline so a test can ask what they are — which is
+    /// also how a settings screen would, when there is one.
+    static let sidebarKeys: [SurfaceKey] = [
+        SurfaceKey("j", "explorer.down"),
+        SurfaceKey("k", "explorer.up"),
+        SurfaceKey("h", "explorer.collapse"),
+        SurfaceKey("l", "explorer.expand"),
+        SurfaceKey("RET", "explorer.open"),
+        SurfaceKey("o", "explorer.open"),
+        SurfaceKey("g g", "explorer.first"),
+        SurfaceKey("G", "explorer.last"),
+        SurfaceKey("}", "node.nextSibling"),
+        SurfaceKey("{", "node.previousSibling"),
+        SurfaceKey("g p", "node.parent"),
+    ]
 
     /// Actions the host contributes itself.
     ///
@@ -66,11 +115,14 @@ extension AppModel {
                 }))
         }
 
-        // The explorer's motions are the explorer's own. As a predicate rather
-        // than a guard inside each handler, so the finder stops offering them
-        // when the sidebar hasn't got the keyboard — an action that would do
-        // nothing shouldn't be in the list you are reading.
-        let inSidebar = ActionPredicate.custom { _ in Surfaces.focused() == .sidebar }
+        // The sidebar's keys, declared the way any surface declares them.
+        //
+        // They were ordinary app bindings narrowed by a predicate that asked
+        // which surface had the keyboard: ten actions each carrying a rule
+        // about where they applied, because the sidebar had no way to claim a
+        // key of its own. Now it claims them, and the actions say nothing
+        // about surfaces at all.
+        registry.register(surfaceKeys: SurfaceKeys(.sidebar, Self.sidebarKeys))
 
         registry.register(action: Action(
             id: "core.rename",
@@ -130,19 +182,19 @@ extension AppModel {
 
         // MARK: Moving in the explorer
 
-        act("explorer.down", "Move Down", when: inSidebar) { model, ctx in
+        act("explorer.down", "Move Down") { model, ctx in
             model.moveExplorerSelection(down: true, times: ctx.count)
         }
-        act("explorer.up", "Move Up", when: inSidebar) { model, ctx in
+        act("explorer.up", "Move Up") { model, ctx in
             model.moveExplorerSelection(down: false, times: ctx.count)
         }
-        act("explorer.expand", "Expand", when: inSidebar) { model, _ in
+        act("explorer.expand", "Expand") { model, _ in
             model.expandSelectedNode(true)
         }
-        act("explorer.collapse", "Collapse", when: inSidebar) { model, _ in
+        act("explorer.collapse", "Collapse") { model, _ in
             model.expandSelectedNode(false)
         }
-        act("explorer.open", "Open Selected", when: inSidebar) { model, _ in
+        act("explorer.open", "Open Selected") { model, _ in
             guard let node = model.host.selection.first ?? model.host.focusedNode else { return }
             model.store?.open(node)
             // Opening something is going to it. Staying put left the keyboard
@@ -150,19 +202,19 @@ extension AppModel {
             // waiting, which was only ever confusing.
             model.focusActiveSurface()
         }
-        act("explorer.first", "Go to First", when: inSidebar) { model, _ in
+        act("explorer.first", "Go to First") { model, _ in
             model.selectExplorerEdge(last: false)
         }
-        act("explorer.last", "Go to Last", when: inSidebar) { model, _ in
+        act("explorer.last", "Go to Last") { model, _ in
             model.selectExplorerEdge(last: true)
         }
-        act("node.nextSibling", "Next Sibling", when: inSidebar) { model, ctx in
+        act("node.nextSibling", "Next Sibling") { model, ctx in
             model.moveToSibling(down: true, times: ctx.count)
         }
-        act("node.previousSibling", "Previous Sibling", when: inSidebar) { model, ctx in
+        act("node.previousSibling", "Previous Sibling") { model, ctx in
             model.moveToSibling(down: false, times: ctx.count)
         }
-        act("node.parent", "Go to Parent", when: inSidebar) { model, _ in
+        act("node.parent", "Go to Parent") { model, _ in
             model.selectParentOfSelection()
         }
 
@@ -267,18 +319,6 @@ extension AppModel {
     }
 
     // MARK: Explorer motions
-
-    /// Run `body` only when the sidebar is the surface with the keyboard.
-    ///
-    /// These keys used to move the explorer from wherever you were, which read
-    /// as the app having one list and every other surface being scenery. The
-    /// sidebar is a surface like the rest, so its motions are its own — and a
-    /// terminal that declines `j` now does nothing with it rather than
-    /// scrolling a tree you aren't looking at.
-    private func inSidebar(_ body: () -> Void) {
-        guard Surfaces.focused() == .sidebar else { return }
-        body()
-    }
 
     /// The nodes the sidebar is showing, top to bottom — the order `j` and `k`
     /// move through. Recomputed rather than remembered: the tree changes under

@@ -147,6 +147,49 @@ public struct Action: Identifiable {
     }
 }
 
+// MARK: - Keys
+
+/// One key sequence a surface claims, and the action it runs.
+///
+/// The sequence is written in the app's own notation — `j`, `g g`, `C-d` — and
+/// the action is an id from the one registry, a plugin's or the host's. Keys
+/// are therefore rebindable, listable, and callable by name, which is what
+/// they were not while a canvas implemented them in a `switch`.
+///
+/// Bare keys only: the leader is the app's namespace, and a surface shadowing
+/// `SPC g c` could not be explained to anyone.
+public struct SurfaceKey: Sendable {
+    public let sequence: String
+    public let action: String
+
+    public init(_ sequence: String, _ action: String) {
+        self.sequence = sequence
+        self.action = action
+    }
+}
+
+/// Keys claimed by a surface that is not a canvas.
+///
+/// A canvas declares its keys on its `CanvasContribution`, so that the canvas
+/// which draws is the canvas whose keys apply — with a matcher of its own the
+/// two could disagree, and a key would run something belonging to a canvas you
+/// are not looking at. The sidebar and the inspector have no contribution to
+/// hang keys on, so they say which surface they mean.
+public struct SurfaceKeys: Sendable {
+    public enum Surface: Sendable, Equatable {
+        case sidebar
+        case inspector
+    }
+
+    public let surface: Surface
+    public let keys: [SurfaceKey]
+
+    public init(_ surface: Surface, _ keys: [SurfaceKey]) {
+        self.surface = surface
+        self.keys = keys
+    }
+}
+
 // MARK: - Rendering
 
 /// A plugin's canvas for the nodes it can draw. Renderers are resolved by **matcher
@@ -170,15 +213,25 @@ public struct CanvasContribution {
     public let prepare: (@Sendable (NodeID) async -> Void)?
     public let make: (NodeID, HostContext) -> AnyView
 
+    /// The keys this canvas claims while it has the keyboard.
+    ///
+    /// Declared here rather than registered separately so that the canvas
+    /// which draws is the canvas whose keys apply. Given a matcher of their
+    /// own the two could disagree — a `.typ` file drawn by the typst canvas
+    /// while the plain editor's keys were live — and nothing would say so.
+    public let keys: [SurfaceKey]
+
     public init(
         priority: Int = 0,
         matches: @escaping (Node) -> Bool,
         prepare: (@Sendable (NodeID) async -> Void)? = nil,
+        keys: [SurfaceKey] = [],
         make: @escaping (NodeID, HostContext) -> AnyView
     ) {
         self.priority = priority
         self.matches = matches
         self.prepare = prepare
+        self.keys = keys
         self.make = make
     }
 }
@@ -242,6 +295,9 @@ public protocol PluginRegistry: AnyObject {
     func register(action: Action)
     /// A list the finder can search — see `FinderSource`.
     func register(finder: FinderSource)
+    /// Keys for a surface that is not a canvas. A canvas declares its own on
+    /// its contribution, so the drawing canvas and the live keys cannot part.
+    func register(surfaceKeys: SurfaceKeys)
 }
 
 public extension PluginRegistry {

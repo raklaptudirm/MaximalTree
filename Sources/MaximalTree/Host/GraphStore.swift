@@ -11,6 +11,7 @@ final class Registry: PluginRegistry {
     private(set) var childContributions: [ChildContribution] = []
     private(set) var actions: [Action] = []
     private(set) var finders: [FinderSource] = []
+    private(set) var surfaceKeys: [SurfaceKeys] = []
 
     /// Handed to plugins during registration; populated once every plugin has loaded.
     let hostBroker = HostBroker()
@@ -32,6 +33,7 @@ final class Registry: PluginRegistry {
     }
     func register(canvas: CanvasContribution) { canvases.append(canvas) }
     func register(finder: FinderSource) { finders.append(finder) }
+    func register(surfaceKeys keys: SurfaceKeys) { surfaceKeys.append(keys) }
     func register(inspector: InspectorContribution) { inspectors.append(inspector) }
     func register(children: ChildContribution) { childContributions.append(children) }
     func register(action: Action) {
@@ -113,6 +115,7 @@ final class GraphStore: GraphBackend {
 
     var actions: [Action] { registry.actions }
     var finders: [FinderSource] { registry.finders }
+    var surfaceKeys: [SurfaceKeys] { registry.surfaceKeys }
 
     private func provider(for id: NodeID) -> NodeProvider? {
         guard let scheme = id.scheme else { return nil }

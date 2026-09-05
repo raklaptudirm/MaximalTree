@@ -89,6 +89,7 @@ struct KeyCapture: ViewModifier {
                 // own keys have to be taken here — nothing downstream will.
                 if model.handleFinderKey(chord) { return true }
                 return KeyDispatch.handle(chord, keys: model.keys,
+                                          surface: model.surfaceKeymap(),
                                           canvas: KeyFocus.focusedCanvas())
             }
 
@@ -257,15 +258,25 @@ struct KeyWhichKey: View {
     /// binding is still real, it just isn't what happens here.
     private func rows(for keys: KeyEngine) -> [Row] {
         guard keys.pending.isEmpty else {
-            return live(keys.continuations, under: keys.pending, in: keys).map {
+            let map = keys.isSurfaceSequence ? model.surfaceKeymap() : keys.keymap
+            return live(keys.continuations, under: keys.pending, keymap: map, in: keys).map {
                 Row(id: $0.chord.description, keys: $0.chord.description,
                     label: label(for: $0.binding))
             }
         }
         guard keys.isPeeking else { return [] }
+        // The surface's own keys lead, then the app's. A surface's keys are no
+        // longer in the app's map — that is the point of it declaring them —
+        // so without this the sidebar's `j` would vanish from the peek the
+        // moment it became the sidebar's rather than everyone's.
+        let map = model.surfaceKeymap()
+        let mine = live(topLevel(of: map), under: [], keymap: map, in: keys).map {
+            (keys: $0.chord.description, label: label(for: $0.binding))
+        }
         return Self.peekRows(
             canvas: KeyFocus.focusedCanvas()?.keyBindings ?? [],
-            app: live(keys.topLevelBindings, under: [], in: keys).map {
+            surface: mine,
+            app: live(keys.topLevelBindings, under: [], keymap: keys.keymap, in: keys).map {
                 (keys: $0.chord.description, label: label(for: $0.binding))
             },
             mode: keys.mode)
@@ -284,10 +295,17 @@ struct KeyWhichKey: View {
     /// contents apply and goes when none of them do.
     private func live(_ bindings: [(chord: KeyChord, binding: KeyBinding)],
                       under prefix: [KeyChord],
+                      keymap: Keymap,
                       in keys: KeyEngine) -> [(chord: KeyChord, binding: KeyBinding)] {
-        Self.live(bindings, under: prefix, keymap: keys.keymap) { [model] id in
+        Self.live(bindings, under: prefix, keymap: keymap) { [model] id in
             model.action(id).map(model.canRun) ?? false
         }
+    }
+
+    /// A map's bindings with nothing typed yet.
+    private func topLevel(of map: Keymap) -> [(chord: KeyChord, binding: KeyBinding)] {
+        guard case .prefix(_, let continuations) = map.lookup([]) else { return [] }
+        return continuations
     }
 
     /// Separate and injectable for the same reason `KeyDispatch` is: whether a
@@ -314,11 +332,16 @@ struct KeyWhichKey: View {
     /// "Insert Mode" said the opposite of what pressing it does. Whatever the
     /// canvas takes, the canvas's own row already describes.
     static func peekRows(canvas: [CanvasKeyBinding],
+                         surface: [(keys: String, label: String)] = [],
                          app: [(keys: String, label: String)],
                          mode: KeyMode) -> [Row] {
-        let mine = canvas.filter { $0.mode == mode }
-        let taken = Set(mine.map(\.key))
-        return mine.map {
+        let declared = canvas.filter { $0.mode == mode }
+        var taken = Set(declared.map(\.key))
+        taken.formUnion(surface.map(\.keys))
+
+        return surface.map {
+            Row(id: "surface:\($0.keys)", keys: $0.keys, label: $0.label)
+        } + declared.map {
             Row(id: "canvas:\($0.key)", keys: $0.key, label: $0.title)
         } + app.filter { !taken.contains($0.keys) }.map {
             Row(id: "app:\($0.keys)", keys: $0.keys, label: $0.label)
