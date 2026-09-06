@@ -50,8 +50,17 @@ extension AppModel {
         // Never mutated after building. `Keymap` is a struct around a class
         // trie, so a copy shares the nodes — binding into a copy of this would
         // reach back into the cache.
+        // "No keys" and "cannot say yet" are different answers, and only one
+        // of them is worth remembering. A canvas resolves through the node's
+        // record, which arrives a moment after the canvas does — and caching
+        // the gap meant every key that canvas declares stayed unbound for as
+        // long as the pane showed that document, falling through to the view
+        // and being typed as a character.
+        guard let claimed = claimedKeys(surface: surface, showing: node) else {
+            return Keymap()
+        }
         var map = Keymap()
-        for key in claimedKeys(surface: surface, showing: node) {
+        for key in claimed {
             map.bind(key.sequence, to: key.action)
         }
         bumpSurfaceKeymapBuilds()
@@ -65,7 +74,11 @@ extension AppModel {
         return navigation.activeTab.root.pane(id)?.current
     }
 
-    private func claimedKeys(surface: SurfaceID, showing node: NodeID?) -> [SurfaceKey] {
+    /// What a surface claims, or nil when that cannot be answered yet.
+    ///
+    /// The distinction matters to the caller: an answer is worth remembering
+    /// and a shrug is not.
+    private func claimedKeys(surface: SurfaceID, showing node: NodeID?) -> [SurfaceKey]? {
         switch surface {
         case .sidebar, .inspector:
             // Registry data, not the store's: what a surface claims is
@@ -78,7 +91,9 @@ extension AppModel {
         case .pane:
             // A canvas's keys ride on the contribution that drew it, and
             // resolving which one that is needs the store.
-            guard let store, let record = node.flatMap({ host.node($0) }) else { return [] }
+            // No store yet, or no record for the node yet: not an empty set of
+            // keys, an unanswerable question.
+            guard let store, let record = node.flatMap({ host.node($0) }) else { return nil }
             return store.canvas(for: record)?.keys ?? []
         }
     }

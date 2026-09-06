@@ -176,6 +176,31 @@ import AppKit
         return model
     }
 
+    /// An answer given before the node's record existed must not be kept.
+    ///
+    /// The memo is keyed on the surface and the node, and nothing invalidates
+    /// it when the record arrives — so an empty map built during the moment
+    /// between a canvas appearing and its node being cached was remembered for
+    /// as long as that pane showed that document. Every key the canvas
+    /// declares then resolved to nothing, fell through to the view, and was
+    /// typed as a character.
+    @Test func aMapBuiltBeforeTheNodeArrivedIsNotRemembered() throws {
+        let model = try makeModel()
+        model.start()
+        TextEditorPlugin().register(with: model.pluginHost.registry)
+        let id = try #require(NodeID("file:///tmp/keycache.txt"))
+        let pane = SurfaceID.pane(UUID())
+
+        // Asked while the record is still on its way: nothing to resolve.
+        #expect(model.surfaceKeymap(for: pane, showing: id).lookup([KeyChord("j")]) == .unbound)
+
+        model.host._ingest(Node(id: id, type: TypeID("file.file")))
+
+        #expect(model.surfaceKeymap(for: pane, showing: id).lookup([KeyChord("j")])
+                    == .command("editor.down"),
+                "the empty answer from before the record existed was cached")
+    }
+
     /// Resolving a canvas runs every registered matcher and then builds a trie
     /// from the winner's bindings. That was happening on every key press.
     @Test func theSameSurfaceAndNodeIsAnsweredFromMemory() throws {
@@ -209,9 +234,16 @@ import AppKit
     /// changes which canvas draws it, also changes this.
     @Test func aPaneShowingAnotherNodeRebuildsIt() throws {
         let model = try makeModel()
+        model.start()
+        TextEditorPlugin().register(with: model.pluginHost.registry)
         let pane = UUID()
         let a = try #require(NodeID("file:///tmp/a.txt"))
-        let b = try #require(NodeID("file:///tmp/b.typ"))
+        let b = try #require(NodeID("file:///tmp/b.txt"))
+        // With records, so each lookup is an answer worth remembering. Without
+        // them neither node resolves and this measured the memoising of a
+        // shrug — which is the bug it now sits next to.
+        model.host._ingest(Node(id: a, type: TypeID("file.file")))
+        model.host._ingest(Node(id: b, type: TypeID("file.file")))
 
         _ = model.surfaceKeymap(for: .pane(pane), showing: a)
         let after = model.surfaceKeymapBuilds
