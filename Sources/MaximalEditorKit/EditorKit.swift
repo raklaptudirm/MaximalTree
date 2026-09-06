@@ -289,6 +289,13 @@ extension STTextView {
     /// shift the page: the caret had not moved anywhere you could not see.
     func reveal(_ range: NSRange) {
         revealNow(range)
+        let editor = self as? MaximalEditor.EditorTextView
+        editor?.caretGeneration &+= 1
+        // What the second pass is finishing, so it can tell whether it is
+        // still wanted: a range is a pair of offsets, and offsets mean
+        // something else once the document has been edited under them.
+        let generation = editor?.caretGeneration
+        let length = (text as NSString?)?.length ?? 0
         // Then once more, a turn later, and usually to discover there is
         // nothing to do.
         //
@@ -300,7 +307,16 @@ extension STTextView {
         // one landed properly the target is already comfortable and this
         // returns without moving anything.
         DispatchQueue.main.async { [weak self] in
-            MainActor.assumeIsolated { self?.revealNow(range) }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let editor = self as? MaximalEditor.EditorTextView
+                // Overtaken: something moved the cursor or changed the text in
+                // between, and finishing this jump would scroll back to where
+                // the reader no longer is.
+                guard editor?.caretGeneration == generation,
+                      ((self.text as NSString?)?.length ?? 0) == length else { return }
+                self.revealNow(range)
+            }
         }
     }
 
@@ -345,6 +361,18 @@ extension STTextView {
         guard abs(y - visible.minY) > 0.5 else { return }
         scroll(CGPoint(x: visible.minX, y: y))
         enclosingScrollView?.reflectScrolledClipView(clipView)
+    }
+
+    /// Where the cursor is, as opposed to where the selection starts.
+    ///
+    /// Everything that follows the reader — the scroll that keeps them in
+    /// view, the paragraph whose markup is revealed — wants the end of the
+    /// selection they are *moving*. `textSelection.location` is the other one
+    /// whenever the selection was extended downward, and following it is what
+    /// pulls the view back to the position the cursor left.
+    var caretLocation: Int {
+        (self as? MaximalEditor.EditorTextView)?.followedCaret
+            ?? textSelection.location
     }
 
     func scrollToVisible(_ range: NSRange, ensuringLayout: Bool = true) {
@@ -540,6 +568,26 @@ public struct MaximalEditor: NSViewRepresentable {
         /// puts it back, undoing the scroll the motion just asked for.
         var isFollowingCaret = false
 
+        /// The end of the selection the cursor is on, together with the
+        /// selection it was recorded for.
+        ///
+        /// Paired, so it cannot go stale: a click or a find sets a selection
+        /// this never saw, and the answer falls back to the selection's own
+        /// start — which is exactly right for a cursor that was placed rather
+        /// than moved.
+        private var followed: (caret: Int, selection: NSRange)?
+
+        /// Bumped whenever something takes charge of where the cursor is, so a
+        /// scroll deferred to the next runloop turn can tell that it has been
+        /// overtaken.
+        var caretGeneration = 0
+
+        var followedCaret: Int? {
+            guard let followed, followed.selection == textSelection else { return nil }
+            let length = (text as NSString?)?.length ?? 0
+            return min(max(followed.caret, 0), length)
+        }
+
         /// Insert mode is plain typing; in a commanding mode the app never
         /// sends keys here at all (see `handleKey`).
         public override func keyDown(with event: NSEvent) {
@@ -579,6 +627,7 @@ public struct MaximalEditor: NSViewRepresentable {
         }
 
         func apply(_ outcome: EditOutcome) {
+            caretGeneration &+= 1
             isFollowingCaret = true
             defer { isFollowingCaret = false }
             if let edit = outcome.edit {
@@ -587,9 +636,14 @@ public struct MaximalEditor: NSViewRepresentable {
             }
             let length = (text as NSString?)?.length ?? 0
             let start = min(max(outcome.selection.location, 0), length)
-            textSelection = NSRange(location: start,
+            let selection = NSRange(location: start,
                                     length: min(outcome.selection.length, length - start))
-            scrollToVisible(NSRange(location: start, length: 0))
+            let caret = min(max(outcome.caret, 0), length)
+            // Before the assignment, not after: setting the selection notifies
+            // synchronously, and the handler asks where the caret is.
+            followed = (caret, selection)
+            textSelection = selection
+            scrollToVisible(NSRange(location: caret, length: 0))
         }
 
 
@@ -909,11 +963,8 @@ public struct MaximalEditor: NSViewRepresentable {
             guard !isPushingText, let textView,
                   (lastStyle ?? .code()).rendersMarkup else { return }
             let ns = (textView.text ?? "") as NSString
-            let caret = min(textView.textSelection.location, ns.length)
-            let paragraph = ns.paragraphRange(
-                for: NSRange(location: caret,
-                             length: min(textView.textSelection.length,
-                                         ns.length - caret)))
+            let caret = min(textView.caretLocation, ns.length)
+            let paragraph = ns.paragraphRange(for: NSRange(location: caret, length: 0))
             // Repaint only when the caret crosses onto a different line — typing
             // within a line rides the (debounced) text-change repaint, which reads
             // the updated range from here.
@@ -1454,7 +1505,7 @@ public struct MaximalEditor: NSViewRepresentable {
             // caret below the fold even though the view didn't move.
             if caretWasVisible, !caretIsVisible(in: textView) {
                 textView.scrollToVisible(
-                    NSRange(location: textView.textSelection.location, length: 0))
+                    NSRange(location: textView.caretLocation, length: 0))
             }
         }
 
@@ -1462,7 +1513,7 @@ public struct MaximalEditor: NSViewRepresentable {
             guard let contentManager = textView.textLayoutManager.textContentManager
             else { return false }
             let length = ((textView.text ?? "") as NSString).length
-            let caret = min(textView.textSelection.location, length)
+            let caret = min(textView.caretLocation, length)
             guard let range = NSTextRange(NSRange(location: caret, length: 0),
                                           in: contentManager),
                   let frame = textView.textLayoutManager.textSegmentFrame(

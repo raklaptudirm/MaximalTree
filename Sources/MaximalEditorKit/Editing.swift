@@ -44,18 +44,30 @@ public struct EditOutcome: Equatable, Sendable {
     /// verb will act on, so it is never nothing; while inserting it is the
     /// caret, empty.
     public var selection: NSRange
+    /// Where in `selection` the cursor is.
+    ///
+    /// A range has no direction, but a selection does: one end is the anchor
+    /// the reader dropped and the other is the end they are moving. Extending
+    /// downward puts the moving end at the *far* side, so anything that reads
+    /// `selection.location` and calls it the caret is naming the position the
+    /// cursor has just left — which is a view that scrolls back to the top of
+    /// the selection on every keystroke that grows it.
+    public var caret: Int
     public var mode: EditMode
 
+    /// `caret` defaults to the start of the selection, which is right for
+    /// every outcome that leaves the cursor collapsed or sweeps backwards.
     public init(edit: (range: NSRange, replacement: String)? = nil,
-                selection: NSRange, mode: EditMode) {
+                selection: NSRange, caret: Int? = nil, mode: EditMode) {
         self.edit = edit
         self.selection = selection
+        self.caret = caret ?? selection.location
         self.mode = mode
     }
 
     public static func == (a: EditOutcome, b: EditOutcome) -> Bool {
         a.edit?.range == b.edit?.range && a.edit?.replacement == b.edit?.replacement
-            && a.selection == b.selection && a.mode == b.mode
+            && a.selection == b.selection && a.caret == b.caret && a.mode == b.mode
     }
 }
 
@@ -132,7 +144,9 @@ public final class EditEngine {
         let repeats = max(count, 1)
         let outcome = select(command, from: selection, count: repeats, mode: mode,
                              in: ns, visualLine: visualLine)
-            .map { EditOutcome(selection: $0, mode: mode) }
+            // `head` is the end the motion just moved, which `span` and
+            // `reach` have since sorted out of the range.
+            .map { EditOutcome(selection: $0, caret: head, mode: mode) }
             ?? act(command, mode: mode, selection: selection, count: repeats, in: ns)
         guard let outcome else { return nil }
         lastMode = outcome.mode

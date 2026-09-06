@@ -18,12 +18,16 @@ import Foundation
         var selection: NSRange
         /// The mode the app would be holding — the engine has none of its own.
         var mode: EditMode = .normal
+        /// The end of the selection the cursor is on, which is what the view
+        /// scrolls to. Kept exactly as `EditorTextView.apply` keeps it.
+        var caret: Int
 
         init(_ text: String, at location: Int = 0) {
             self.text = text
             let length = (text as NSString).length
             self.selection = NSRange(location: location,
                                      length: location < length ? 1 : 0)
+            self.caret = location
         }
 
         @discardableResult
@@ -93,6 +97,7 @@ import Foundation
             let start = min(max(outcome.selection.location, 0), length)
             selection = NSRange(location: start,
                                 length: min(outcome.selection.length, length - start))
+            caret = min(max(outcome.caret, 0), length)
             return self
         }
 
@@ -401,6 +406,49 @@ import Foundation
         buffer.type("x")
         #expect(buffer.text == "")
     }
+
+    // MARK: Which end the cursor is on
+
+    /// A selection has a direction even though a range does not, and the end
+    /// the reader is moving is the end the view has to keep on screen.
+    ///
+    /// Growing a selection downward sorts the moving end to `NSMaxRange`, so a
+    /// view reading `selection.location` scrolls to the line the cursor left —
+    /// once per keystroke, which is a page that jerks backwards the whole time
+    /// you are selecting.
+    @Test func extendingDownwardLeavesTheCursorAtTheFarEnd() {
+        let buffer = Buffer("one\ntwo\nthree\nfour", at: 0)
+        buffer.type("v").type("jj")
+        #expect(buffer.selection.location == 0, "the anchor stays where selecting began")
+        #expect(buffer.caret > buffer.selection.location,
+                "the cursor is at the far end, not on the anchor")
+        #expect(buffer.caret >= 8, "two lines down is past the start of the third line")
+    }
+
+    /// Upward, the two coincide — which is why following the start looked
+    /// right for as long as anyone only tested it in one direction.
+    @Test func extendingUpwardLeavesTheCursorAtTheStart() {
+        let buffer = Buffer("one\ntwo\nthree\nfour", at: 14)
+        buffer.type("v").type("kk")
+        #expect(buffer.caret == buffer.selection.location)
+    }
+
+    /// A sweep to the end of a line is the same shape: the selection starts
+    /// where the cursor was, and the cursor is now at the other end.
+    @Test func sweepingToTheLineEndLeavesTheCursorThere() {
+        let buffer = Buffer("alpha beta gamma\nnext", at: 0)
+        buffer.press("$")
+        #expect(buffer.caret >= 16, "the cursor went to the end of the line")
+        #expect(buffer.selection.location == 0)
+    }
+
+    /// A plain motion has no far end to get wrong, and must not acquire one.
+    @Test func aPlainMotionPutsTheCursorWhereItLands() {
+        let buffer = Buffer("one\ntwo\nthree", at: 0)
+        buffer.press("j")
+        #expect(buffer.caret == buffer.selection.location)
+    }
+
 }
 
 /// The editor's keys and the commands they name.
