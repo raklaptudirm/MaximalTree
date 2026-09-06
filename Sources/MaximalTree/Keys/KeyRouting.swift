@@ -41,7 +41,13 @@ enum KeyDispatch {
     /// - Returns: whether the key was consumed, and must not reach AppKit.
     @MainActor
     static func handle(_ chord: KeyChord, keys: KeyEngine,
-                       surface: @autoclosure () -> Keymap = Keymap()) -> Bool {
+                       surface: @autoclosure () -> Keymap = Keymap(),
+                       editing: Bool = false) -> Bool {
+        // The keyboard is in a text field: everything is a character there,
+        // except the one key that gets you out. The surface's keys are skipped
+        // too — a field inside the inspector would otherwise lose exactly the
+        // letters the inspector binds.
+        if editing, chord.key != "ESC" { return false }
         guard KeyRouting.destination(for: chord, mode: keys.mode) == .app else { return false }
 
         // Escape is one assignment, because there is one mode. Nothing to

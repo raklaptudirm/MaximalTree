@@ -17,6 +17,26 @@ enum KeyFocus {
         window?.firstResponder as? MaximalEditor.EditorTextView
     }
 
+    /// Whether the keyboard is in a plain text field rather than the app's
+    /// own editor.
+    ///
+    /// A field editor takes what you type; the modal layer must not take it
+    /// first. Our editor is the exception — it *is* modal, so in a commanding
+    /// mode its keys are commands and only insert mode makes them characters.
+    ///
+    /// Without this, every text field in the app quietly lost the letters its
+    /// surface happened to bind: typing "join" into an inspector field ran the
+    /// `j` motion and dropped the character.
+    @MainActor
+    static func isTypingInAField(in window: NSWindow? = NSApp.keyWindow) -> Bool {
+        guard let responder = window?.firstResponder else { return false }
+        if responder is MaximalEditor.EditorTextView { return false }
+        guard let view = responder as? NSView else { return false }
+        // A field editor is the window's shared NSTextView, standing in for
+        // whichever field is being typed in.
+        return view is NSText || view is NSTextView
+    }
+
     /// Whether this view is somewhere typing could usefully go.
     ///
     /// A leaf that will take focus: the terminal's surface, a web view.

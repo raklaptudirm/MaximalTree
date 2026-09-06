@@ -73,6 +73,9 @@ struct TextEditorCanvas: View {
         VStack(spacing: 0) {
             if conflict != nil {
                 ExternalChangeBanner(reload: takeDiskVersion, keep: { conflict = nil })
+            // Above the text it searches, where the change banner sits: what
+            // you are looking for belongs beside the line you are reading.
+            if EditorFind.shared.isActive { EditorFindBar() }
             }
             if loadedNode != nodeID {
                 ProgressView()

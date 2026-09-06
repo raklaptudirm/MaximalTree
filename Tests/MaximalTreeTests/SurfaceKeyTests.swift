@@ -31,6 +31,35 @@ import AppKit
 
     private func chord(_ text: String) -> KeyChord { KeyChord(parsing: text)! }
 
+    // MARK: Text fields
+
+    /// While the keyboard is in a plain text field, letters are letters.
+    ///
+    /// Nothing sets insert mode when a field takes focus, so without this the
+    /// modal layer went on claiming keys and every field in the app lost the
+    /// ones its surface bound — typing "join" into an inspector field ran the
+    /// `j` motion and dropped the character.
+    @Test func aTextFieldKeepsTheKeysItsSurfaceWouldHaveTaken() {
+        var ran: [String] = []
+        let keys = engine { id, _ in ran.append(id) }
+        let map = surface([SurfaceKey("j", "explorer.down")])
+
+        // Its own key, and one of the app's.
+        for key in ["j", "/"] {
+            #expect(!KeyDispatch.handle(chord(key), keys: keys, surface: map, editing: true),
+                    "\(key) was taken from a text field")
+        }
+        #expect(ran.isEmpty, "a field's typing ran commands: \(ran)")
+    }
+
+    /// Except the one that gets you out, which is never anyone else's.
+    @Test func escapeStillBelongsToTheAppInATextField() {
+        let keys = engine { _, _ in }
+        keys.setMode(.insert)
+        #expect(KeyDispatch.handle(chord("ESC"), keys: keys, surface: Keymap(), editing: true))
+        #expect(keys.mode == .normal)
+    }
+
     // MARK: The basic hand-off
 
     @Test func aSurfaceKeyRunsItsAction() {

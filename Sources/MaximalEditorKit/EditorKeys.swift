@@ -59,8 +59,16 @@ public enum EditorKeys {
     public static func id(for command: EditCommand) -> String { "editor.\(command.rawValue)" }
 
     /// What a canvas showing an editor declares.
+    ///
+    /// The motions and verbs, plus finding — which is not an `EditCommand`
+    /// because it is not an edit: it moves the selection to the next match.
+    /// `/` is the editor's here rather than the app finder's, which is what it
+    /// means in a document; the finder is still `SPC /` and `SPC SPC`.
     public static var keys: [SurfaceKey] {
         bindings.map { SurfaceKey($0.key, id(for: $0.command)) }
+            + [SurfaceKey("/", "editor.find"),
+               SurfaceKey("n", "editor.findNext"),
+               SurfaceKey("N", "editor.findPrevious")]
     }
 
     /// The editor with the keyboard, if one has it.
@@ -76,6 +84,7 @@ public enum EditorKeys {
     /// now, and the editor never sees a keystroke, so this is the editor
     /// reacting to a mode it does not own.
     public static func appModeChanged(to mode: KeyMode) {
+        if mode == .normal { EditorFind.shared.close() }
         guard mode == .normal, let editor = focused, editor.modalEditing else { return }
         editor.run(.collapseSelection, count: 1, mode: .normal)
     }
@@ -86,6 +95,26 @@ public enum EditorKeys {
     /// the vocabulary exists whichever of those plugins is loaded and appears
     /// once however many of them ask.
     public static func register(with registry: PluginRegistry) {
+        let inAnEditor = ActionPredicate.custom { _ in focused?.modalEditing == true }
+        registry.register(action: Action(
+            id: "editor.find", title: "Find…", systemImage: "magnifyingglass",
+            appliesTo: inAnEditor, scope: .document
+        ) { _ in EditorFind.shared.open() })
+        registry.register(action: Action(
+            id: "editor.findNext", title: "Find Next", systemImage: "chevron.down",
+            appliesTo: .custom { _ in
+                focused?.modalEditing == true && !EditorFind.shared.query.isEmpty
+            },
+            scope: .document
+        ) { _ in EditorFind.shared.step(forward: true) })
+        registry.register(action: Action(
+            id: "editor.findPrevious", title: "Find Previous", systemImage: "chevron.up",
+            appliesTo: .custom { _ in
+                focused?.modalEditing == true && !EditorFind.shared.query.isEmpty
+            },
+            scope: .document
+        ) { _ in EditorFind.shared.step(forward: false) })
+
         for binding in bindings {
             registry.register(action: Action(
                 id: id(for: binding.command), title: binding.title,

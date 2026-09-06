@@ -444,3 +444,55 @@ import Foundation
         #expect(EditorKeys.id(for: .wordForward) == "editor.wordForward")
     }
 }
+
+/// Finding text in the document you are editing.
+@MainActor
+@Suite struct EditorSearchTests {
+    private let text = "alpha beta\nGamma beta\ndelta"
+
+    @Test func findsTheNextMatchAfterTheCaret() {
+        let hit = EditorSearch.match(for: "beta", in: text, from: 0, forward: true)
+        #expect(hit == NSRange(location: 6, length: 4))
+
+        // And the one after that, rather than the one it is sitting on.
+        let next = EditorSearch.match(for: "beta", in: text, from: 7, forward: true)
+        #expect(next == NSRange(location: 17, length: 4))
+    }
+
+    /// Round the end and carry on: a search that stopped at the bottom would
+    /// make `n` a key that sometimes does nothing for no visible reason.
+    @Test func itWrapsPastTheEndAndBeforeTheStart() {
+        let wrapped = EditorSearch.match(for: "alpha", in: text, from: 20, forward: true)
+        #expect(wrapped == NSRange(location: 0, length: 5))
+
+        let back = EditorSearch.match(for: "delta", in: text, from: 0, forward: false)
+        #expect(back == NSRange(location: 22, length: 5))
+    }
+
+    @Test func backwardsFindsTheMatchBeforeTheCaret() {
+        let hit = EditorSearch.match(for: "beta", in: text, from: 17, forward: false)
+        #expect(hit == NSRange(location: 6, length: 4))
+    }
+
+    /// Case-insensitive, which is what "find" means until someone says
+    /// otherwise — finding too much is recoverable, finding nothing looks
+    /// broken.
+    @Test func caseDoesNotMatter() {
+        #expect(EditorSearch.match(for: "gamma", in: text, from: 0, forward: true)
+                    == NSRange(location: 11, length: 5))
+    }
+
+    @Test func nothingToFindIsNotAMatch() {
+        #expect(EditorSearch.match(for: "zeta", in: text, from: 0, forward: true) == nil)
+        #expect(EditorSearch.match(for: "", in: text, from: 0, forward: true) == nil)
+        #expect(EditorSearch.match(for: "a", in: "", from: 0, forward: true) == nil)
+    }
+
+    /// A caret past the end, or before the start, still searches.
+    @Test func anOutOfRangeCaretIsClamped() {
+        #expect(EditorSearch.match(for: "alpha", in: text, from: 9_999, forward: true)
+                    == NSRange(location: 0, length: 5))
+        #expect(EditorSearch.match(for: "alpha", in: text, from: -5, forward: true)
+                    == NSRange(location: 0, length: 5))
+    }
+}

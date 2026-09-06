@@ -64,7 +64,8 @@ struct KeyCapture: ViewModifier {
                 // own keys have to be taken here — nothing downstream will.
                 if model.handleFinderKey(chord) { return true }
                 return KeyDispatch.handle(chord, keys: model.keys,
-                                          surface: model.surfaceKeymap())
+                                          surface: model.surfaceKeymap(),
+                                          editing: KeyFocus.isTypingInAField())
             }
 
             func remove() {
