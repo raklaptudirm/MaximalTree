@@ -223,6 +223,18 @@ public final class EditorController {
         return textView.window?.firstResponder === textView
     }
 
+    /// Whether the editor is on screen and laid out enough to be scrolled.
+    ///
+    /// Having a text view is not the same as being able to move it: before the
+    /// view is in a window and its scroll view has a size, TextKit drops a
+    /// scroll silently. A jump that waits only for the view to exist sets the
+    /// selection and goes nowhere.
+    @MainActor
+    public var canScroll: Bool {
+        guard let textView, textView.window != nil else { return false }
+        return (textView.enclosingScrollView?.contentView.bounds.height ?? 0) > 1
+    }
+
     /// Current text and primary selection, for computing edits.
     @MainActor
     public func textAndSelection() -> (text: String, selection: NSRange)? {
@@ -263,7 +275,76 @@ extension STTextView {
         editor?.isFollowingCaret = true
         defer { editor?.isFollowingCaret = false }
         textSelection = range
-        scrollToVisible(range)
+        reveal(range)
+    }
+
+    /// Bring a range into view: nothing when it is already there, and centred
+    /// when it is not.
+    ///
+    /// Two problems in one rule. `scrollRangeToVisible` moves the *minimum*
+    /// distance, so a line revealed by a find or by opening a section landed
+    /// hard against the edge of the viewport, where the next few points of
+    /// reflow pushed it straight back out — the jerk. And scrolling at all
+    /// when the target is already on screen is what made leaving insert mode
+    /// shift the page: the caret had not moved anywhere you could not see.
+    func reveal(_ range: NSRange) {
+        revealNow(range)
+        // Then once more, a turn later, and usually to discover there is
+        // nothing to do.
+        //
+        // Laying out the prefix makes the document taller, and the clip view
+        // clamps a scroll against the height it knew at the time — an estimate
+        // that grows as layout catches up. A jump computed against the old
+        // height lands close and short, which is what a second click was
+        // quietly fixing by hand. This is that second click. When the first
+        // one landed properly the target is already comfortable and this
+        // returns without moving anything.
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated { self?.revealNow(range) }
+        }
+    }
+
+    private func revealNow(_ range: NSRange) {
+        guard let contentManager = textLayoutManager.textContentManager,
+              let textRange = NSTextRange(range, in: contentManager),
+              let clipView = enclosingScrollView?.contentView else {
+            scrollRangeToVisible(range)
+            return
+        }
+        let visible = visibleRect
+        // A margin, so a line *just* inside the edge still counts as needing
+        // to be brought properly into view rather than left half-read.
+        let comfortable = visible.insetBy(dx: 0, dy: min(24, visible.height / 4))
+
+        // Ask before forcing anything. Something already on screen is laid
+        // out, so its frame is honest without a layout pass — and laying the
+        // prefix out anyway is work that can move the page under a reader who
+        // asked for nothing, which is what leaving insert mode did.
+        if let here = textLayoutManager.textSegmentFrame(at: textRange.location,
+                                                         type: .standard),
+           comfortable.minY <= here.minY, here.maxY <= comfortable.maxY { return }
+
+        // Somewhere else, then. An honest y needs everything above it laid out
+        // for real; an estimate is what made a jump land somewhere and then
+        // move again once the layout caught up.
+        textLayoutManager.ensureLayout(upTo: textRange.endLocation)
+        // And the view has to take that in before anything reads its height:
+        // the scroll is clamped against the document's size, so measuring
+        // before the growth is measuring the estimate.
+        enclosingScrollView?.layoutSubtreeIfNeeded()
+        guard let frame = textLayoutManager.textSegmentFrame(at: textRange.location,
+                                                             type: .standard) else {
+            scrollRangeToVisible(range)
+            return
+        }
+        let laidOut = textLayoutManager.usageBoundsForTextContainer.maxY
+        let documentHeight = max(enclosingScrollView?.documentView?.frame.height ?? 0, laidOut)
+        let centred = frame.midY - visible.height / 2
+        let furthest = max(0, documentHeight - visible.height)
+        let y = min(max(0, centred), furthest)
+        guard abs(y - visible.minY) > 0.5 else { return }
+        scroll(CGPoint(x: visible.minX, y: y))
+        enclosingScrollView?.reflectScrolledClipView(clipView)
     }
 
     func scrollToVisible(_ range: NSRange, ensuringLayout: Bool = true) {

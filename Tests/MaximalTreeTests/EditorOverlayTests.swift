@@ -470,6 +470,54 @@ import STTextView
                 "landed at \(editor.textView.textSelection.location); 11 is the end of the line it started on")
     }
 
+    /// Revealing something puts it in the middle, not against the edge.
+    ///
+    /// `scrollRangeToVisible` moves the minimum distance, so a line reached by
+    /// a find or by opening a section landed on the boundary — where the next
+    /// few points of reflow pushed it back out again.
+    @Test func revealingSomethingFarAwayCentresIt() async throws {
+        var long = document
+        for index in 12..<200 {
+            long += "\n\nParagraph \(index) says something and continues with "
+                + "enough words to wrap onto another line or two."
+        }
+        let editor = makeEditor(text: long)
+        editor.coordinator.highlightNow()
+        await settle()
+
+        let ns = long as NSString
+        let target = ns.range(of: "Paragraph 120")
+        try #require(target.location != NSNotFound)
+
+        editor.textView.reveal(target)
+        await settle()
+
+        let lm = editor.textView.textLayoutManager
+        let cm = try #require(lm.textContentManager)
+        let range = try #require(NSTextRange(NSRange(location: target.location, length: 0),
+                                             in: cm))
+        let frame = try #require(lm.textSegmentFrame(at: range.location, type: .standard))
+        let visible = editor.textView.visibleRect
+        let offCentre = abs(frame.midY - visible.midY)
+        #expect(offCentre < visible.height / 4,
+                "landed \(offCentre)pt from the middle of \(visible.height)")
+    }
+
+    /// And something already on screen is left exactly where it is — which is
+    /// what made leaving insert mode shift the page.
+    @Test func revealingSomethingAlreadyVisibleDoesNotMove() async throws {
+        let editor = makeEditor(text: document)
+        editor.coordinator.highlightNow()
+        await settle()
+
+        let before = editor.textView.visibleRect.minY
+        editor.textView.reveal(NSRange(location: 5, length: 0))
+        await settle()
+
+        #expect(editor.textView.visibleRect.minY == before,
+                "the view moved for something already in front of the reader")
+    }
+
     /// A motion takes the view with it.
     ///
     /// The counterpart to pinning the viewport across a click, and the reason

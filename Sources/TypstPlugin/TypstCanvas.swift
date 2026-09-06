@@ -226,13 +226,20 @@ struct TypstCanvas: View {
               fragment.fragment.hasPrefix("line="),
               let line = Int(fragment.fragment.dropFirst("line=".count))
         else { return }
-        consumedFragment = fragment.nonce
         Task { @MainActor in
-            // On a fresh open the editor mounts a beat after the canvas —
-            // wait for it (bounded), then jump. No editor in Read mode: no-op.
-            for _ in 0..<10 where editor.textAndSelection() == nil {
-                try? await Task.sleep(for: .milliseconds(50))
+            // On a fresh open the editor mounts a beat after the canvas, and
+            // being mounted is not the same as being scrollable — until it is
+            // in a window with a laid-out scroll view, TextKit drops the
+            // scroll and the jump sets a selection you cannot see. Waiting
+            // only for the view to exist is why this used to take two clicks.
+            for _ in 0..<20 where !editor.canScroll {
+                try? await Task.sleep(for: .milliseconds(25))
             }
+            guard editor.canScroll else { return }
+            // Spent only on a jump that happened. Marking it consumed before
+            // the attempt meant a dropped one was never retried — and the
+            // second click worked because it carried a new nonce.
+            consumedFragment = fragment.nonce
             editor.moveCursor(toLine: line, column: 1)
         }
     }

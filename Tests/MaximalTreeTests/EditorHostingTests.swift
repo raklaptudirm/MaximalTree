@@ -502,3 +502,37 @@ import STTextView
                 "document \(width) fits inside viewport \(viewport) — nowhere to scroll")
     }
 }
+
+/// Being mounted is not the same as being scrollable.
+@MainActor
+@Suite struct EditorReadinessTests {
+    /// The distinction a phony-node jump turns on. A jump that waits only for
+    /// the editor to *exist* sets a selection and goes nowhere, because
+    /// TextKit drops a scroll before the view is in a window with a laid-out
+    /// scroll view — which is why opening a section used to take two clicks.
+    @Test func anEditorIsNotScrollableUntilItIsOnScreen() async throws {
+        let controller = EditorController()
+        #expect(!controller.canScroll, "nothing attached at all")
+
+        let scrollView = MaximalEditor.EditorTextView.scrollableTextView()
+        let textView = try #require(scrollView.documentView as? MaximalEditor.EditorTextView)
+        textView.text = String(repeating: "a line of text\n", count: 200)
+        controller.textView = textView
+        #expect(!controller.canScroll, "attached, but nowhere to scroll yet")
+
+        let window = TestWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
+                                styleMask: [.titled], backing: .buffered, defer: false)
+        scrollView.frame = NSRect(x: 0, y: 0, width: 500, height: 300)
+        window.contentView = scrollView
+        window.orderFrontRegardless()
+        window.layoutIfNeeded()
+        defer { window.orderOut(nil) }
+        for _ in 0..<4 {
+            try? await Task.sleep(for: .milliseconds(20))
+            window.displayIfNeeded()
+            window.layoutIfNeeded()
+        }
+
+        #expect(controller.canScroll, "on screen and laid out, and still refusing")
+    }
+}
