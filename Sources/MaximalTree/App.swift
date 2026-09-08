@@ -163,6 +163,8 @@ final class AppModel {
     /// Sidebar UI state (expansion, selection anchor) — session-scoped, owned
     /// here so the tree survives sidebar view recreation.
     let sidebar = SidebarState()
+    /// The middle column's state — see `ContentsModel`.
+    let contents = ContentsModel()
     // Not private: under XCTest the plugin bundles aren't dlopened (their
     // sources are compiled into the test target instead), so a test that wants
     // the real registry has to populate it itself.
@@ -179,6 +181,97 @@ final class AppModel {
     /// keyboard layer has to be able to toggle it (see KeyCommands).
     var sidebarVisible = true
     var inspectorVisible = true
+
+    // MARK: The contents column
+
+    /// What the middle column is listing: the sidebar's selection, when what
+    /// is selected is something you go *into* rather than open in place.
+    ///
+    /// Derived rather than stored, and derived from the sidebar's selection
+    /// specifically — which is why the column never writes that selection
+    /// itself. A row publishing itself there would re-derive this to the row,
+    /// find a file has no contents, and close the column that was showing it.
+    var contentsContainer: NodeID? {
+        guard host.selection.count == 1, let id = host.selection.first,
+              host.childStyle(of: id) == .contents else { return nil }
+        return id
+    }
+
+    /// The highlighted row, if the column is on screen.
+    ///
+    /// Gated on visibility because the highlight is what the active pane
+    /// draws: a list you have put away must not go on deciding what you are
+    /// looking at. Hiding it hands the pane back to its own history, and the
+    /// row is still there when the column comes back.
+    var contentsRow: NodeID? {
+        guard contentsVisible, let container = contentsContainer else { return nil }
+        return contents.rowByContainer[container]
+    }
+
+    /// Whether the column is on screen: something to list, not turned off, and
+    /// not zen — which hides everything that isn't the work.
+    var contentsVisible: Bool {
+        contentsContainer != nil && !contents.isHidden && !host.isZenMode
+    }
+
+    /// What a pane draws.
+    ///
+    /// The highlighted row stands in front of the active pane's own history
+    /// without touching it: arrowing down a list of two hundred should not
+    /// push two hundred entries you then have to walk back out of. Enter is
+    /// what commits — see `openContentsRow`.
+    ///
+    /// The active pane only. A split exists to hold two things still; a list
+    /// that redrew every pane at once would take that away.
+    func displayedNode(in pane: Pane) -> NodeID? {
+        if pane.id == navigation.activePane?.id, let row = contentsRow { return row }
+        return pane.current
+    }
+
+    /// Highlight a row: shown in the active pane, nothing navigated.
+    func highlightContentsRow(_ id: NodeID) {
+        guard let container = contentsContainer else { return }
+        contents.rowByContainer[container] = id
+    }
+
+    /// Commit to a row — the pane navigates, and the preview stops standing in
+    /// front of it because it is now what the pane is showing anyway.
+    func openContentsRow(_ id: NodeID) {
+        highlightContentsRow(id)
+        host.open(id)
+    }
+
+    /// Move the highlight `delta` rows, clamped at both ends.
+    ///
+    /// Nothing highlighted yet counts as standing just outside the list, on
+    /// the side the move is coming from: the first `j` lands on the first row
+    /// and the first `k` on the last, and a count carries from there rather
+    /// than being swallowed by a special case for the first press.
+    func moveContentsRow(by delta: Int) {
+        let rows = contentsRows()
+        guard !rows.isEmpty, delta != 0 else { return }
+        let from = contentsRow.flatMap { rows.firstIndex(of: $0) }
+            ?? (delta > 0 ? -1 : rows.count)
+        highlightContentsRow(rows[min(max(from + delta, 0), rows.count - 1)])
+    }
+
+    func moveContentsRowToEdge(last: Bool) {
+        let rows = contentsRows()
+        guard let target = last ? rows.last : rows.first else { return }
+        highlightContentsRow(target)
+    }
+
+    /// What the column is listing, filter and all — the motions have to walk
+    /// the rows on screen, not the ones a cleared filter would show.
+    func contentsRows() -> [NodeID] {
+        guard let container = contentsContainer else { return [] }
+        let children = host.children(of: container)
+        let needle = contents.filter
+        guard !needle.isEmpty else { return children }
+        return children.filter {
+            (host.node($0)?.label ?? $0.uri).localizedCaseInsensitiveContains(needle)
+        }
+    }
 
     /// The surface holding the keyboard.
     ///

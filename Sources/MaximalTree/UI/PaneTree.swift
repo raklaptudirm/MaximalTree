@@ -268,7 +268,7 @@ struct PaneView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let id = pane.current {
+        if let id = model.displayedNode(in: pane) {
             if let node = host.node(id), let canvas = model.store?.canvas(for: node) {
                 PreparedCanvas(node: id, canvas: canvas)
             } else {

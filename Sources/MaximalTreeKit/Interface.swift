@@ -178,6 +178,8 @@ public struct SurfaceKey: Sendable {
 public struct SurfaceKeys: Sendable {
     public enum Surface: Sendable, Equatable {
         case sidebar
+        /// The column listing what is inside the sidebar's selection.
+        case contents
         case inspector
     }
 

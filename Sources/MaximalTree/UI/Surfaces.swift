@@ -11,6 +11,8 @@ import MaximalEditorKit
 /// reached at all.
 enum SurfaceID: Hashable {
     case sidebar
+    /// What is inside the thing the sidebar has selected — see `ContentsList`.
+    case contents
     case pane(UUID)
     case inspector
 }

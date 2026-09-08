@@ -85,9 +85,11 @@ enum DefaultKeymap {
         map.bind("SPC s d", to: "pane.close")
         // Going to one, and showing or hiding it.
         map.bind("SPC s e", to: "explorer.focus")
+        map.bind("SPC s b", to: "contents.focus")
         map.bind("SPC s i", to: "inspector.focus")
         map.bind("SPC s c", to: "editor.focus")
         map.bind("SPC s E", to: "toggle.sidebar")
+        map.bind("SPC s B", to: "toggle.contents")
         map.bind("SPC s I", to: "toggle.inspector")
         map.bind("SPC s z", to: "toggle.zen")
 

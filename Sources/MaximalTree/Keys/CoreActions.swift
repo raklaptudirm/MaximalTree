@@ -87,8 +87,12 @@ extension AppModel {
     /// The same, for a surface already in hand — so the two halves of one
     /// answer cannot come from two different readings of where focus is.
     private func paneNode(of surface: SurfaceID) -> NodeID? {
-        guard case .pane(let id) = surface else { return nil }
-        return navigation.activeTab.root.pane(id)?.current
+        guard case .pane(let id) = surface,
+              let pane = navigation.activeTab.root.pane(id) else { return nil }
+        // What it is *showing*, which a highlighted row can stand in front of.
+        // The canvas resolves from this too, so the keys that work are the
+        // ones belonging to what is drawn.
+        return displayedNode(in: pane)
     }
 
     /// What a surface claims, or nil when that cannot be answered yet.
@@ -97,12 +101,16 @@ extension AppModel {
     /// and a shrug is not.
     private func claimedKeys(surface: SurfaceID, showing node: NodeID?) -> [SurfaceKey]? {
         switch surface {
-        case .sidebar, .inspector:
+        case .sidebar, .contents, .inspector:
             // Registry data, not the store's: what a surface claims is
             // declared at registration and does not depend on a graph being
             // up. Reading it through the store made this unanswerable before
             // the app had started, which is also every test.
-            let wanted: SurfaceKeys.Surface = surface == .sidebar ? .sidebar : .inspector
+            let wanted: SurfaceKeys.Surface = switch surface {
+            case .sidebar: .sidebar
+            case .contents: .contents
+            default: .inspector
+            }
             return pluginHost.registry.surfaceKeys
                 .filter { $0.surface == wanted }.flatMap(\.keys)
         case .pane:
@@ -137,8 +145,14 @@ extension AppModel {
     /// be selected in the tree — a different node, or none — which is why a
     /// canvas could only ever have implemented its own keys.
     private func keyTargets() -> [NodeID]? {
-        guard case .pane = keyboardSurface(), let node = focusedPaneNode() else { return nil }
-        return [node]
+        switch keyboardSurface() {
+        case .pane: return focusedPaneNode().map { [$0] }
+        // The highlighted row, not the library holding it. Otherwise every
+        // action run from the column would act on the container — which for
+        // "Move to Trash" is the difference between one file and all of them.
+        case .contents: return contentsRow.map { [$0] }
+        case .sidebar, .inspector: return nil
+        }
     }
 
     /// The keys the sidebar claims.
@@ -172,6 +186,21 @@ extension AppModel {
         SurfaceKey("u", "inspector.halfPageUp"),
         SurfaceKey("g g", "inspector.top"),
         SurfaceKey("G", "inspector.bottom"),
+    ]
+
+    /// The keys the contents column claims.
+    ///
+    /// The sidebar's motions by the same letters, because it is the same
+    /// gesture on a different shape — a list rather than a tree, so there is
+    /// nothing to expand or collapse and `h`/`l` are not among them.
+    static let contentsKeys: [SurfaceKey] = [
+        SurfaceKey("j", "contents.down"),
+        SurfaceKey("k", "contents.up"),
+        SurfaceKey("RET", "contents.open"),
+        SurfaceKey("o", "contents.open"),
+        SurfaceKey("g g", "contents.first"),
+        SurfaceKey("G", "contents.last"),
+        SurfaceKey("/", "contents.filter"),
     ]
 
     /// Actions the host contributes itself.
@@ -218,6 +247,7 @@ extension AppModel {
         // key of its own. Now it claims them, and the actions say nothing
         // about surfaces at all.
         registry.register(surfaceKeys: SurfaceKeys(.sidebar, Self.sidebarKeys))
+        registry.register(surfaceKeys: SurfaceKeys(.contents, Self.contentsKeys))
         registry.register(surfaceKeys: SurfaceKeys(.inspector, Self.inspectorKeys))
 
         registry.register(action: Action(
@@ -265,6 +295,25 @@ extension AppModel {
         act("inspector.bottom", "Bottom of Inspector") { _, _ in InspectorScroll.toBottom() }
         act("explorer.focus", "Focus Explorer") { model, _ in model.focus(.sidebar) }
         act("inspector.focus", "Focus Inspector") { model, _ in model.focus(.inspector) }
+        act("contents.focus", "Focus Contents") { model, _ in model.focus(.contents) }
+
+        // MARK: The contents column
+
+        act("contents.down", "Next Item") { model, ctx in
+            model.moveContentsRow(by: max(ctx.count, 1))
+        }
+        act("contents.up", "Previous Item") { model, ctx in
+            model.moveContentsRow(by: -max(ctx.count, 1))
+        }
+        act("contents.first", "First Item") { model, _ in model.moveContentsRowToEdge(last: false) }
+        act("contents.last", "Last Item") { model, _ in model.moveContentsRowToEdge(last: true) }
+        act("contents.open", "Open Item") { model, _ in
+            guard let row = model.contentsRow else { return }
+            model.openContentsRow(row)
+        }
+        act("contents.filter", "Filter Contents", image: "line.3.horizontal.decrease") { model, _ in
+            model.contents.filtering = true
+        }
 
         // MARK: The finder
 
@@ -419,6 +468,8 @@ extension AppModel {
             image: "sidebar.leading") { model, _ in model.sidebarVisible.toggle() }
         act("toggle.inspector", "Toggle Inspector",
             image: "sidebar.trailing") { model, _ in model.inspectorVisible.toggle() }
+        act("toggle.contents", "Toggle Contents",
+            image: "list.bullet") { model, _ in model.contents.isHidden.toggle() }
         act("toggle.zen", "Toggle Zen Mode", image: "arrow.up.left.and.arrow.down.right",
             shortcut: KeyboardShortcut("z", modifiers: [.command, .control])) { model, _ in
             model.toggleZenMode()
@@ -528,7 +579,7 @@ extension AppModel {
     /// to the window, which used to read as "you are in the sidebar" — so one
     /// surface with nothing focusable in it and every later step became a
     /// no-op until you clicked back in.
-    private func focus(_ surface: SurfaceID) {
+    func focus(_ surface: SurfaceID) {
         guard let window = NSApp.keyWindow else { return }
         DispatchQueue.main.async { [self] in
             guard let target = Surfaces.focusTarget(of: surface, in: window) else { return }

@@ -69,7 +69,19 @@ struct ContentView: View {
                     TabStrip()
                     Divider()
                 }
-                CanvasPane()
+                // The column sits under the tab strip, not beside it: tabs
+                // belong to the window and the list belongs to what is open in
+                // it. Not a third NavigationSplitView column either — that has
+                // no state meaning "sidebar and detail, no middle", so `SPC s
+                // B` would have had nothing to say.
+                HStack(spacing: 0) {
+                    if let container = model.contentsContainer, model.contentsVisible {
+                        ContentsList(container: container)
+                            .frame(width: 260)
+                        Divider()
+                    }
+                    CanvasPane()
+                }
             }
             // Zen: without this the hidden title bar leaves a 52pt dead strip —
             // SwiftUI keeps laying the canvas out below the top safe area.
