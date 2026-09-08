@@ -453,7 +453,7 @@ extension AppModel {
             expandedNodes: sidebar.expandedNodes,
             graph: SidebarGraph(
                 children: { [host] in host.children(of: $0) },
-                isExpandable: { [host] in host.node($0)?.hasChildren ?? false },
+                isExpandable: { [host] in host.isExpandable($0) },
                 hasMore: { [host] in host.hasMoreChildren($0) }))
     }
 

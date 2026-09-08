@@ -150,6 +150,17 @@ public struct Node: Identifiable, Hashable, Sendable {
     public var hasChildren: Bool
     /// Non-nil makes this a phony node — see `NodeAnchor`.
     public var anchor: NodeAnchor?
+    /// How this node's children are meant to be reached, or nil to let the
+    /// host decide.
+    ///
+    /// Unstated is the useful default: a provider that paginates has already
+    /// said its children are a list, so the host reads a returned cursor as
+    /// `.contents`. Saying it outright works in either direction — a provider
+    /// that paginates a short list can insist on `.places`, and one that knows
+    /// a folder is enormous can say `.contents` before a single child has
+    /// loaded, which is the only way to be right before the first page lands.
+    public var childStyle: ChildStyle?
+
     /// The same thing, seen another way.
     ///
     /// A git repository *is* a directory. A typst agenda *is* the folder its
@@ -175,6 +186,7 @@ public struct Node: Identifiable, Hashable, Sendable {
         icon: NodeIcon? = nil,
         attributes: Attributes = .init(),
         hasChildren: Bool = false,
+        childStyle: ChildStyle? = nil,
         anchor: NodeAnchor? = nil,
         identities: [NodeID] = []
     ) {
@@ -184,6 +196,7 @@ public struct Node: Identifiable, Hashable, Sendable {
         self.icon = icon
         self.attributes = attributes
         self.hasChildren = hasChildren
+        self.childStyle = childStyle
         self.anchor = anchor
         self.identities = identities
     }
@@ -203,6 +216,22 @@ public struct Node: Identifiable, Hashable, Sendable {
         if case .string(let value)? = attributes["uti"] { return value }
         return nil
     }
+}
+
+/// How a node's children are meant to be reached.
+///
+/// A folder with six files is a *place*: you open the triangle and see what is
+/// inside without leaving where you are. A folder with six thousand photos is
+/// *contents*: a list you go into, browse, and come back out of. A tree draws
+/// the first well and drowns in the second — a sidebar that has to grow a
+/// "More…" row is a tree being asked to be a list.
+///
+/// Per node rather than per type, because it is not a property of the kind of
+/// thing: one directory is a place and the next is a library, and only the
+/// provider looking at them can say which.
+public enum ChildStyle: String, Sendable, Codable, Hashable {
+    case places
+    case contents
 }
 
 // MARK: - Pagination

@@ -458,3 +458,100 @@ private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider
         #expect(context.cachedChildren(of: root)?.count == 2)
     }
 }
+
+/// Places or contents: whether a node's children are something you open in
+/// place or something you go into.
+///
+/// The distinction the sidebar's "More…" row was standing in for. A tree can
+/// show a folder of six; it cannot show a library of six thousand, and paging
+/// one in a page at a time through a button is the tree admitting it.
+@MainActor
+@Suite struct ChildStyleTests {
+    private func id(_ uri: String) -> NodeID { NodeID(uri)! }
+
+    private func context(_ node: Node, cursor: Cursor? = nil) -> HostContext {
+        let context = HostContext()
+        context._ingest(node)
+        context._setChildCursor(cursor, of: node.id)
+        return context
+    }
+
+    /// Nothing said and nothing paged: a folder is a place, which is what
+    /// almost everything is.
+    @Test func childrenArePlacesByDefault() {
+        let node = Node(id: id("stub://folder"), type: "stub.dir", hasChildren: true)
+        let host = context(node)
+        #expect(host.childStyle(of: node.id) == .places)
+        #expect(host.isExpandable(node.id))
+    }
+
+    /// A provider that hands back a cursor has already said its children are
+    /// more than a tree should hold. Nothing else needs to be declared for the
+    /// listings that most need this.
+    @Test func aReturnedCursorMeansContents() {
+        let node = Node(id: id("stub://library"), type: "stub.dir", hasChildren: true)
+        let host = context(node, cursor: Cursor("2"))
+        #expect(host.childStyle(of: node.id) == .contents)
+        #expect(!host.isExpandable(node.id), "contents get no triangle")
+    }
+
+    /// But the provider's word wins, in the direction the inference would not
+    /// have taken: a short list that happens to page is still a place.
+    @Test func aProviderCanInsistOnPlacesDespitePaging() {
+        let node = Node(id: id("stub://short"), type: "stub.dir",
+                        hasChildren: true, childStyle: .places)
+        let host = context(node, cursor: Cursor("2"))
+        #expect(host.childStyle(of: node.id) == .places)
+        #expect(host.isExpandable(node.id))
+    }
+
+    /// And in the other: the inference cannot fire before a first page lands,
+    /// so a provider that knows what it holds says so up front.
+    @Test func aProviderCanSayContentsBeforeAnythingLoads() {
+        let node = Node(id: id("stub://huge"), type: "stub.dir",
+                        hasChildren: true, childStyle: .contents)
+        let host = context(node)
+        #expect(host.childStyle(of: node.id) == .contents)
+        #expect(!host.isExpandable(node.id))
+    }
+
+    /// A leaf is a leaf whichever way it is asked. `hasChildren` still governs
+    /// whether there is anything to reach at all.
+    @Test func aNodeWithNoChildrenIsNeverExpandable() {
+        let node = Node(id: id("stub://file"), type: "stub.file")
+        #expect(!context(node).isExpandable(node.id))
+    }
+
+    /// The sidebar asks the same question the rule answers, so a node that is
+    /// contents stops the walk: its children are not the tree's to draw.
+    @Test func theTreeDoesNotWalkIntoContents() {
+        let library = id("stub://library")
+        let host = context(Node(id: library, type: "stub.dir", hasChildren: true),
+                           cursor: Cursor("2"))
+        var touched: [String] = []
+        let rows = SidebarRows.flatten(
+            entries: [.root("stub://library")], expandedNodes: [library],
+            graph: SidebarGraph(
+                children: { touched.append($0.uri); return [self.id("stub://library/1")] },
+                isExpandable: { host.isExpandable($0) },
+                hasMore: { _ in false }))
+        #expect(rows.count == 1, "contents were expanded into the tree")
+        #expect(touched.isEmpty, "the tree asked a library for its children")
+    }
+
+    /// And the contrast, so the one above is saying something: the same tree,
+    /// the same expansion, a node that is places.
+    @Test func theTreeStillWalksIntoPlaces() {
+        let folder = id("stub://folder")
+        let host = context(Node(id: folder, type: "stub.dir", hasChildren: true))
+        var touched: [String] = []
+        let rows = SidebarRows.flatten(
+            entries: [.root("stub://folder")], expandedNodes: [folder],
+            graph: SidebarGraph(
+                children: { touched.append($0.uri); return [self.id("stub://folder/1")] },
+                isExpandable: { host.isExpandable($0) },
+                hasMore: { _ in false }))
+        #expect(rows.count == 2, "an expanded folder should show its child")
+        #expect(touched == ["stub://folder"])
+    }
+}

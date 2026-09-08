@@ -121,6 +121,29 @@ public final class HostContext {
     /// Whether the provider reported more children beyond what's cached.
     public func hasMoreChildren(_ id: NodeID) -> Bool { childCursors[id] != nil }
 
+    /// How to reach a node's children: places to expand into, or contents to
+    /// go into.
+    ///
+    /// The provider's word wherever it gave one, and otherwise inferred from
+    /// paging — a provider that hands back a cursor has already said its
+    /// children are more than a tree should hold. The inference cannot fire
+    /// until a first page has arrived, which is exactly when a node that needs
+    /// the answer sooner should state it.
+    public func childStyle(of id: NodeID) -> ChildStyle {
+        if let stated = nodes[id]?.childStyle { return stated }
+        return childCursors[id] != nil ? .contents : .places
+    }
+
+    /// Whether the tree should offer to open this node in place.
+    ///
+    /// Having children is not enough: contents are reached by going into them,
+    /// so a node holding a library gets no triangle however many children it
+    /// has. Here rather than in the sidebar's own closure so the rule can be
+    /// checked without an app around it.
+    public func isExpandable(_ id: NodeID) -> Bool {
+        node(id)?.hasChildren == true && childStyle(of: id) == .places
+    }
+
     /// Fetch the next page of `id`'s children and append it to the cached list.
     /// No-op when there is no further page or a fetch is already in flight.
     public func loadMoreChildren(of id: NodeID) { backend?.requestMoreChildren(of: id) }
