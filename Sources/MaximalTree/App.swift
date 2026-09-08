@@ -306,7 +306,7 @@ final class AppModel {
     /// already seen it.
     func refreshFocusedSurface() {
         DispatchQueue.main.async { [self] in
-            let now = Surfaces.focused()
+            let now = keyboardSurface()
             if now != focusedSurface { focusedSurface = now }
         }
     }

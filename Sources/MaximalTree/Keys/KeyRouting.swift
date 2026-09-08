@@ -31,6 +31,26 @@ enum KeyRouting {
         if chord.key == "ESC" { return .app }
         return mode.isTyping ? .focusedView : .app
     }
+
+    /// Keys that still reach the view when nothing binds them.
+    ///
+    /// Everything else stops at the modal layer. In a commanding mode a key is
+    /// a command, and a key that means no command means *nothing* — where
+    /// letting it through meant typing it into the document. That is what a
+    /// missing binding looked like from the outside: the editor "stopped
+    /// responding" and the keys turned into text. A dropped key is a key that
+    /// does nothing, which is a bug you can see and not one that edits your
+    /// file.
+    ///
+    /// The exceptions all move the view and none of them can change it. A
+    /// document you have to enter insert mode to scroll would be worse than
+    /// the problem.
+    static let scrollingKeys: Set<String> =
+        ["left", "right", "up", "down", "pageup", "pagedown", "home", "end"]
+
+    static func passesThroughUnbound(_ chord: KeyChord) -> Bool {
+        scrollingKeys.contains(chord.key)
+    }
 }
 
 /// One key press, all the way through: routed, offered to the canvas, then to
@@ -80,7 +100,10 @@ enum KeyDispatch {
 
         }
 
-        return app(chord, keys)
+        if app(chord, keys) { return true }
+        // Nothing bound it. In a commanding mode that is the end of the key
+        // rather than the start of a character.
+        return !KeyRouting.passesThroughUnbound(chord)
     }
 
     @MainActor

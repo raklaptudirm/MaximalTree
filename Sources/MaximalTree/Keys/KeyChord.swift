@@ -48,9 +48,24 @@ struct KeyChord: Hashable, Sendable, CustomStringConvertible {
                       command: command, shift: true)
             return
         }
-        self.init(rest.count == 1 ? rest.lowercased() : rest.uppercased(),
+        let spelling = rest.count == 1 ? rest.lowercased()
+                     : Self.namedKeys[rest.uppercased()] ?? rest.uppercased()
+        self.init(spelling,
                   control: control, option: option, command: command, shift: shift)
     }
+
+    /// The keys with a name instead of a character, in the spelling a key
+    /// press produces.
+    ///
+    /// Written out because the two halves have to agree: a keymap says `up`
+    /// and a press says `up`, and they used not to — parsing uppercased any
+    /// name it did not recognise as a letter, so the arrows resolved to `UP`
+    /// and no binding for one could ever fire.
+    static let namedKeys: [String: String] = [
+        "SPC": "SPC", "RET": "RET", "TAB": "TAB", "ESC": "ESC", "DEL": "DEL",
+        "LEFT": "left", "RIGHT": "right", "UP": "up", "DOWN": "down",
+        "HOME": "home", "END": "end", "PAGEUP": "pageup", "PAGEDOWN": "pagedown",
+    ]
 
     /// What an actual key press amounts to.
     init?(event: NSEvent) {
@@ -68,6 +83,13 @@ struct KeyChord: Hashable, Sendable, CustomStringConvertible {
         case 124: named = "right"
         case 125: named = "down"
         case 126: named = "up"
+        // Named for the same reason the arrows are: these are the keys a
+        // commanding mode still lets through to scroll with, and a rule about
+        // them has to be able to say which they are. Bindable now too.
+        case 115: named = "home"
+        case 116: named = "pageup"
+        case 119: named = "end"
+        case 121: named = "pagedown"
         default: named = nil
         }
         let key = named ?? characters.lowercased()

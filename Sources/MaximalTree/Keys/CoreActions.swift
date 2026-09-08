@@ -25,7 +25,20 @@ extension AppModel {
     /// A canvas's keys come from the contribution that actually drew it, so
     /// the canvas on screen and the keys that work cannot disagree.
     func surfaceKeymap() -> Keymap {
-        surfaceKeymap(for: Surfaces.focused(), showing: focusedPaneNode())
+        let surface = keyboardSurface()
+        return surfaceKeymap(for: surface, showing: paneNode(of: surface))
+    }
+
+    /// Which surface has the keyboard, asked with the registry swept first.
+    ///
+    /// Every reading of it goes through here. `Surfaces` records where each
+    /// surface was and cannot know when one stops existing, so the panes this
+    /// window no longer lays out are cleared before the question is put — a
+    /// dead pane's rectangle would otherwise answer it.
+    func keyboardSurface() -> SurfaceID {
+        Surfaces.prunePanes(keeping: Set(navigation.activeTab.root.panes.map(\.id)),
+                            in: NSApp.keyWindow)
+        return Surfaces.focused()
     }
 
     /// Remembered between keystrokes, because building it is not free.
@@ -69,8 +82,12 @@ extension AppModel {
     }
 
     /// The node the focused pane is showing, if a pane is focused at all.
-    private func focusedPaneNode() -> NodeID? {
-        guard case .pane(let id) = Surfaces.focused() else { return nil }
+    private func focusedPaneNode() -> NodeID? { paneNode(of: keyboardSurface()) }
+
+    /// The same, for a surface already in hand — so the two halves of one
+    /// answer cannot come from two different readings of where focus is.
+    private func paneNode(of surface: SurfaceID) -> NodeID? {
+        guard case .pane(let id) = surface else { return nil }
         return navigation.activeTab.root.pane(id)?.current
     }
 
@@ -120,7 +137,7 @@ extension AppModel {
     /// be selected in the tree — a different node, or none — which is why a
     /// canvas could only ever have implemented its own keys.
     private func keyTargets() -> [NodeID]? {
-        guard case .pane = Surfaces.focused(), let node = focusedPaneNode() else { return nil }
+        guard case .pane = keyboardSurface(), let node = focusedPaneNode() else { return nil }
         return [node]
     }
 
@@ -493,7 +510,7 @@ extension AppModel {
     /// all — and both are gone: the sidebar is simply the surface left of the
     /// leftmost pane, and the inspector the one right of the rightmost.
     private func moveSurface(_ direction: PaneDirection) {
-        let from = Surfaces.focused()
+        let from = keyboardSurface()
         guard let target = Surfaces.neighbour(of: from, moving: direction) else { return }
         // A pane is also the thing navigation acts on, so stepping into one
         // makes it active. The sidebar and inspector have no such state.

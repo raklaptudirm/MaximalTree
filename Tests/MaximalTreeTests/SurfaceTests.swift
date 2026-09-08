@@ -59,6 +59,71 @@ import SwiftUI
                 (rightID, try #require(rightBox.view)), window)
     }
 
+    // MARK: Panes that are gone
+
+    /// A placement outlives its view on purpose, but not forever.
+    ///
+    /// Nothing tells the registry when a pane closes or a tab is switched
+    /// away from, so its rectangle stayed on record and went on being a
+    /// surface. The next tab lays its panes out in the same place, so the
+    /// dead rectangle covers the caret exactly as well as the live one and
+    /// the overlap contest between them comes down to dictionary order —
+    /// which is why the editor went deaf at random. A pane named that no
+    /// longer exists has no node, so no canvas, so none of the keys the
+    /// canvas declares.
+    @Test func aPaneThatIsGoneStopsBeingASurface() async throws {
+        let (left, _, window) = try await twoPanes()
+        defer { window.orderOut(nil) }
+        // A pane from the tab that was showing a moment ago: it reported
+        // where it was, and then its view left the window. That is the whole
+        // of what happens when a pane closes — nothing tells the registry.
+        let dead = UUID()
+        let marker = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+        window.contentView?.addSubview(marker)
+        Surfaces.report(marker, for: .pane(dead))
+        marker.removeFromSuperview()
+
+        #expect(Surfaces.frame(of: .pane(dead), in: window) != nil,
+                "the rectangle outliving its view is deliberate — and the trap")
+
+        Surfaces.prunePanes(keeping: [left.id], in: window)
+
+        #expect(Surfaces.frame(of: .pane(dead), in: window) == nil,
+                "a pane no longer in the layout kept its rectangle")
+        #expect(Surfaces.frame(of: .pane(left.id), in: window) != nil,
+                "the surviving pane was swept away with it")
+    }
+
+    /// The sidebar and the inspector are not panes and are not the layout's to
+    /// forget — they come and go by being hidden, which `report` already
+    /// covers.
+    @Test func sweepingPanesLeavesTheOtherSurfacesAlone() async throws {
+        let (left, _, window) = try await twoPanes()
+        defer { window.orderOut(nil) }
+        let marker = NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 200))
+        window.contentView?.addSubview(marker)
+        Surfaces.report(marker, for: .sidebar)
+
+        Surfaces.prunePanes(keeping: [left.id], in: window)
+
+        #expect(Surfaces.frame(of: .sidebar, in: window) != nil)
+    }
+
+    /// And only this window's. The registry is shared between windows, and
+    /// another window's panes are not this one's to decide about.
+    @Test func sweepingPanesLeavesAnotherWindowsAlone() async throws {
+        let (left, right, window) = try await twoPanes()
+        defer { window.orderOut(nil) }
+        let elsewhere = TestWindow(contentRect: NSRect(x: 0, y: 0, width: 10, height: 10),
+                                   styleMask: [.titled], backing: .buffered, defer: false)
+        defer { elsewhere.orderOut(nil) }
+
+        Surfaces.prunePanes(keeping: [], in: elsewhere)
+
+        #expect(Surfaces.frame(of: .pane(left.id), in: window) != nil)
+        #expect(Surfaces.frame(of: .pane(right.id), in: window) != nil)
+    }
+
     /// The point of all of it: each pane resolves to its own canvas, not to
     /// whichever one happens to come first in the window.
     @Test func eachSurfaceResolvesToItsOwnCanvas() async throws {

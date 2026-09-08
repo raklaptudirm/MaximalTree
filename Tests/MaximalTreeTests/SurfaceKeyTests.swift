@@ -282,4 +282,57 @@ import AppKit
         _ = model.surfaceKeymap(for: .pane(pane), showing: b)
         #expect(model.surfaceKeymapBuilds == after + 1, "a different node did not")
     }
+
+    // MARK: What an unbound key does in a commanding mode
+
+    /// Nothing. That is what the mode means.
+    ///
+    /// It used to reach the view and be typed, so a binding that failed to
+    /// resolve — a canvas whose keys were not ready, a pane the registry no
+    /// longer knew — did not look like a missing binding. It looked like the
+    /// editor dropping out of normal mode and taking dictation.
+    @Test func anUnboundKeyIsDroppedRatherThanTyped() {
+        let keys = engine { _, _ in }
+        for key in ["q", "Z", "RET", "TAB", "DEL", ";"] {
+            #expect(KeyDispatch.handle(chord(key), keys: keys, surface: Keymap()),
+                    "\(key) reached the view in normal mode")
+        }
+    }
+
+    /// A key nothing binds is still not a command, so nothing runs.
+    @Test func droppingAKeyRunsNothing() {
+        var ran: [String] = []
+        let keys = engine { id, _ in ran.append(id) }
+        _ = KeyDispatch.handle(chord("q"), keys: keys, surface: Keymap())
+        #expect(ran.isEmpty)
+    }
+
+    /// Except the ones that only move the view. Reading a document must not
+    /// require being in a mode that can change it.
+    @Test func theScrollingKeysStillReachTheView() {
+        let keys = engine { _, _ in }
+        for key in ["up", "down", "left", "right", "pageup", "pagedown", "home", "end"] {
+            #expect(!KeyDispatch.handle(chord(key), keys: keys, surface: Keymap()),
+                    "\(key) was swallowed, so the document cannot be scrolled")
+        }
+    }
+
+    /// Insert mode is untouched by any of this: there, every key is a
+    /// character and the view gets all of them.
+    @Test func insertModeStillPassesEverythingThrough() {
+        let keys = engine { _, _ in }
+        keys.setMode(.insert)
+        for key in ["q", "RET", "TAB", "/"] {
+            #expect(!KeyDispatch.handle(chord(key), keys: keys, surface: Keymap()),
+                    "\(key) was taken while inserting")
+        }
+    }
+
+    /// And a bound key still runs, which is the thing the drop must not cost.
+    @Test func aBoundKeyStillRunsAfterTheDrop() {
+        var ran: [String] = []
+        let keys = engine { id, _ in ran.append(id) }
+        #expect(KeyDispatch.handle(chord("/"), keys: keys, surface: Keymap()))
+        #expect(ran == ["finder.all"])
+    }
 }

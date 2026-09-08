@@ -60,6 +60,34 @@ enum Surfaces {
         placements[surface] = nil
     }
 
+    /// Forget the panes that are no longer part of `window`'s layout.
+    ///
+    /// A placement outliving its view is deliberate — SwiftUI rebuilds
+    /// subtrees whenever it likes, and a pane that vanished from the registry
+    /// between two keystrokes is the bug that outliving fixed. But a pane that
+    /// has actually gone — a split closed, a tab switched away from — leaves
+    /// its rectangle behind for good, and the rectangle goes on competing to
+    /// be the surface holding the keyboard.
+    ///
+    /// Which is not a theoretical loss. The next tab lays its panes out in the
+    /// same place, so the dead rectangle covers the caret exactly as well as
+    /// the live one does, and `focused` breaks the tie out of a dictionary —
+    /// arbitrarily. Naming a pane that no longer exists means no node, so no
+    /// canvas, so no keys, and every key the canvas declares falls through
+    /// unbound. That is the editor "randomly" going deaf, and it stays deaf
+    /// until something happens to rebuild the layout.
+    ///
+    /// Only this window's, because the registry is shared and another
+    /// window's panes are not this one's to forget.
+    static func prunePanes(keeping live: Set<UUID>, in window: NSWindow?) {
+        guard let window else { return }
+        placements = placements.filter { id, placement in
+            guard case .pane(let pane) = id,
+                  placement.windowNumber == window.windowNumber else { return true }
+            return live.contains(pane)
+        }
+    }
+
     /// Every surface showing in `window`, with its rectangle in that window's
     /// coordinates. A hidden sidebar or a closed inspector simply isn't one.
     ///
