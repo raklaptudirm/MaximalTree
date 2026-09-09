@@ -50,6 +50,15 @@ public final class HostContext {
     /// Cursor for the *next* page of a node's children, when the provider reported
     /// one. Presence means "there's more to load".
     internal var childCursors: [NodeID: Cursor] = [:]
+    /// Nodes that have paged at least once.
+    ///
+    /// Separate from the cursor because it answers a different question. The
+    /// cursor says whether there is *more* and goes away with the last page;
+    /// this says the listing was long enough to arrive in pieces, which
+    /// reaching the end of it does not undo. Read the cursor for it and a node
+    /// stops being contents the moment you get to the bottom — the column
+    /// closing under the reader who scrolled there.
+    internal var paginatedNodes: Set<NodeID> = []
 
     /// Set by the host when it constructs the store. Weak to avoid a retain cycle.
     public weak var backend: GraphBackend?
@@ -131,7 +140,7 @@ public final class HostContext {
     /// the answer sooner should state it.
     public func childStyle(of id: NodeID) -> ChildStyle {
         if let stated = nodes[id]?.childStyle { return stated }
-        return childCursors[id] != nil ? .contents : .places
+        return paginatedNodes.contains(id) ? .contents : .places
     }
 
     /// Whether the tree should offer to open this node in place.
@@ -237,6 +246,7 @@ public final class HostContext {
         if let kids = childrenByParent.removeValue(forKey: old) { childrenByParent[new] = kids }
         if staleChildren.remove(old) != nil { staleChildren.insert(new) }
         if let cursor = childCursors.removeValue(forKey: old) { childCursors[new] = cursor }
+        if paginatedNodes.remove(old) != nil { paginatedNodes.insert(new) }
         for (parent, kids) in childrenByParent where kids.contains(old) {
             childrenByParent[parent] = kids.map { $0 == old ? new : $0 }
         }
@@ -253,6 +263,7 @@ public final class HostContext {
         childrenByParent[id] = nil
         relatedByNode[id] = nil
         childCursors[id] = nil
+        paginatedNodes.remove(id)
         staleChildren.remove(id)
         for (parent, kids) in childrenByParent where kids.contains(id) {
             childrenByParent[parent] = kids.filter { $0 != id }
@@ -276,7 +287,12 @@ public final class HostContext {
     /// Whether a cached listing is awaiting its refetch (backend-facing).
     public func _isChildrenStale(_ id: NodeID) -> Bool { staleChildren.contains(id) }
 
-    public func _setChildCursor(_ cursor: Cursor?, of id: NodeID) { childCursors[id] = cursor }
+    public func _setChildCursor(_ cursor: Cursor?, of id: NodeID) {
+        childCursors[id] = cursor
+        // Only ever set. A page that reports no successor is the end of the
+        // listing, not evidence that it never paged.
+        if cursor != nil { paginatedNodes.insert(id) }
+    }
 }
 
 /// Implemented by the host's graph store. Everything the plugin API can trigger

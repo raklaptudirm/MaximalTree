@@ -518,6 +518,25 @@ private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider
         #expect(!host.isExpandable(node.id), "contents get no triangle")
     }
 
+    /// Reaching the end of a listing does not turn it back into a tree.
+    ///
+    /// The last page reports no successor, so a style read from the *current*
+    /// cursor reverted to places exactly when the reader got to the bottom —
+    /// and the column showing it closed under them. What the inference learns
+    /// is that this listing arrives in pieces, which the end of it does not
+    /// unlearn.
+    @Test func runningOutOfPagesDoesNotStopItBeingContents() {
+        let node = Node(id: id("stub://library"), type: "stub.dir", hasChildren: true)
+        let host = context(node, cursor: Cursor("2"))
+        #expect(host.childStyle(of: node.id) == .contents)
+
+        host._setChildCursor(nil, of: node.id)          // the last page lands
+
+        #expect(!host.hasMoreChildren(node.id), "there is genuinely no more to fetch")
+        #expect(host.childStyle(of: node.id) == .contents, "the column closed at the bottom")
+        #expect(!host.isExpandable(node.id))
+    }
+
     /// But the provider's word wins, in the direction the inference would not
     /// have taken: a short list that happens to page is still a place.
     @Test func aProviderCanInsistOnPlacesDespitePaging() {
