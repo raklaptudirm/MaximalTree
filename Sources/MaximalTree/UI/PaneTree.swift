@@ -271,6 +271,14 @@ struct PaneView: View {
         if let id = model.displayedNode(in: pane) {
             if let node = host.node(id), let canvas = model.store?.canvas(for: node) {
                 PreparedCanvas(node: id, canvas: canvas)
+            } else if host.childStyle(of: id) == .contents {
+                // A container whose whole job is to be gone into. It has no
+                // canvas because there is nothing to draw *of* it — what you
+                // came for is in the column beside this, and the pane shows
+                // whichever row you land on. Saying "Loading…" here was the
+                // pane waiting for something that was never coming.
+                ContentUnavailableView("Nothing Picked", systemImage: "list.bullet",
+                                       description: Text("Choose something from the list."))
             } else {
                 ContentUnavailableView("Loading…", systemImage: "hourglass")
             }

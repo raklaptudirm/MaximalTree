@@ -118,59 +118,6 @@ private struct WebViewContainer: NSViewRepresentable {
     }
 }
 
-// MARK: - Bookmarks canvas
-
-/// The bookmarks root: a plain list of saved pages. Rows come from the host's
-/// child cache (the provider serves them), so bookmark/unbookmark actions
-/// refresh it through the ordinary `notify` path.
-struct BookmarksCanvas: View {
-    let nodeID: NodeID
-    @Environment(HostContext.self) private var host
-
-    var body: some View {
-        let children = host.children(of: nodeID)
-        Group {
-            if children.isEmpty {
-                ContentUnavailableView("No Bookmarks", systemImage: "star",
-                                       description: Text("Bookmark a page with ⌘D."))
-            } else {
-                List(children, id: \.self) { child in
-                    row(child)
-                }
-                .listStyle(.inset)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func row(_ id: NodeID) -> some View {
-        let node = host.node(id)
-        HStack(spacing: 8) {
-            NodeIconView(node?.icon)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(node?.label ?? id.uri).lineLimit(1)
-                Text(id.uri)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            Spacer()
-            Button {
-                BookmarkStore.shared.remove(url: id.uri)
-                host.notify([.modified(WebProvider.bookmarksID),
-                             .childrenChanged(WebProvider.bookmarksID)])
-            } label: {
-                Image(systemName: "star.slash")
-            }
-            .buttonStyle(.borderless)
-            .help("Remove bookmark")
-        }
-        .contentShape(Rectangle())
-        .onTapGesture { host.open(id) }
-    }
-}
-
 // MARK: - Inspector
 
 /// The browser's controls: the address bar (the primary way to navigate), a

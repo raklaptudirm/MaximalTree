@@ -102,7 +102,13 @@ struct WebProvider: NodeProvider {
             return Node(id: id, type: TypeID("web.bookmarks"),
                         label: "Bookmarks",
                         icon: NodeIcon("star.fill", tint: .yellow),
-                        hasChildren: !BookmarkStore.shared.all().isEmpty)
+                        hasChildren: !BookmarkStore.shared.all().isEmpty,
+                        // Somewhere you go into, not a branch of the tree.
+                        // Said outright rather than left to the paging
+                        // inference: bookmarks are held in memory and served
+                        // in one page, so no cursor would ever say it, and a
+                        // list of saved pages is a list however short it is.
+                        childStyle: .contents)
         }
         guard let url = URL(string: id.uri) else { return nil }
         return Node(id: id, type: TypeID("web.page"),
@@ -117,7 +123,11 @@ struct WebProvider: NodeProvider {
             return Node(id: pageID, type: TypeID("web.page"),
                         label: bookmark.title,
                         icon: URL(string: bookmark.url).map(WebProvider.icon(for:))
-                            ?? NodeIcon("globe", tint: .blue))
+                            ?? NodeIcon("globe", tint: .blue),
+                        // What the bespoke list drew on its second line, now
+                        // said in the listing so any row can draw it. Cheap:
+                        // it is the id, which the row already has.
+                        subtitle: bookmark.url)
         })
     }
 

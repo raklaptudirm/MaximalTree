@@ -51,6 +51,20 @@ struct ContentsList: View {
                 FilterField()
                 Divider()
             }
+            if rows.isEmpty {
+                // Retiring a bespoke list takes its empty state with it, and a
+                // column that just stops has nothing to say about why. The
+                // generic answer names which of the two nothings this is:
+                // there is nothing here, or there is nothing matching.
+                ContentUnavailableView(
+                    model.contents.filter.isEmpty ? "Empty" : "No Matches",
+                    systemImage: model.contents.filter.isEmpty
+                        ? "tray" : "line.3.horizontal.decrease",
+                    description: Text(model.contents.filter.isEmpty
+                        ? "Nothing in \(host.node(container)?.label ?? "here") yet."
+                        : "Nothing here matches “\(model.contents.filter)”."))
+                .frame(maxHeight: .infinity)
+            }
             ScrollViewReader { scroller in
                 ScrollView {
                     LazyVStack(spacing: 0) {

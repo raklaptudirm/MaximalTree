@@ -243,11 +243,6 @@ final class WebPlugin: NSObject, Plugin {
             keys: WebKeys.keys,
             make: { id, host in AnyView(WebCanvas(nodeID: id).environment(host)) }
         ))
-        registry.register(canvas: CanvasContribution(
-            priority: 0,
-            matches: { $0.type == TypeID("web.bookmarks") },
-            make: { id, host in AnyView(BookmarksCanvas(nodeID: id).environment(host)) }
-        ))
         registry.register(inspector: InspectorContribution(
             matches: { $0.type == TypeID("web.page") },
             make: { id, host in AnyView(WebInspector(nodeID: id).environment(host)) }
