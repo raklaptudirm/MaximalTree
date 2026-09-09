@@ -158,6 +158,17 @@ struct GitProvider: NodeProvider {
         return page
     }
 
+    /// The heavier half of a commit's row, fetched only for the ones on
+    /// screen. Everything else answers as it always did.
+    func attributes(of id: NodeID) async -> Attributes {
+        guard let ref = GitRef(uri: id.uri), ref.kind == .commit else {
+            return await node(for: id)?.attributes ?? .init()
+        }
+        return await Task.detached(priority: .userInitiated) {
+            Self.commitStat(ref.repo, sha: ref.id ?? "")
+        }.value
+    }
+
     func related(to id: NodeID) async -> [Related] {
         guard let ref = GitRef(uri: id.uri) else { return [] }
         return await Task.detached(priority: .userInitiated) { Self.related(ref) }.value
@@ -252,6 +263,9 @@ struct GitProvider: NodeProvider {
         guard let out = Git.run(repo, ["log", "--skip", "\(skip)", "-n", "\(limit)",
                                        "--format=%H%x1f%an%x1f%aI%x1f%s%x1f%P"]) else { return Page(items: []) }
         let iso = ISO8601DateFormatter()
+        // Built once for the page rather than once per row, and locally rather
+        // than statically: a formatter is not Sendable and this runs detached.
+        let relative = RelativeDateTimeFormatter()
         let nodes = out.split(separator: "\n").compactMap { line -> Node? in
             let f = line.components(separatedBy: "\u{1f}")
             guard f.count >= 4 else { return nil }
@@ -263,15 +277,46 @@ struct GitProvider: NodeProvider {
             attrs["subject"] = .string(f[3])
             if let date = iso.date(from: f[2]) { attrs["date"] = .date(date) }
             if f.count >= 5 { attrs["parents"] = .string(f[4]) }   // space-separated shas
+            // The author and the date cost nothing — `git log` printed them
+            // on the same line as the subject. The diff stat is not here for
+            // the same reason: it is a query per commit, and this is fifty of
+            // them. See `attributes(of:)`.
+            var subtitle = f[1]
+            if let date = iso.date(from: f[2]) {
+                subtitle += " · " + relative.localizedString(for: date, relativeTo: .now)
+            }
             return Node(id: id, type: TypeID("git.commit"),
                         label: "\(sha.prefix(7))  \(f[3])",
                         icon: NodeIcon("circle.fill", tint: .blue),
-                        attributes: attrs, hasChildren: true)
+                        attributes: attrs, subtitle: subtitle, hasChildren: true)
         }
         // A full page means there may be more history; a short one means we hit the
         // root. (A history length that's an exact multiple costs one empty fetch.)
         let next = nodes.count == limit ? Cursor("\(skip + limit)") : nil
         return Page(items: nodes, next: next)
+    }
+
+    /// What a commit changed, as one line — the expensive half of its row.
+    ///
+    /// Its own `git show` per commit, which is exactly why it is not in the
+    /// listing: fifty of these to draw a page, and thousands to scroll one.
+    static func commitStat(_ repo: String, sha: String) -> Attributes {
+        var attrs = Attributes()
+        guard !sha.isEmpty,
+              let out = Git.run(repo, ["show", "--shortstat", "--format=", sha])
+        else { return attrs }
+        // " 3 files changed, 42 insertions(+), 7 deletions(-)"
+        func number(before word: String) -> Int? {
+            guard let range = out.range(of: word) else { return nil }
+            return Int(out[..<range.lowerBound].split(separator: " ").last ?? "")
+        }
+        let added = number(before: "insertion") ?? 0
+        let removed = number(before: "deletion") ?? 0
+        attrs["insertions"] = .int(added)
+        attrs["deletions"] = .int(removed)
+        guard added + removed > 0 else { return attrs }
+        attrs["detail"] = .string("+\(added) −\(removed)")
+        return attrs
     }
 
     static func branches(_ repo: String) -> [Node] {

@@ -179,6 +179,47 @@ import Foundation
         #expect(model.contentsRow == id("stub://library/beta"))
     }
 
+    // MARK: Reaching the end
+
+    /// The spinner at the foot of the list asks when it is drawn, and a
+    /// keyboard never draws it: `j` clamps at the last loaded row, one short
+    /// of the thing that would ask, so the history looked like it stopped at
+    /// fifty commits.
+    @Test func walkingToTheEndAsksForTheNextPage() throws {
+        let model = try makeModel()
+        let container = library(in: model)
+        model.host._setChildCursor(Cursor("3"), of: container)
+
+        model.moveContentsRowToEdge(last: true)
+        #expect(model.contentsNeedsMore(after: id("stub://library/gamma")))
+    }
+
+    /// A few rows of warning rather than at the wall, so the page is usually
+    /// there before it is needed.
+    @Test func itAsksBeforeReachingTheVeryEnd() throws {
+        let model = try makeModel()
+        let container = library(in: model)
+        model.host._setChildCursor(Cursor("3"), of: container)
+        // Three rows, a margin of five: every row is within sight of the end.
+        #expect(model.contentsNeedsMore(after: id("stub://library/alpha")))
+    }
+
+    /// And nothing to fetch is not a reason to ask.
+    @Test func aCompleteListingNeverAsks() throws {
+        let model = try makeModel()
+        library(in: model)
+        #expect(!model.contentsNeedsMore(after: id("stub://library/gamma")))
+    }
+
+    /// A row that is not in the listing — a stale highlight, a filtered-out
+    /// row — says nothing about where the end is.
+    @Test func aRowOutsideTheListingDoesNotAsk() throws {
+        let model = try makeModel()
+        let container = library(in: model)
+        model.host._setChildCursor(Cursor("3"), of: container)
+        #expect(!model.contentsNeedsMore(after: id("stub://elsewhere")))
+    }
+
     // MARK: Keys
 
     @Test func itClaimsKeysOfItsOwn() throws {

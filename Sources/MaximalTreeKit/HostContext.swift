@@ -148,6 +148,17 @@ public final class HostContext {
     /// No-op when there is no further page or a fetch is already in flight.
     public func loadMoreChildren(of id: NodeID) { backend?.requestMoreChildren(of: id) }
 
+    /// Ask for the attributes a listing was too cheap to carry.
+    ///
+    /// The heavier half of a row: a commit's diff stat, a file's size, a
+    /// video's runtime — one query each, which is fine for the twenty rows on
+    /// screen and ruinous for the five thousand in the listing. So the listing
+    /// arrives without them and whatever is actually looked at asks.
+    ///
+    /// Safe to call on every appearance: already asked is a no-op, and the
+    /// answer merges into the node, so a view need only read it back.
+    public func loadAttributes(of id: NodeID) { backend?.requestAttributes(of: id) }
+
     /// Peek at the caches without triggering a load. For the host/backend, which
     /// needs to ask "already fetched?" without kicking off another request.
     public func cachedChildren(of id: NodeID) -> [NodeID]? { childrenByParent[id] }
@@ -285,6 +296,7 @@ public protocol GraphBackend: AnyObject {
     func pin(_ id: NodeID)
     func requestChildren(of id: NodeID)
     func requestMoreChildren(of id: NodeID)
+    func requestAttributes(of id: NodeID)
     func requestRelated(of id: NodeID)
     func perform(actionID: String, count: Int)
     func setKeyMode(_ mode: KeyMode)

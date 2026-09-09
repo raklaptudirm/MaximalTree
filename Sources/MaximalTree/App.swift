@@ -232,6 +232,28 @@ final class AppModel {
     func highlightContentsRow(_ id: NodeID) {
         guard let container = contentsContainer else { return }
         contents.rowByContainer[container] = id
+        if contentsNeedsMore(after: id) { host.loadMoreChildren(of: container) }
+    }
+
+    /// How close to the end of the loaded rows the highlight has to come
+    /// before the next page is worth asking for. A few rows of warning, so the
+    /// page is usually there by the time it is needed.
+    static let contentsPrefetchMargin = 5
+
+    /// Whether landing on this row should ask for the next page.
+    ///
+    /// The spinner at the foot of the list asks when it is *drawn*, which the
+    /// keyboard never causes: the motions clamp at the last loaded row, so `j`
+    /// stops exactly one short of the thing that would have asked, and the
+    /// list looks like it ends there. The highlight coming within sight of the
+    /// end is the same signal read from the keyboard's side.
+    func contentsNeedsMore(after id: NodeID) -> Bool {
+        guard let container = contentsContainer, host.hasMoreChildren(container) else {
+            return false
+        }
+        let rows = contentsRows()
+        guard let index = rows.firstIndex(of: id) else { return false }
+        return rows.count - index <= Self.contentsPrefetchMargin
     }
 
     /// Commit to a row — the pane navigates, and the preview stops standing in

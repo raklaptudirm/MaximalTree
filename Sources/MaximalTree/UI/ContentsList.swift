@@ -56,16 +56,19 @@ struct ContentsList: View {
                     LazyVStack(spacing: 0) {
                         ForEach(rows, id: \.self) { row(for: $0) }
                         if host.hasMoreChildren(container) {
-                            // Scroll-driven paging is the next phase; until
-                            // then a listing that has more says so rather than
-                            // pretending it ends here.
-                            Button { host.loadMoreChildren(of: container) } label: {
-                                Label("More…", systemImage: "ellipsis")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
-                            .padding(.vertical, 6)
+                            // Reaching the end asks for the next page. The
+                            // button this replaces was the listing admitting
+                            // it had more and making you say so — which is the
+                            // whole of what a scroll already says.
+                            //
+                            // Safe to fire on every appearance: the store
+                            // drops a request while one is in flight, and the
+                            // spinner is gone the moment the cursor is.
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                                .onAppear { host.loadMoreChildren(of: container) }
                         }
                     }
                 }
@@ -86,12 +89,31 @@ struct ContentsList: View {
         let emphasized = selected && model.focusedSurface == .contents
         return HStack(spacing: 6) {
             NodeIconView(node?.icon)
-            Text(node?.label ?? id.uri)
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(node?.label ?? id.uri)
+                    .lineLimit(1)
+                // The cheap tier: whatever the listing already knew.
+                if let subtitle = node?.subtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(emphasized ? Color.white.opacity(0.8) : .secondary)
+                        .lineLimit(1)
+                }
+            }
             Spacer(minLength: 0)
+            // And the expensive one, which arrives once this row is looked at.
+            if let detail = node?.detail {
+                Text(detail)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(emphasized ? Color.white.opacity(0.8) : .secondary)
+            }
         }
         .padding(.horizontal, 8)
-        .frame(height: 24)
+        .frame(height: node?.subtitle == nil ? 24 : 38)
+        // Only what is actually on screen pays for its detail. A listing of
+        // five thousand would otherwise run five thousand queries to draw
+        // twenty rows.
+        .onAppear { host.loadAttributes(of: id) }
         .contentShape(Rectangle())
         .background(selected ? (emphasized ? Color.accentColor : Color.secondary.opacity(0.2))
                              : Color.clear,

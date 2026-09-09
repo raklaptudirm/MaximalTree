@@ -25,6 +25,29 @@ private struct PagingProvider: NodeProvider {
     }
 }
 
+/// Cheap in the listing, expensive per row: children arrive with a label and
+/// nothing else, and the part that costs a query is only handed over when
+/// somebody asks for it. Counts the asking.
+@MainActor
+private final class TieredProvider: NodeProvider {
+    let schemes: Set<String> = ["tier"]
+    var enrichments = 0
+
+    nonisolated func resolve(_ uri: String) -> NodeID? { NodeID(uri) }
+    nonisolated func node(for id: NodeID) async -> Node? {
+        Node(id: id, type: "tier.item", subtitle: "cheap")
+    }
+    nonisolated func children(of id: NodeID, page cursor: Cursor?) async -> Page<Node> {
+        Page(items: [NodeID("tier://a").map { Node(id: $0, type: "tier.item") }].compactMap { $0 })
+    }
+    nonisolated func attributes(of id: NodeID) async -> Attributes {
+        await MainActor.run { enrichments += 1 }
+        var attrs = Attributes()
+        attrs["detail"] = .string("+42 −7")
+        return attrs
+    }
+}
+
 /// A directory that changes underneath the app: it serves whatever
 /// `contents` currently says, and counts how often it was asked.
 @MainActor
@@ -553,5 +576,87 @@ private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider
                 hasMore: { _ in false }))
         #expect(rows.count == 2, "an expanded folder should show its child")
         #expect(touched == ["stub://folder"])
+    }
+}
+
+/// The second tier of a row: what a listing was too cheap to carry.
+///
+/// `attributes(of:)` has been on the provider protocol from the start,
+/// documented as the heavier path, and nothing ever called it — the same shape
+/// of gap as paging, which had an end-to-end implementation and a button
+/// nobody could reach without one. A listing of five thousand cannot run five
+/// thousand queries to draw twenty rows, so the rows that are looked at ask.
+@MainActor
+@Suite struct LazyAttributeTests {
+    private func id(_ uri: String) -> NodeID { NodeID(uri)! }
+
+    /// Polls the main actor until `condition` holds — the store's fetches are
+    /// Tasks, and a fixed sleep is a race dressed up as a wait.
+    private func waitUntil(_ condition: () -> Bool) async throws {
+        for _ in 0..<200 where !condition() {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(condition())
+    }
+
+    /// Both halves handed back, and both have to be *held*: `backend` is a
+    /// weak reference, so a test that keeps only the context is testing a
+    /// store that has already gone.
+    private func store(_ provider: TieredProvider) -> (GraphStore, HostContext) {
+        let context = HostContext()
+        let registry = Registry()
+        registry.register(provider: provider)
+        let store = GraphStore(context: context, registry: registry, nav: NavigationModel())
+        context.backend = store
+        return (store, context)
+    }
+
+    @Test func askingMergesTheExpensiveHalfIntoTheNode() async throws {
+        let provider = TieredProvider()
+        let (store, context) = store(provider)
+        _ = store
+        context._ingest(Node(id: id("tier://a"), type: "tier.item", subtitle: "cheap"))
+
+        context.loadAttributes(of: id("tier://a"))
+        try await waitUntil { context.node(self.id("tier://a"))?.detail != nil }
+
+        #expect(context.node(id("tier://a"))?.detail == "+42 −7")
+        #expect(context.node(id("tier://a"))?.subtitle == "cheap",
+                "the merge dropped what the listing already knew")
+    }
+
+    /// A row asks every time it scrolls back into view, so this has to be free
+    /// after the first time — otherwise scrolling a long list re-runs a query
+    /// per commit per pass.
+    @Test func askingTwiceCostsOneFetch() async throws {
+        let provider = TieredProvider()
+        let (store, context) = store(provider)
+        _ = store
+        context._ingest(Node(id: id("tier://a"), type: "tier.item"))
+
+        context.loadAttributes(of: id("tier://a"))
+        try await waitUntil { provider.enrichments == 1 }
+        context.loadAttributes(of: id("tier://a"))
+        context.loadAttributes(of: id("tier://a"))
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(provider.enrichments == 1)
+    }
+
+    /// Except when the listing is refreshed: those may be different nodes now,
+    /// and what was true of the old ones is not evidence about these.
+    @Test func refreshingTheListingAllowsAskingAgain() async throws {
+        let provider = TieredProvider()
+        let (store, context) = store(provider)
+        let parent = id("tier://parent"), child = id("tier://a")
+        context._ingest(Node(id: parent, type: "tier.item", hasChildren: true))
+        context._ingest(Node(id: child, type: "tier.item"))
+        context._setChildren([child], of: parent)
+
+        context.loadAttributes(of: child)
+        try await waitUntil { provider.enrichments == 1 }
+        store.refreshChildren(of: [parent])
+        context.loadAttributes(of: child)
+        try await waitUntil { provider.enrichments == 2 }
     }
 }

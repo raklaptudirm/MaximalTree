@@ -88,6 +88,18 @@ public struct Attributes: Hashable, Sendable {
         get { storage[key] }
         set { storage[key] = newValue }
     }
+
+    public var isEmpty: Bool { storage.isEmpty }
+
+    /// Take everything in `other`, replacing what is already here.
+    ///
+    /// How the expensive half of a row arrives: the cheap attributes came with
+    /// the listing, and `attributes(of:)` fills in what cost a query — so a
+    /// provider answering that is free to return only the part that cost
+    /// something, and what the listing already knew survives.
+    public mutating func merge(_ other: Attributes) {
+        storage.merge(other.storage) { _, new in new }
+    }
 }
 
 // MARK: - Presentation
@@ -150,6 +162,14 @@ public struct Node: Identifiable, Hashable, Sendable {
     public var hasChildren: Bool
     /// Non-nil makes this a phony node — see `NodeAnchor`.
     public var anchor: NodeAnchor?
+    /// A second line for a row, when the provider has one to hand cheaply.
+    ///
+    /// The cheap tier. Whatever a listing already knows — a commit's author, a
+    /// message's sender — goes here and costs nothing extra, because the
+    /// listing had it anyway. Anything that needs its own query does not
+    /// belong here; see `detail`.
+    public var subtitle: String?
+
     /// How this node's children are meant to be reached, or nil to let the
     /// host decide.
     ///
@@ -185,6 +205,7 @@ public struct Node: Identifiable, Hashable, Sendable {
         label: String? = nil,
         icon: NodeIcon? = nil,
         attributes: Attributes = .init(),
+        subtitle: String? = nil,
         hasChildren: Bool = false,
         childStyle: ChildStyle? = nil,
         anchor: NodeAnchor? = nil,
@@ -195,6 +216,7 @@ public struct Node: Identifiable, Hashable, Sendable {
         self.label = label ?? Node.lastSegment(of: id)
         self.icon = icon
         self.attributes = attributes
+        self.subtitle = subtitle
         self.hasChildren = hasChildren
         self.childStyle = childStyle
         self.anchor = anchor
@@ -207,6 +229,17 @@ public struct Node: Identifiable, Hashable, Sendable {
             return String(s[s.index(after: slash)...])
         }
         return s
+    }
+
+    /// A short trailing note for a row — "+42 −7", "1.2 MB", "48 min".
+    ///
+    /// The expensive tier, and an attribute rather than a field for that
+    /// reason: it usually needs its own query, so it arrives from
+    /// `attributes(of:)` after the row is on screen rather than holding up the
+    /// listing that had to fetch five thousand of them.
+    public var detail: String? {
+        if case .string(let value)? = attributes["detail"] { return value }
+        return nil
     }
 
     /// The content-type identifier (UTI string) a provider attached, if any.

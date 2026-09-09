@@ -74,6 +74,10 @@ final class GraphStore: GraphBackend {
     // In-flight de-duplication. Kept here (not on HostContext) precisely because
     // GraphStore is not @Observable — touching it during a SwiftUI body is safe.
     private var childrenInFlight: Set<NodeID> = []
+    private var attributesInFlight: Set<NodeID> = []
+    /// Nodes whose expensive attributes have already been asked for — see
+    /// `requestAttributes(of:)`.
+    private var enrichedNodes: Set<NodeID> = []
     private var relatedInFlight: Set<NodeID> = []
 
     /// One consuming task per mounted root whose provider streams external
@@ -481,6 +485,9 @@ final class GraphStore: GraphBackend {
     /// the background, which is the opposite of what this is for.
     func refreshChildren(of ids: some Sequence<NodeID>) {
         for id in ids where context.cachedChildren(of: id) != nil {
+            for child in context.cachedChildren(of: id) ?? [] {
+                enrichedNodes.remove(child)
+            }
             context._invalidateChildren(of: id)
             requestChildren(of: id)
         }
@@ -503,6 +510,30 @@ final class GraphStore: GraphBackend {
             context._setChildren(existing + items.map(\.id), of: id)
             context._setChildCursor(page.next, of: id)
             childrenInFlight.remove(id)
+        }
+    }
+
+    /// Fetch the attributes a listing did not carry, and merge them in.
+    ///
+    /// Merged rather than replaced: what the listing knew is still true, and a
+    /// provider answering this should be free to return only the part that
+    /// cost something.
+    ///
+    /// Asked once per node. A row asks every time it scrolls back into view,
+    /// so without that this would re-run a `git show` per commit per scroll.
+    /// Refreshing a listing clears the record, since new children may be new
+    /// nodes anyway.
+    func requestAttributes(of id: NodeID) {
+        guard !enrichedNodes.contains(id), !attributesInFlight.contains(id),
+              let p = provider(for: id) else { return }
+        attributesInFlight.insert(id)
+        Task { @MainActor in
+            let extra = await p.attributes(of: id)
+            attributesInFlight.remove(id)
+            enrichedNodes.insert(id)
+            guard var node = context.node(id), !extra.isEmpty else { return }
+            node.attributes.merge(extra)
+            context._ingest(node)
         }
     }
 

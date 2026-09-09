@@ -168,6 +168,7 @@ import Foundation
             func pin(_ id: NodeID) {}
             func requestChildren(of id: NodeID) {}
             func requestMoreChildren(of id: NodeID) {}
+            func requestAttributes(of id: NodeID) {}
             func requestRelated(of id: NodeID) {}
             func perform(actionID: String, count: Int) {}
             func setKeyMode(_ mode: KeyMode) {}
@@ -182,5 +183,54 @@ import Foundation
             return GitRef(uri: id.uri)?.kind.rawValue
         })
         #expect(refreshed == ["repo", "staged", "unstaged", "branches", "commits"])
+    }
+}
+
+/// A commit row's two halves: what the log already printed, and what needs its
+/// own `git show`.
+@MainActor
+@Suite struct CommitRowTests {
+    /// The shortstat line, which is the only thing the parse has to survive.
+    @Test func theStatReadsGitsOwnWording() throws {
+        let repo = try makeRepo()
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+        let sha = try #require(Git.run(repo, ["rev-parse", "HEAD"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines))
+
+        let attrs = GitProvider.commitStat(repo, sha: sha)
+        #expect(attrs["insertions"] != nil, "no insertions parsed out of the stat")
+        #expect(attrs["detail"] != nil, "the row has nothing to show")
+    }
+
+    /// A sha that isn't one answers empty rather than throwing a row away.
+    @Test func anUnknownCommitHasNoStat() {
+        let attrs = GitProvider.commitStat("/nonexistent", sha: "")
+        #expect(attrs["detail"] == nil)
+    }
+
+    /// The cheap half rides the listing: `git log` printed the author and the
+    /// date on the same line as the subject, so the row costs nothing extra.
+    @Test func theListingCarriesAuthorAndDate() throws {
+        let repo = try makeRepo()
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+        let page = GitProvider.logCommits(repo)
+        let commit = try #require(page.items.first)
+        #expect(commit.subtitle?.isEmpty == false, "the row has no second line")
+        #expect(commit.detail == nil, "the stat rode the listing after all")
+    }
+
+    private func makeRepo() throws -> String {
+        let dir = NSTemporaryDirectory() + "commitrow-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        _ = Git.run(dir, ["init"])
+        _ = Git.run(dir, ["config", "user.email", "t@example.com"])
+        _ = Git.run(dir, ["config", "user.name", "Test"])
+        // Without this the commit never happens on a machine whose global
+        // config signs them, and every assertion below reads an empty repo.
+        _ = Git.run(dir, ["config", "commit.gpgsign", "false"])
+        try "one\ntwo\n".write(toFile: dir + "/a.txt", atomically: true, encoding: .utf8)
+        _ = Git.run(dir, ["add", "."])
+        _ = Git.run(dir, ["commit", "-m", "first"])
+        return dir
     }
 }
