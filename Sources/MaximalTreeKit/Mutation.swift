@@ -14,6 +14,21 @@ public enum GraphMutation: Sendable {
     /// parent. Providers should unique the name Finder-style rather than fail
     /// on collision. Content-bearing creation (templated notes) stays an Action.
     case create(in: NodeID, name: String, asContainer: Bool)
+    /// Make nodes members of a collection, without taking them from anywhere.
+    ///
+    /// Not a move. A move is containment — identity is location, so the child
+    /// changes what it is, and its own provider has to agree. Membership is a
+    /// reference the *parent* keeps: a channel put in an aggregator is still
+    /// the same channel, and can be in another aggregator as well. So this
+    /// goes to the destination's provider, and nothing is renamed.
+    ///
+    /// `at` is the position among the existing members; nil appends. Adopting
+    /// something that is already a member puts it at the new position, which
+    /// is what reordering is.
+    case adopt([NodeID], into: NodeID, at: Int?)
+    /// Stop nodes being members of a collection. Never deletes them: they
+    /// still exist, and may still belong to other collections.
+    case release([NodeID], from: NodeID)
 }
 
 /// What a mutation actually changed, returned by `apply` so the host can update its

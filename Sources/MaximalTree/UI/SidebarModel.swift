@@ -22,28 +22,35 @@ enum SidebarRow: Identifiable, Equatable {
     }
 
     /// A mounted root or one of its descendants.
-    case node(NodeID, depth: Int, expandable: Bool, expanded: Bool, entry: EntryPosition?)
+    ///
+    /// `rowID` is the path to it, not the node. Once a node can belong to more
+    /// than one collection it appears in more than one place, and a row keyed
+    /// by the node alone gave two rows one identity — which `ForEach` does not
+    /// survive, and which sent a scroll to whichever copy it found first.
+    case node(NodeID, depth: Int, expandable: Bool, expanded: Bool, entry: EntryPosition?,
+              rowID: String)
     /// A workspace organization folder (host-side; no node behind it).
     case folder(id: UUID, name: String, depth: Int, expanded: Bool, entry: EntryPosition)
-    /// The pagination affordance under a partially loaded parent.
-    case more(parent: NodeID, depth: Int)
+    /// The pagination affordance under a partially loaded parent — keyed by
+    /// the parent's row for the same reason.
+    case more(parent: NodeID, depth: Int, rowID: String)
 
     var id: String {
         switch self {
-        case .node(let id, _, _, _, _): return "n:\(id.uri)"
+        case .node(_, _, _, _, _, let rowID): return rowID
         case .folder(let id, _, _, _, _): return "f:\(id.uuidString)"
-        case .more(let parent, _): return "m:\(parent.uri)"
+        case .more(_, _, let rowID): return rowID
         }
     }
 
     var nodeID: NodeID? {
-        if case .node(let id, _, _, _, _) = self { return id }
+        if case .node(let id, _, _, _, _, _) = self { return id }
         return nil
     }
 
     var depth: Int {
         switch self {
-        case .node(_, let d, _, _, _), .folder(_, _, let d, _, _), .more(_, let d): return d
+        case .node(_, let d, _, _, _, _), .folder(_, _, let d, _, _), .more(_, let d, _): return d
         }
     }
 }
@@ -65,17 +72,29 @@ enum SidebarRows {
                         graph: SidebarGraph) -> [SidebarRow] {
         var rows: [SidebarRow] = []
 
-        func walkNode(_ id: NodeID, depth: Int, entry: SidebarRow.EntryPosition?) {
-            let expandable = graph.isExpandable(id)
+        func walkNode(_ id: NodeID, depth: Int, entry: SidebarRow.EntryPosition?,
+                      parentRow: String? = nil, ancestors: Set<NodeID> = []) {
+            // A top-level row keeps the identity it always had; below that the
+            // path is spelled out, since the same node can be reached two ways.
+            let rowID = parentRow.map { "\($0)>\(id.uri)" } ?? "n:\(id.uri)"
+            // A node that is its own ancestor — possible now that membership is
+            // by reference — is drawn once and not walked into, or this would
+            // not return. Its ancestors, not every node seen: the same node
+            // under two different parents is not a cycle, and hiding the second
+            // copy would hide a real membership.
+            let isOwnAncestor = ancestors.contains(id)
+            let expandable = !isOwnAncestor && graph.isExpandable(id)
             let expanded = expandable && expandedNodes.contains(id)
             rows.append(.node(id, depth: depth, expandable: expandable,
-                              expanded: expanded, entry: entry))
+                              expanded: expanded, entry: entry, rowID: rowID))
             guard expanded else { return }
+            let lineage = ancestors.union([id])
             for child in graph.children(id) {
-                walkNode(child, depth: depth + 1, entry: nil)
+                walkNode(child, depth: depth + 1, entry: nil,
+                         parentRow: rowID, ancestors: lineage)
             }
             if graph.hasMore(id) {
-                rows.append(.more(parent: id, depth: depth + 1))
+                rows.append(.more(parent: id, depth: depth + 1, rowID: "\(rowID)>more"))
             }
         }
 
@@ -196,5 +215,21 @@ final class SidebarState {
         expandedNodes = snapshot.expandedNodes
         anchor = snapshot.anchor
         isRestoring = false
+    }
+}
+
+/// What letting go of dragged nodes over another node asks for.
+enum SidebarDrop {
+    /// Adoption when the target keeps members, a move when it only contains.
+    ///
+    /// The target decides, because the target is the one that means something
+    /// by the drop. A folder on disk takes a file by moving it there; an
+    /// aggregator takes a channel by remembering it, and the channel stays
+    /// wherever else it already was. Dropped onto the end of the collection:
+    /// a row is "into this", and where among the members is the collection's
+    /// own view to offer.
+    static func mutation(dropping ids: [NodeID], onto target: NodeID,
+                         accepts: AcceptedChildren?) -> GraphMutation {
+        accepts == nil ? .move(ids, into: target) : .adopt(ids, into: target, at: nil)
     }
 }

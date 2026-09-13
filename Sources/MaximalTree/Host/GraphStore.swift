@@ -279,11 +279,13 @@ final class GraphStore: GraphBackend {
     // MARK: Writes
 
     func canApply(_ mutation: GraphMutation) -> Bool {
-        mutatingProvider(for: mutation)?.supports(mutation) ?? false
+        guard admits(mutation) else { return false }
+        return mutatingProvider(for: mutation)?.supports(mutation) ?? false
     }
 
     func apply(_ mutation: GraphMutation) {
-        guard let provider = mutatingProvider(for: mutation), provider.supports(mutation) else { return }
+        guard admits(mutation),
+              let provider = mutatingProvider(for: mutation), provider.supports(mutation) else { return }
         Task { @MainActor in
             do {
                 let changes = try await provider.apply(mutation)
@@ -350,6 +352,41 @@ final class GraphStore: GraphBackend {
         if let current, context.node(current) == nil { ingestNode(current) }
     }
 
+    /// The host's own conditions on a mutation, checked before any provider.
+    ///
+    /// Only adoption has any. A provider cannot be trusted to refuse a cycle —
+    /// it sees its own list, not the graph — and a cycle is the host's
+    /// problem: the sidebar is what would walk into it for ever.
+    private func admits(_ mutation: GraphMutation) -> Bool {
+        guard case .adopt(let ids, let destination, _) = mutation else { return true }
+        guard !ids.isEmpty,
+              let accepts = context.node(destination)?.accepts,
+              ids.allSatisfy({ context.node($0).map { accepts.admits($0.type) } ?? false })
+        else { return false }
+        return !Self.formsCycle(adopting: ids, into: destination,
+                                children: { [context] in context.children(of: $0) })
+    }
+
+    /// Whether adopting these into `destination` would make something its own
+    /// ancestor — adopting a node into itself, or into anything already inside
+    /// it.
+    ///
+    /// Walks the children the host has loaded, which is all it can see. A
+    /// cycle through a subtree nobody has opened is not caught here; the
+    /// sidebar's own walk stops at a repeated ancestor, so it can be drawn,
+    /// just not formed knowingly.
+    static func formsCycle(adopting ids: [NodeID], into destination: NodeID,
+                           children: (NodeID) -> [NodeID]) -> Bool {
+        var pending = ids
+        var seen: Set<NodeID> = []
+        while let next = pending.popLast() {
+            if next == destination { return true }
+            guard seen.insert(next).inserted else { continue }
+            pending.append(contentsOf: children(next))
+        }
+        return false
+    }
+
     private func mutatingProvider(for mutation: GraphMutation) -> MutatingNodeProvider? {
         let anchor: NodeID?
         switch mutation {
@@ -357,6 +394,11 @@ final class GraphStore: GraphBackend {
         case .delete(let ids): anchor = ids.first
         case .move(let ids, _): anchor = ids.first
         case .create(let parent, _, _): anchor = parent
+        // The collection keeps the list, so the collection is asked. Routing
+        // these by the child — the way a move goes — would put the question
+        // to a provider that has never heard of the collection.
+        case .adopt(_, let destination, _): anchor = destination
+        case .release(_, let collection): anchor = collection
         @unknown default: anchor = nil
         }
         guard let anchor else { return nil }

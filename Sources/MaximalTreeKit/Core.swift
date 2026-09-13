@@ -181,6 +181,13 @@ public struct Node: Identifiable, Hashable, Sendable {
     /// loaded, which is the only way to be right before the first page lands.
     public var childStyle: ChildStyle?
 
+    /// What this node will take as a member, or nil for nothing.
+    ///
+    /// Declared rather than only asked, so a drag can show where it will land
+    /// *while* it is moving instead of failing when it is let go. The owning
+    /// provider still has the final word, through `supports(.adopt)`.
+    public var accepts: AcceptedChildren?
+
     /// The same thing, seen another way.
     ///
     /// A git repository *is* a directory. A typst agenda *is* the folder its
@@ -208,6 +215,7 @@ public struct Node: Identifiable, Hashable, Sendable {
         subtitle: String? = nil,
         hasChildren: Bool = false,
         childStyle: ChildStyle? = nil,
+        accepts: AcceptedChildren? = nil,
         anchor: NodeAnchor? = nil,
         identities: [NodeID] = []
     ) {
@@ -219,6 +227,7 @@ public struct Node: Identifiable, Hashable, Sendable {
         self.subtitle = subtitle
         self.hasChildren = hasChildren
         self.childStyle = childStyle
+        self.accepts = accepts
         self.anchor = anchor
         self.identities = identities
     }
@@ -265,6 +274,21 @@ public struct Node: Identifiable, Hashable, Sendable {
 public enum ChildStyle: String, Sendable, Codable, Hashable {
     case places
     case contents
+}
+
+/// What a collection will take.
+public enum AcceptedChildren: Hashable, Sendable {
+    /// Anything at all — a group of whatever the reader puts in it.
+    case any
+    /// Only these kinds of thing: an aggregator of channels takes channels.
+    case types(Set<TypeID>)
+
+    public func admits(_ type: TypeID) -> Bool {
+        switch self {
+        case .any: return true
+        case .types(let types): return types.contains(type)
+        }
+    }
 }
 
 // MARK: - Pagination

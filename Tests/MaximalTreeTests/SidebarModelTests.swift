@@ -23,6 +23,91 @@ import Foundation
             hasMore: { $0.uri == "stub://a" })
     }
 
+    // MARK: Membership
+
+    /// One node, two collections: two rows, and two identities.
+    ///
+    /// A row keyed by its node gave both copies the same id — which a
+    /// `ForEach` does not survive, and which scrolled to whichever it found
+    /// first.
+    @Test func aNodeUnderTwoParentsGetsTwoDistinctRows() {
+        let shared = SidebarGraph(
+            children: { parent in
+                ["stub://left", "stub://right"].contains(parent.uri) ? [self.id("x")] : []
+            },
+            isExpandable: { ["stub://left", "stub://right"].contains($0.uri) },
+            hasMore: { _ in false })
+        let rows = SidebarRows.flatten(entries: [.root("stub://left"), .root("stub://right")],
+                                       expandedNodes: [id("left"), id("right")], graph: shared)
+
+        let copies = rows.filter { $0.nodeID == id("x") }
+        #expect(copies.count == 2, "a membership went missing")
+        #expect(Set(rows.map(\.id)).count == rows.count, "two rows share an id: \(rows.map(\.id))")
+    }
+
+    /// A node inside itself draws once and stops, rather than never returning.
+    @Test func aCycleFlattensAndStops() {
+        // a holds b, and b holds a.
+        let looping = SidebarGraph(
+            children: { parent in
+                switch parent.uri {
+                case "stub://a": return [self.id("b")]
+                case "stub://b": return [self.id("a")]
+                default: return []
+                }
+            },
+            isExpandable: { _ in true },
+            hasMore: { _ in false })
+        let rows = SidebarRows.flatten(entries: [.root("stub://a")],
+                                       expandedNodes: [id("a"), id("b")], graph: looping)
+
+        #expect(rows.map(\.nodeID) == [id("a"), id("b"), id("a")])
+        guard case .node(_, _, let expandable, _, _, _) = rows[2] else {
+            Issue.record("expected the repeated node as a row"); return
+        }
+        #expect(!expandable, "a node that is its own ancestor was offered for expansion")
+    }
+
+    /// Its own ancestors, not every node seen before. The same node under two
+    /// unrelated parents is two memberships, and each can be opened.
+    @Test func theSameNodeInTwoPlacesIsNotACycle() {
+        let shared = SidebarGraph(
+            children: { parent in
+                switch parent.uri {
+                case "stub://left", "stub://right": return [self.id("x")]
+                case "stub://x": return [self.id("x/child")]
+                default: return []
+                }
+            },
+            isExpandable: { !$0.uri.hasSuffix("child") },
+            hasMore: { _ in false })
+        let rows = SidebarRows.flatten(
+            entries: [.root("stub://left"), .root("stub://right")],
+            expandedNodes: [id("left"), id("right"), id("x")], graph: shared)
+
+        #expect(rows.filter { $0.nodeID == id("x/child") }.count == 2,
+                "the second membership was treated as a loop and not opened")
+    }
+
+    // MARK: Drops
+
+    /// A target that keeps members adopts; one that only contains, moves.
+    @Test func dropsOntoACollectionAdopt() {
+        let mutation = SidebarDrop.mutation(dropping: [id("x")], onto: id("coll"), accepts: .any)
+        guard case .adopt(let ids, let into, let at) = mutation else {
+            Issue.record("expected an adoption, got \(mutation)"); return
+        }
+        #expect(ids == [id("x")] && into == id("coll") && at == nil)
+    }
+
+    @Test func dropsOntoAContainerStillMove() {
+        let mutation = SidebarDrop.mutation(dropping: [id("x")], onto: id("dir"), accepts: nil)
+        guard case .move(let ids, let into) = mutation else {
+            Issue.record("expected a move, got \(mutation)"); return
+        }
+        #expect(ids == [id("x")] && into == id("dir"))
+    }
+
     @Test func collapsedRootIsOneRow() {
         let rows = SidebarRows.flatten(entries: [.root("stub://a")],
                                        expandedNodes: [], graph: graph)
@@ -35,9 +120,14 @@ import Foundation
         let rows = SidebarRows.flatten(entries: [.root("stub://a")],
                                        expandedNodes: [id("a"), id("a/1")],
                                        graph: graph)
+        // Rows are identified by their path: the same node can now be reached
+        // two ways, and a top-level row keeps the spelling it always had.
         #expect(rows.map(\.id) == [
-            "n:stub://a", "n:stub://a/1", "n:stub://a/1/x", "n:stub://a/2",
-            "m:stub://a",
+            "n:stub://a",
+            "n:stub://a>stub://a/1",
+            "n:stub://a>stub://a/1>stub://a/1/x",
+            "n:stub://a>stub://a/2",
+            "n:stub://a>more",
         ])
         #expect(rows[1].depth == 1)
         #expect(rows[2].depth == 2)
@@ -68,8 +158,8 @@ import Foundation
 
         guard case .folder(let outerID, _, 0, true, let outerPos) = rows[0],
               case .folder(let innerID, _, 1, true, let innerPos) = rows[1],
-              case .node(let a, 2, _, _, let aPos) = rows[2],
-              case .node(let b, 0, _, _, let bPos) = rows[3]
+              case .node(let a, 2, _, _, let aPos, _) = rows[2],
+              case .node(let b, 0, _, _, let bPos, _) = rows[3]
         else { Issue.record("unexpected shape: \(rows.map(\.id))"); return }
 
         #expect(outerID == outer.id && innerID == inner.id)

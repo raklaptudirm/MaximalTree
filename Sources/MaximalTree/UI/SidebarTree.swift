@@ -64,10 +64,10 @@ struct SidebarTree: View {
             model.sidebar.anchor = next
             host.select([next])
             host.open(next)
-            proxy.scrollTo("n:\(next.uri)")
+            if let row = rows.first(where: { $0.nodeID == next }) { proxy.scrollTo(row.id) }
         case .left, .right:
             guard host.selection.count == 1, let id = host.selection.first,
-                  case .node(_, _, let expandable, let expanded, _)? =
+                  case .node(_, _, let expandable, let expanded, _, _)? =
                     rows.first(where: { $0.nodeID == id }), expandable
             else { return }
             let wantOpen = direction == .right
@@ -88,13 +88,13 @@ private struct SidebarRowView: View {
 
     var body: some View {
         switch row {
-        case .node(let id, let depth, let expandable, let expanded, let entry):
+        case .node(let id, let depth, let expandable, let expanded, let entry, let rowID):
             NodeRow(nodeID: id, depth: depth, expandable: expandable,
-                    expanded: expanded, entry: entry, ordered: ordered)
+                    expanded: expanded, entry: entry, ordered: ordered, rowID: rowID)
         case .folder(let id, let name, let depth, let expanded, let entry):
             FolderRow(folderID: id, name: name, depth: depth,
                       expanded: expanded, entry: entry)
-        case .more(let parent, let depth):
+        case .more(let parent, let depth, _):
             MoreRow(parent: parent, depth: depth)
         }
     }
@@ -160,6 +160,8 @@ private struct NodeRow: View {
     let expanded: Bool
     let entry: SidebarRow.EntryPosition?
     let ordered: [NodeID]
+    /// Where this row is, which is more than which node it shows.
+    let rowID: String
     @Environment(HostContext.self) private var host
     @Environment(AppModel.self) private var model
     @State private var dropTargeted = false
@@ -206,14 +208,19 @@ private struct NodeRow: View {
             }
         }
         .modifier(DropTargetModifier(
-            enabled: expandable,
+            // A collection takes a drop however it is drawn; a container that
+            // only holds things by containment still has to be one you can
+            // open, as before.
+            enabled: expandable || node?.accepts != nil,
             isTargeted: $dropTargeted,
             perform: { uris in
                 let ids = uris
                     .flatMap { $0.split(separator: "\n") }
                     .compactMap { NodeID(String($0)) }
-                let mutation = GraphMutation.move(ids, into: nodeID)
-                guard !ids.isEmpty, host.canApply(mutation) else { return false }
+                guard !ids.isEmpty else { return false }
+                let mutation = SidebarDrop.mutation(dropping: ids, onto: nodeID,
+                                                    accepts: node?.accepts)
+                guard host.canApply(mutation) else { return false }
                 host.apply(mutation)
                 return true
             }))
@@ -223,10 +230,8 @@ private struct NodeRow: View {
                 InsertionStrip(container: entry.container, index: entry.index)
             }
         }
-        .id(row_id)
+        .id(rowID)
     }
-
-    private var row_id: String { "n:\(nodeID.uri)" }
 
     /// One selection source of truth: compute the click's result, hand it to
     /// the host, and let rendering follow `host.selection`. Opening resolves

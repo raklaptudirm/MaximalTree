@@ -679,3 +679,134 @@ private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider
         try await waitUntil { provider.enrichments == 2 }
     }
 }
+
+// MARK: - Membership
+
+/// Records which mutations it was asked about, and supports every adoption and
+/// release it is asked about — so a test can see *who* was asked.
+@MainActor
+private final class RecordingProvider: NodeProvider, MutatingNodeProvider {
+    nonisolated let schemes: Set<String>
+    private(set) var asked: [String] = []
+    init(scheme: String) { schemes = [scheme] }
+
+    nonisolated func resolve(_ uri: String) -> NodeID? { NodeID(uri) }
+    nonisolated func node(for id: NodeID) async -> Node? { nil }
+    nonisolated func children(of id: NodeID, page cursor: Cursor?) async -> Page<Node> {
+        Page(items: [])
+    }
+    nonisolated func supports(_ mutation: GraphMutation) -> Bool {
+        MainActor.assumeIsolated {
+            switch mutation {
+            case .adopt: asked.append("adopt"); return true
+            case .release: asked.append("release"); return true
+            case .move: asked.append("move"); return true
+            default: return false
+            }
+        }
+    }
+    nonisolated func apply(_ mutation: GraphMutation) async throws -> [NodeChange] { [] }
+}
+
+/// Adopt and release: the collection decides, and the host refuses what would
+/// make the graph fold back on itself.
+@MainActor
+@Suite struct MembershipRoutingTests {
+    private func id(_ uri: String) -> NodeID { NodeID(uri)! }
+
+    private func makeStore() -> (GraphStore, HostContext, collections: RecordingProvider,
+                                 items: RecordingProvider) {
+        let context = HostContext()
+        let registry = Registry()
+        let collections = RecordingProvider(scheme: "coll")
+        let items = RecordingProvider(scheme: "item")
+        registry.register(provider: collections)
+        registry.register(provider: items)
+        let store = GraphStore(context: context, registry: registry, nav: NavigationModel())
+        context._ingest(Node(id: id("coll://a"), type: "coll", accepts: .any))
+        context._ingest(Node(id: id("coll://channels"), type: "coll",
+                             accepts: .types(["channel"])))
+        context._ingest(Node(id: id("item://x"), type: "item"))
+        context._ingest(Node(id: id("item://ch"), type: "channel"))
+        return (store, context, collections, items)
+    }
+
+    /// The whole reason for a separate verb. A move asks the child's provider,
+    /// which is right for a file and wrong for membership: the child's owner
+    /// has never heard of the collection.
+    @Test func anAdoptionIsPutToTheCollectionNotTheChild() {
+        let (store, _, collections, items) = makeStore()
+        #expect(store.canApply(.adopt([id("item://x")], into: id("coll://a"), at: nil)))
+        #expect(collections.asked == ["adopt"])
+        #expect(items.asked.isEmpty, "the child's provider was asked about a membership")
+    }
+
+    @Test func aReleaseIsPutToTheCollection() {
+        let (store, _, collections, items) = makeStore()
+        #expect(store.canApply(.release([id("item://x")], from: id("coll://a"))))
+        #expect(collections.asked == ["release"])
+        #expect(items.asked.isEmpty)
+    }
+
+    /// And a move keeps going where it always went, so files are unaffected.
+    @Test func aMoveIsStillPutToTheChild() {
+        let (store, _, collections, items) = makeStore()
+        _ = store.canApply(.move([id("item://x")], into: id("coll://a")))
+        #expect(items.asked == ["move"])
+        #expect(collections.asked.isEmpty)
+    }
+
+    /// An aggregator of channels takes channels, and the host says no before
+    /// the provider is ever troubled.
+    @Test func aCollectionRefusesWhatItDoesNotAccept() {
+        let (store, _, collections, _) = makeStore()
+        #expect(!store.canApply(.adopt([id("item://x")], into: id("coll://channels"), at: nil)))
+        #expect(store.canApply(.adopt([id("item://ch")], into: id("coll://channels"), at: nil)))
+        #expect(collections.asked == ["adopt"], "the refused one reached the provider")
+    }
+
+    /// Something that declares nothing takes nothing.
+    @Test func aNodeThatAcceptsNothingIsNotACollection() {
+        let (store, _, collections, _) = makeStore()
+        #expect(!store.canApply(.adopt([id("item://ch")], into: id("item://x"), at: nil)))
+        #expect(collections.asked.isEmpty)
+    }
+
+    // MARK: Cycles
+
+    @Test func aCollectionCannotAdoptItself() {
+        let (store, _, _, _) = makeStore()
+        #expect(!store.canApply(.adopt([id("coll://a")], into: id("coll://a"), at: nil)))
+    }
+
+    /// a holds b; putting a into b would make a its own grandparent.
+    @Test func aCollectionCannotAdoptWhatAlreadyHoldsIt() {
+        let (store, context, _, _) = makeStore()
+        context._ingest(Node(id: id("coll://b"), type: "coll", accepts: .any))
+        context._setChildren([id("coll://b")], of: id("coll://a"))
+        #expect(!store.canApply(.adopt([id("coll://a")], into: id("coll://b"), at: nil)))
+    }
+
+    /// Deep as well as direct.
+    @Test func aCycleIsFoundThroughSeveralLevels() {
+        let graph: [String: [String]] = ["coll://a": ["coll://b"], "coll://b": ["coll://c"]]
+        #expect(GraphStore.formsCycle(adopting: [id("coll://a")], into: id("coll://c"),
+                                      children: { graph[$0.uri, default: []].map(self.id) }))
+    }
+
+    /// And a node already somewhere else is not a cycle — membership in two
+    /// places is the point.
+    @Test func belongingToTwoCollectionsIsNotACycle() {
+        let graph: [String: [String]] = ["coll://a": ["item://x"]]
+        #expect(!GraphStore.formsCycle(adopting: [id("item://x")], into: id("coll://b"),
+                                       children: { graph[$0.uri, default: []].map(self.id) }))
+    }
+
+    /// A graph that already loops must not hang the check itself.
+    @Test func theCheckTerminatesOnAGraphThatAlreadyLoops() {
+        let graph: [String: [String]] = ["coll://a": ["coll://b"], "coll://b": ["coll://a"]]
+        #expect(!GraphStore.formsCycle(adopting: [id("coll://a")], into: id("coll://z"),
+                                       children: { graph[$0.uri, default: []].map(self.id) }))
+    }
+}
+
