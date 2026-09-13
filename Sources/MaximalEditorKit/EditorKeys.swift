@@ -76,6 +76,12 @@ public enum EditorKeys {
         NSApp.keyWindow?.firstResponder as? MaximalEditor.EditorTextView
     }
 
+    /// The mode the app is in, as last reported.
+    ///
+    /// The editor has no mode of its own — there is one and it belongs to the
+    /// app — but it still has to *react* to it, and it never sees a keystroke.
+    public private(set) static var appMode: KeyMode = .normal
+
     /// Leaving insert mode puts a selection back.
     ///
     /// Normal mode always has something selected — that is the whole of the
@@ -84,6 +90,7 @@ public enum EditorKeys {
     /// now, and the editor never sees a keystroke, so this is the editor
     /// reacting to a mode it does not own.
     public static func appModeChanged(to mode: KeyMode) {
+        appMode = mode
         if mode == .normal { EditorFind.shared.close() }
         guard mode == .normal, let editor = focused, editor.modalEditing else { return }
         editor.run(.collapseSelection, count: 1, mode: .normal)

@@ -518,6 +518,202 @@ import STTextView
                 "the view moved for something already in front of the reader")
     }
 
+    // MARK: What an edit repaints
+    //
+    // The region, which is checkable. Not the thing it is for: a headless
+    // window never runs the viewport layout pass, so a full repaint discards
+    // nothing here and the collapse this avoids cannot be reproduced. That
+    // half is measured in the running app or not at all.
+
+    /// The repaint still has to reach what the edit actually changed, or the
+    /// saving is just a document that stops being coloured.
+    @Test func anEditRepaintsTheParagraphItTouched() async throws {
+        let editor = makeEditor(text: document)
+        editor.coordinator.highlightNow()
+        await settle()
+
+        let ns = (editor.textView.text ?? "") as NSString
+        let region = MaximalEditor.Coordinator.repaintRegion(
+            for: [NSRange(location: 5, length: 1)], in: ns,
+            content: editor.textView.text ?? "", tokenizer: StubTokenizer())
+        let paragraph = ns.paragraphRange(for: NSRange(location: 5, length: 1))
+        #expect(NSIntersectionRange(region, paragraph).length == paragraph.length,
+                "the edited paragraph was not covered")
+    }
+
+    /// A token spanning paragraphs is repainted whole: editing one line of a
+    /// display equation restyles all of it, and half a repaint leaves the rest
+    /// wearing the markup it had before.
+    @Test func aRepaintGrowsToCoverTheTokensItTouches() async throws {
+        // The stub's tokens are `$…$` runs, and this one crosses a paragraph
+        // break — the shape a display equation has.
+        let text = "Intro paragraph here.\n\n$x = 1\n\ny = 2$\n\nAfter."
+        let ns = text as NSString
+        let equation = ns.range(of: "$x = 1\n\ny = 2$")
+        try #require(equation.location != NSNotFound)
+
+        // An edit on the equation's last line only.
+        let region = MaximalEditor.Coordinator.repaintRegion(
+            for: [ns.range(of: "y = 2")], in: ns, content: text,
+            tokenizer: StubTokenizer())
+
+        #expect(region.location <= equation.location
+                && NSMaxRange(region) >= NSMaxRange(equation),
+                "region \(region) does not cover the equation at \(equation)")
+        #expect(region.length < ns.length, "it repainted the whole document anyway")
+    }
+
+    // MARK: What a click leaves behind
+
+    /// Normal mode always has a character selected. A click does not know
+    /// that, and AppKit's mouse handling has never heard of the grammar.
+    @Test func aClickDoesNotLeaveNormalModeWithoutASelection() async throws {
+        let editor = makeEditor(text: document)
+        editor.coordinator.highlightNow()
+        await settle()
+
+        // What a click does: a collapsed selection, set outside the engine.
+        editor.textView.textSelection = NSRange(location: 5, length: 0)
+        editor.coordinator.textViewDidChangeSelection(
+            Notification(name: STTextView.didChangeSelectionNotification,
+                         object: editor.textView))
+        await settle()
+
+        #expect(editor.textView.textSelection == NSRange(location: 5, length: 1),
+                "left at \(editor.textView.textSelection), which no verb can act on")
+    }
+
+    /// Which is what `d` after a click was actually hitting: nothing selected,
+    /// so nothing deleted — and an empty edit announced anyway.
+    @Test func deletingAfterAClickDeletesTheCharacterUnderIt() async throws {
+        let editor = makeEditor(text: document)
+        editor.coordinator.highlightNow()
+        await settle()
+        let before = editor.textView.text ?? ""
+
+        editor.textView.textSelection = NSRange(location: 5, length: 0)
+        editor.coordinator.textViewDidChangeSelection(
+            Notification(name: STTextView.didChangeSelectionNotification,
+                         object: editor.textView))
+        await settle()
+
+        editor.textView.run(.delete, count: 1, mode: .normal)
+        await settle()
+
+        #expect((editor.textView.text ?? "").count == before.count - 1,
+                "d after a click changed nothing")
+    }
+
+    /// And the guard behind it: replacing nothing with nothing is not an edit,
+    /// so it must not be announced as one. A text change repaints the whole
+    /// document, which invalidates its layout and slides the page.
+    @Test func anEmptyEditIsNotAnnouncedAsAChange() async throws {
+        let editor = makeEditor(text: document)
+        editor.coordinator.highlightNow()
+        await settle()
+        editor.textView.undoManager?.removeAllActions()
+
+        editor.textView.apply(EditOutcome(edit: (NSRange(location: 5, length: 0), ""),
+                                          selection: NSRange(location: 5, length: 1),
+                                          mode: .normal))
+        await settle()
+
+        #expect(editor.textView.undoManager?.canUndo != true,
+                "an edit that changes nothing reached the document")
+    }
+
+    /// The commands that mean a collapsed selection still get one: entering
+    /// insert mode is not a click.
+    @Test func enteringInsertModeKeepsItsCollapsedSelection() async throws {
+        let editor = makeEditor(text: document)
+        editor.coordinator.highlightNow()
+        await settle()
+
+        editor.textView.run(.insertBefore, count: 1, mode: .normal)
+        await settle()
+
+        #expect(editor.textView.textSelection.length == 0,
+                "insert mode was handed a selection it did not ask for")
+    }
+
+    // MARK: Keeping the caret in view
+
+    /// A motion whose caret is already on screen leaves the view alone.
+    ///
+    /// Not merely "does not scroll" — does not *ask TextKit to lay anything
+    /// out*. `apply` used to force `ensureLayout` up to the caret on every
+    /// command, which replaces estimated heights with measured ones and moves
+    /// every line below the point it reaches. Escape runs a command and goes
+    /// nowhere, and so does typing after a delete.
+    @Test func aMotionWithTheCaretInViewLeavesTheViewAlone() async throws {
+        let editor = makeEditor(text: document)
+        editor.coordinator.highlightNow()
+        await settle()
+
+        editor.textView.textSelection = NSRange(location: 5, length: 0)
+        let before = editor.textView.visibleRect.minY
+
+        editor.textView.keepVisible(NSRange(location: 5, length: 0))
+        await settle()
+
+        #expect(editor.textView.visibleRect.minY == before,
+                "the view moved for a caret already in front of the reader")
+    }
+
+    /// And one whose caret is not still goes and gets it — the half the rule
+    /// above must not cost.
+    @Test func aMotionWithTheCaretOffScreenStillFollowsIt() async throws {
+        var long = document
+        for index in 12..<200 {
+            long += "\n\nParagraph \(index) says something and continues with "
+                + "enough words to wrap onto another line or two."
+        }
+        let editor = makeEditor(text: long)
+        editor.coordinator.highlightNow()
+        await settle()
+        #expect(editor.textView.visibleRect.minY < 1, "should start at the top")
+
+        let ns = long as NSString
+        let target = ns.range(of: "Paragraph 120")
+        try #require(target.location != NSNotFound)
+
+        editor.textView.keepVisible(NSRange(location: target.location, length: 0))
+        await settle()
+
+        #expect(editor.textView.visibleRect.minY > 100,
+                "the view stayed at \(editor.textView.visibleRect.minY) with the caret far below")
+    }
+
+    /// Unlike a reveal, it moves the least it can: a motion that stepped one
+    /// line and re-centred the page would be its own kind of lurch.
+    @Test func keepingTheCaretInViewDoesNotCentreIt() async throws {
+        var long = document
+        for index in 12..<200 {
+            long += "\n\nParagraph \(index) says something and continues with "
+                + "enough words to wrap onto another line or two."
+        }
+        let editor = makeEditor(text: long)
+        editor.coordinator.highlightNow()
+        await settle()
+
+        let ns = long as NSString
+        let target = ns.range(of: "Paragraph 120")
+        try #require(target.location != NSNotFound)
+        editor.textView.keepVisible(NSRange(location: target.location, length: 0))
+        await settle()
+
+        let lm = editor.textView.textLayoutManager
+        let cm = try #require(lm.textContentManager)
+        let range = try #require(NSTextRange(NSRange(location: target.location, length: 0),
+                                             in: cm))
+        let frame = try #require(lm.textSegmentFrame(at: range.location, type: .standard))
+        let visible = editor.textView.visibleRect
+        // Scrolled down to reach it, so it lands against the bottom edge, not
+        // in the middle the way `reveal` puts it.
+        #expect(frame.midY > visible.midY,
+                "a minimum scroll should leave the caret at the near edge, not centred")
+    }
+
     /// A motion takes the view with it.
     ///
     /// The counterpart to pinning the viewport across a click, and the reason

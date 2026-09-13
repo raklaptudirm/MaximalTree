@@ -375,6 +375,44 @@ extension STTextView {
             ?? textSelection.location
     }
 
+    /// Keep the caret in view, moving as little as possible — and not at all
+    /// when it is already there.
+    ///
+    /// The motion counterpart of `reveal`, and it needs that method's first
+    /// rule for the same reason: `ensureLayout` is neither free nor neutral.
+    /// Laying the prefix out replaces estimated heights with measured ones, so
+    /// every line below the point it reaches moves. Doing that on a caret
+    /// already on screen is a page that shifts under a reader who asked for no
+    /// movement at all — which is what Escape did, and what typing after a
+    /// delete did, because both of them come through here and neither of them
+    /// goes anywhere.
+    ///
+    /// A caret already laid out has an honest frame without forcing anything,
+    /// so the question can be asked before the work is done. Only a caret that
+    /// is genuinely elsewhere pays for the layout.
+    ///
+    /// Unlike `reveal` this never centres: a motion that stepped one line and
+    /// then re-centred the page would be its own kind of lurch.
+    func keepVisible(_ range: NSRange) {
+        guard let contentManager = textLayoutManager.textContentManager,
+              let textRange = NSTextRange(range, in: contentManager) else {
+            scrollRangeToVisible(range)
+            return
+        }
+        let visible = visibleRect
+        if let here = textLayoutManager.textSegmentFrame(at: textRange.location,
+                                                         type: .standard),
+           here.minY >= visible.minY, here.maxY <= visible.maxY,
+           here.minX >= visible.minX, here.maxX <= visible.maxX {
+            EditorTrace.note("keepVisible.alreadyThere", self)
+            return
+        }
+        EditorTrace.note("keepVisible.fetching", self)
+        textLayoutManager.ensureLayout(upTo: textRange.endLocation)
+        scrollRangeToVisible(range)
+        EditorTrace.note("keepVisible.done", self)
+    }
+
     func scrollToVisible(_ range: NSRange, ensuringLayout: Bool = true) {
         if ensuringLayout, let contentManager = textLayoutManager.textContentManager,
            let textRange = NSTextRange(range, in: contentManager) {
@@ -627,10 +665,21 @@ public struct MaximalEditor: NSViewRepresentable {
         }
 
         func apply(_ outcome: EditOutcome) {
+            EditorTrace.note("apply.before", self,
+                             extra: "edit=\(outcome.edit != nil) mode=\(outcome.mode)")
+            defer { EditorTrace.note("apply.after", self) }
             caretGeneration &+= 1
             isFollowingCaret = true
             defer { isFollowingCaret = false }
-            if let edit = outcome.edit {
+            // Replacing nothing with nothing is not an edit, and must not be
+            // announced as one: `textViewDidChangeText` repaints the whole
+            // document, which invalidates its layout and lets the page slide
+            // under a reader who changed nothing. Cheap defence — the way this
+            // arose was a `d` with no selection, which is fixed at its source
+            // in `restoreCommandingSelection`, but any verb handed an empty
+            // range can produce it.
+            if let edit = outcome.edit,
+               !(edit.range.length == 0 && edit.replacement.isEmpty) {
                 // Through the text view, so undo and the highlighter see it.
                 insertText(edit.replacement, replacementRange: edit.range)
             }
@@ -643,7 +692,7 @@ public struct MaximalEditor: NSViewRepresentable {
             // synchronously, and the handler asks where the caret is.
             followed = (caret, selection)
             textSelection = selection
-            scrollToVisible(NSRange(location: caret, length: 0))
+            keepVisible(NSRange(location: caret, length: 0))
         }
 
 
@@ -873,9 +922,10 @@ public struct MaximalEditor: NSViewRepresentable {
         /// from their equations with every wrapped line.
         public func textView(_ textView: STTextView, didChangeTextIn affectedCharRange: NSTextRange,
                              replacementString: String) {
-            guard !pendingMath.isEmpty,
-                  let contentManager = textView.textLayoutManager.textContentManager
+            guard let contentManager = textView.textLayoutManager.textContentManager
             else { return }
+            recordEdit(affectedCharRange, replacementString, in: textView, contentManager)
+            guard !pendingMath.isEmpty else { return }
             // Assigning the whole text is not an edit, and the engine reports
             // it as one: an insertion of the entire document at zero. Sliding
             // every equation forward by the length of the document is how the
@@ -908,6 +958,105 @@ public struct MaximalEditor: NSViewRepresentable {
             DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated { self?.layoutMathOverlays() }
             }
+        }
+
+        /// What an edit changed, waiting for a repaint that accounts for it.
+        ///
+        /// Kept because the repaint is not immediate — it is debounced, or it
+        /// is the caret's — and by the time one runs the only record of where
+        /// the edit landed is this.
+        private var pendingEditRepaint: NSRange?
+
+        private func recordEdit(_ affected: NSTextRange, _ replacement: String,
+                                in textView: STTextView,
+                                _ contentManager: NSTextContentManager) {
+            let edited = NSRange(affected, in: contentManager)
+            let length = ((textView.text ?? "") as NSString).length
+            // Assigning the whole document is not an edit; nothing incremental
+            // applies to text that has entirely changed.
+            if isPushingText || (edited.location == 0 && edited.length == 0
+                && (replacement as NSString).length == length) {
+                pendingEditRepaint = nil
+                return
+            }
+            let touched = NSRange(location: edited.location,
+                                  length: (replacement as NSString).length)
+            pendingEditRepaint = pendingEditRepaint.map { NSUnionRange($0, touched) } ?? touched
+        }
+
+        /// Repaint what an edit changed, and only that.
+        ///
+        /// The other half of the fix that made clicking stop lurching. A whole
+        /// document repaint sets every font and paragraph style in the file,
+        /// which in a markup style *is* layout — so TextKit discards what it
+        /// had laid out and re-lays the viewport alone, the prefix above the
+        /// reader becomes an estimate again, and the text slides under a
+        /// scroll offset that never moved. A caret move stopped doing that;
+        /// an edit went on doing it, which is the jerk after `d`.
+        ///
+        /// Falls back to a full repaint when there is no record of what
+        /// changed — a wholesale assignment, or a repaint asked for by
+        /// something that was not an edit at all.
+        private func repaintAfterEdit(from previous: NSRange?, to current: NSRange?) {
+            guard let textView, let tokenizer, let edited = pendingEditRepaint else {
+                highlightNow()
+                return
+            }
+            pendingEditRepaint = nil
+            let content = textView.text ?? ""
+            let ns = content as NSString
+            let region = Self.repaintRegion(
+                for: [edited, previous, current].compactMap { $0 },
+                in: ns, content: content, tokenizer: tokenizer)
+            guard region.length > 0 else { return }
+
+            // The same bookkeeping a full paint keeps, so the next one can
+            // tell whether it has anything left to do.
+            lastHighlightedText = content
+            lastHighlightedDark = isDark
+            lastHighlightedRevealStart = revealedParagraph?.location
+
+            EditorTrace.note("repaintAfterEdit", textView,
+                             extra: "region=\(region.location)+\(region.length) of \(ns.length)")
+            paint(region, style: lastStyle ?? .code(), content: content, ns: ns,
+                  tokenizer: tokenizer, on: textView)
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated { self?.layoutMathOverlays() }
+            }
+        }
+
+        /// The span an incremental repaint has to cover.
+        ///
+        /// Whole paragraphs, because a paragraph style is applied to one and
+        /// half of one is meaningless — then grown to every token reaching
+        /// into them. A display equation or a fenced block spans paragraphs,
+        /// and editing one of its lines restyles all of them; leaving the rest
+        /// alone is how stale markup survives a repaint.
+        ///
+        /// Computed against the text as it is *now*, so a delimiter just typed
+        /// drags in the run it opened. Repeated until it stops growing, since
+        /// a token pulled in can reach a token that was not there before.
+        static func repaintRegion(for ranges: [NSRange], in ns: NSString,
+                                  content: String, tokenizer: EditorTokenizer) -> NSRange {
+            var region: NSRange?
+            for range in ranges {
+                let start = min(max(range.location, 0), ns.length)
+                let paragraph = ns.paragraphRange(
+                    for: NSRange(location: start, length: min(range.length, ns.length - start)))
+                region = region.map { NSUnionRange($0, paragraph) } ?? paragraph
+            }
+            guard var grown = region else { return NSRange(location: 0, length: 0) }
+            let tokens = tokenizer.tokens(in: content)
+            for _ in 0..<3 {
+                let before = grown
+                for token in tokens
+                where NSIntersectionRange(token.range, grown).length > 0 {
+                    grown = NSUnionRange(grown, token.range)
+                }
+                if NSEqualRanges(before, grown) { break }
+            }
+            let start = min(grown.location, ns.length)
+            return NSRange(location: start, length: min(grown.length, ns.length - start))
         }
 
         public func textViewDidChangeText(_ notification: Notification) {
@@ -960,8 +1109,9 @@ public struct MaximalEditor: NSViewRepresentable {
         }
 
         public func textViewDidChangeSelection(_ notification: Notification) {
-            guard !isPushingText, let textView,
-                  (lastStyle ?? .code()).rendersMarkup else { return }
+            guard !isPushingText, let textView else { return }
+            restoreCommandingSelection(in: textView)
+            guard (lastStyle ?? .code()).rendersMarkup else { return }
             let ns = (textView.text ?? "") as NSString
             let caret = min(textView.caretLocation, ns.length)
             let paragraph = ns.paragraphRange(for: NSRange(location: caret, length: 0))
@@ -991,10 +1141,42 @@ public struct MaximalEditor: NSViewRepresentable {
             if textView.text == lastHighlightedText {
                 repaintReveal(from: previous, to: paragraph, on: textView)
             } else {
-                repaintFollowsCaret = true
-                pendingRevealLoss = previous
-                highlightNow()
+                // The text has changed as well — a delete, a paste, a newline.
+                // Both the edit and the caret's move are paragraph-sized, so
+                // paint both and leave the rest of the layout alone. This used
+                // to be a full repaint, which is the mechanism described above
+                // doing exactly the same thing one edit later.
+                repaintAfterEdit(from: previous, to: paragraph)
             }
+        }
+
+        /// A commanding mode always has something selected; a click does not
+        /// know that.
+        ///
+        /// The whole of the select-then-act grammar is that a verb acts on a
+        /// selection, so normal mode holds one character even when it looks
+        /// like a caret. Clicking sets a collapsed selection through AppKit's
+        /// own mouse handling, which has never heard of any of this — and then
+        /// `d` had nothing to delete.
+        ///
+        /// Worse than doing nothing: deleting an empty range is still an
+        /// *edit*, so it repainted the whole document and slid the page under
+        /// a reader who had just clicked into it.
+        ///
+        /// Only for selections the editor did not make. `isFollowingCaret` is
+        /// set for exactly the length of a command, and a command that leaves
+        /// the selection collapsed — `i`, `c` — means it.
+        private func restoreCommandingSelection(in textView: STTextView) {
+            guard let editor = textView as? MaximalEditor.EditorTextView,
+                  editor.modalEditing, !editor.isFollowingCaret,
+                  !EditorKeys.appMode.isTyping,
+                  textView.textSelection.length == 0 else { return }
+            let length = ((textView.text ?? "") as NSString).length
+            let start = min(textView.textSelection.location, length)
+            // Nothing to hold at the very end of the document; a caret there
+            // is the one place normal mode has no character to sit on.
+            guard start < length else { return }
+            textView.textSelection = NSRange(location: start, length: 1)
         }
 
         /// Repaint just the paragraphs a caret move changed.
@@ -1008,6 +1190,7 @@ public struct MaximalEditor: NSViewRepresentable {
         private func repaintReveal(from previous: NSRange?, to current: NSRange,
                                    on textView: STTextView) {
             guard let tokenizer else { return }
+            EditorTrace.note("repaintReveal", textView)
             let content = textView.text ?? ""
             let ns = content as NSString
             let style = lastStyle ?? .code()
@@ -1045,7 +1228,7 @@ public struct MaximalEditor: NSViewRepresentable {
             highlightTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .milliseconds(100))
                 guard !Task.isCancelled else { return }
-                self?.highlightNow()
+                self?.repaintAfterEdit(from: nil, to: self?.revealedParagraph)
             }
         }
 
@@ -1085,6 +1268,11 @@ public struct MaximalEditor: NSViewRepresentable {
             let style = lastStyle ?? .code()
             let ns = content as NSString
             let full = NSRange(location: 0, length: ns.length)
+            EditorTrace.note("highlightNow.full", textView,
+                             extra: "followsEdit=\(followsReader && !followsCaret) "
+                                  + "followsCaret=\(followsCaret) "
+                                  + "anchored=\(!followsReader)")
+            defer { EditorTrace.note("highlightNow.painted", textView) }
             paragraphStyles.removeAll()
             pendingMath.removeAll()
             // Pin the topmost visible line so a repaint that changes line
@@ -1445,6 +1633,8 @@ public struct MaximalEditor: NSViewRepresentable {
         /// Scroll by exactly what that paragraph's height changed, so the lines
         /// on screen stay where they were.
         private func applyHeightCompensation() {
+            EditorTrace.note("heightCompensation.before", textView)
+            defer { EditorTrace.note("heightCompensation.after", textView) }
             guard let (location, before) = pendingHeightCompensation, let textView else { return }
             pendingHeightCompensation = nil
             // Measure after the layout the repaint asked for, not before it.
@@ -1484,6 +1674,8 @@ public struct MaximalEditor: NSViewRepresentable {
         /// Put the anchored line back where it was, compensating for whatever
         /// line-height changes the repaint landed above it.
         private func restoreScrollAnchor() {
+            EditorTrace.note("restoreAnchor.before", textView)
+            defer { EditorTrace.note("restoreAnchor.after", textView) }
             guard let (anchor, caretWasVisible) = pendingScrollAnchor else { return }
             pendingScrollAnchor = nil
             guard let textView else { return }
