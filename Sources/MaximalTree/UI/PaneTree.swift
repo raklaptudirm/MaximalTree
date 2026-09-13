@@ -279,6 +279,13 @@ struct PaneView: View {
                 // pane waiting for something that was never coming.
                 ContentUnavailableView("Nothing Picked", systemImage: "list.bullet",
                                        description: Text("Choose something from the list."))
+            } else if host.node(id) != nil {
+                // The record is here; nothing draws it. Saying "Loading…" left
+                // the pane promising something that was never going to arrive
+                // — which a collection, having no view of its own, hit on
+                // every click.
+                ContentUnavailableView("No View", systemImage: "square.dashed",
+                                       description: Text("Nothing draws this here."))
             } else {
                 ContentUnavailableView("Loading…", systemImage: "hourglass")
             }

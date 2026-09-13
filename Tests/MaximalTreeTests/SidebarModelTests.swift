@@ -62,7 +62,7 @@ import Foundation
                                        expandedNodes: [id("a"), id("b")], graph: looping)
 
         #expect(rows.map(\.nodeID) == [id("a"), id("b"), id("a")])
-        guard case .node(_, _, let expandable, _, _, _) = rows[2] else {
+        guard case .node(_, _, let expandable, _, _, _, _) = rows[2] else {
             Issue.record("expected the repeated node as a row"); return
         }
         #expect(!expandable, "a node that is its own ancestor was offered for expansion")
@@ -158,8 +158,8 @@ import Foundation
 
         guard case .folder(let outerID, _, 0, true, let outerPos) = rows[0],
               case .folder(let innerID, _, 1, true, let innerPos) = rows[1],
-              case .node(let a, 2, _, _, let aPos, _) = rows[2],
-              case .node(let b, 0, _, _, let bPos, _) = rows[3]
+              case .node(let a, 2, _, _, let aPos, _, _) = rows[2],
+              case .node(let b, 0, _, _, let bPos, _, _) = rows[3]
         else { Issue.record("unexpected shape: \(rows.map(\.id))"); return }
 
         #expect(outerID == outer.id && innerID == inner.id)

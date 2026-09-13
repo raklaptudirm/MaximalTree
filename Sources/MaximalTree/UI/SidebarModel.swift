@@ -27,8 +27,12 @@ enum SidebarRow: Identifiable, Equatable {
     /// than one collection it appears in more than one place, and a row keyed
     /// by the node alone gave two rows one identity — which `ForEach` does not
     /// survive, and which sent a scroll to whichever copy it found first.
+    ///
+    /// `parent` is the node it was reached through, if any — needed to take it
+    /// out of a collection, since with membership the same node can be in
+    /// several and "remove" has to know which one it means.
     case node(NodeID, depth: Int, expandable: Bool, expanded: Bool, entry: EntryPosition?,
-              rowID: String)
+              rowID: String, parent: NodeID?)
     /// A workspace organization folder (host-side; no node behind it).
     case folder(id: UUID, name: String, depth: Int, expanded: Bool, entry: EntryPosition)
     /// The pagination affordance under a partially loaded parent — keyed by
@@ -37,20 +41,20 @@ enum SidebarRow: Identifiable, Equatable {
 
     var id: String {
         switch self {
-        case .node(_, _, _, _, _, let rowID): return rowID
+        case .node(_, _, _, _, _, let rowID, _): return rowID
         case .folder(let id, _, _, _, _): return "f:\(id.uuidString)"
         case .more(_, _, let rowID): return rowID
         }
     }
 
     var nodeID: NodeID? {
-        if case .node(let id, _, _, _, _, _) = self { return id }
+        if case .node(let id, _, _, _, _, _, _) = self { return id }
         return nil
     }
 
     var depth: Int {
         switch self {
-        case .node(_, let d, _, _, _, _), .folder(_, _, let d, _, _), .more(_, let d, _): return d
+        case .node(_, let d, _, _, _, _, _), .folder(_, _, let d, _, _), .more(_, let d, _): return d
         }
     }
 }
@@ -73,7 +77,8 @@ enum SidebarRows {
         var rows: [SidebarRow] = []
 
         func walkNode(_ id: NodeID, depth: Int, entry: SidebarRow.EntryPosition?,
-                      parentRow: String? = nil, ancestors: Set<NodeID> = []) {
+                      parentRow: String? = nil, parent: NodeID? = nil,
+                      ancestors: Set<NodeID> = []) {
             // A top-level row keeps the identity it always had; below that the
             // path is spelled out, since the same node can be reached two ways.
             let rowID = parentRow.map { "\($0)>\(id.uri)" } ?? "n:\(id.uri)"
@@ -86,12 +91,12 @@ enum SidebarRows {
             let expandable = !isOwnAncestor && graph.isExpandable(id)
             let expanded = expandable && expandedNodes.contains(id)
             rows.append(.node(id, depth: depth, expandable: expandable,
-                              expanded: expanded, entry: entry, rowID: rowID))
+                              expanded: expanded, entry: entry, rowID: rowID, parent: parent))
             guard expanded else { return }
             let lineage = ancestors.union([id])
             for child in graph.children(id) {
                 walkNode(child, depth: depth + 1, entry: nil,
-                         parentRow: rowID, ancestors: lineage)
+                         parentRow: rowID, parent: id, ancestors: lineage)
             }
             if graph.hasMore(id) {
                 rows.append(.more(parent: id, depth: depth + 1, rowID: "\(rowID)>more"))

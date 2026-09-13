@@ -461,6 +461,17 @@ extension AppModel {
         act("workspace.newFolder", "New Folder", image: "folder.badge.plus") { model, _ in
             model.beginCreateFolder()
         }
+        act("collection.new", "New Collection", image: "square.stack.3d.up.badge.plus") { model, _ in
+            model.newCollection()
+        }
+        act("collection.delete", "Delete Collection", image: "trash",
+            when: .custom { ctx in
+                !ctx.targets.isEmpty
+                    && ctx.targets.allSatisfy { $0.scheme == CollectionRef.scheme }
+            }) { model, ctx in
+            // Its members are not deleted: they go where the collection was.
+            model.host.apply(.delete(ctx.targets))
+        }
         act("workspace.addFolder", "Mount Root…",
             image: "externaldrive.badge.plus") { model, _ in model.addFolder() }
 

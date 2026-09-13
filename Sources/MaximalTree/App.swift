@@ -467,6 +467,40 @@ final class AppModel {
     init(host: HostContext, workspaceFile: URL? = nil) {
         self.host = host
         self.workspaceStore = WorkspaceStore(fileURL: workspaceFile)
+        // Beside the workspaces, wherever those are — so a model built with a
+        // temporary workspace file never writes into the reader's own
+        // collections.
+        self.collections = CollectionStore(url: workspaceFile.map {
+            $0.deletingLastPathComponent().appendingPathComponent("collections.json")
+        } ?? CollectionStore.defaultURL)
+    }
+
+    /// The collections the host keeps — see `CollectionProvider`.
+    let collections: CollectionStore
+
+    /// An empty collection, in the sidebar, with its name ready to type.
+    func newCollection() {
+        let record = collections.create(named: "New Collection")
+        host.mount(record.uri)
+        store?.beginRename(NodeID(canonical: record.uri))
+    }
+
+    private func refreshHolders(of uri: String) {
+        refresh(collections.holders(of: uri))
+    }
+
+    /// Tell the tree that these collections' listings changed.
+    ///
+    /// A turn later, because this is reached from inside the store working
+    /// through a batch of changes, and reporting more to it mid-batch would
+    /// interleave the two.
+    private func refresh(_ holders: [CollectionRecord]) {
+        guard !holders.isEmpty else { return }
+        let changes = holders.flatMap { holder -> [NodeChange] in
+            let id = NodeID(canonical: holder.uri)
+            return [.childrenChanged(id), .modified(id)]
+        }
+        DispatchQueue.main.async { [weak self] in self?.store?.notify(changes) }
     }
 
     // MARK: Workspaces
@@ -836,6 +870,13 @@ final class AppModel {
         registerCoreActions(with: pluginHost.registry)
         registerCoreInspector(with: pluginHost.registry)
         registerBuiltInFinders(into: pluginHost.registry)
+        // Before the plugins, so the broker they share is installed with it:
+        // a collection's members are other providers' nodes, resolved through
+        // that broker, and a plugin can put a collection in its own listing.
+        let broker = pluginHost.registry.hostBroker
+        pluginHost.registry.register(provider: CollectionProvider(store: collections) { uri in
+            await broker.node(for: uri)
+        })
         // Under XCTest the test bundle compiles the plugin's sources directly; don't
         // also dlopen the .bundle into the same process, or the @objc principal class
         // collides. Tests exercise provider logic without the running host.
@@ -852,7 +893,19 @@ final class AppModel {
         // New roots join the folder of the current node's root — creating a node
         // respects where you already are.
         store.onNodeRenamed = { [weak self] old, new in
-            self?.sidebar.remap(from: old, to: new)
+            guard let self else { return }
+            self.sidebar.remap(from: old, to: new)
+            // A collection's references are written down, so a rename has to
+            // reach them — descendants included, which only the collections do.
+            self.collections.remap(from: old.uri, to: new.uri)
+            self.refreshHolders(of: new.uri)
+        }
+        store.onNodeRemoved = { [weak self] id in
+            guard let self else { return }
+            // Read the holders first: once removed, nothing holds it.
+            let holders = self.collections.holders(of: id.uri)
+            self.collections.remove(id.uri)
+            self.refresh(holders)
         }
         // Every disclosure writes through to the active workspace, so quitting
         // at any moment leaves the tree the way it looks right now.

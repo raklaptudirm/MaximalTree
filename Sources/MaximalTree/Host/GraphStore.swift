@@ -93,6 +93,10 @@ final class GraphStore: GraphBackend {
     /// (sidebar expansion) can follow the node.
     var onNodeRenamed: ((NodeID, NodeID) -> Void)?
 
+    /// Fired for every `.removed` change, so anything holding a reference to
+    /// the node — a collection — can let go of it.
+    var onNodeRemoved: ((NodeID) -> Void)?
+
     /// Runs an action by id. Set by the owner, because dispatch needs the
     /// selection variants and the applicability rules that live up there.
     var onPerformAction: ((String, Int) -> Void)?
@@ -334,6 +338,7 @@ final class GraphStore: GraphBackend {
                 // A removed *root* has to leave the workspace too, or it comes
                 // back on the next launch having been closed on this one.
                 let wasRoot = context.roots.contains(id)
+                onNodeRemoved?(id)
                 nav.remove(id)
                 context._remove(id)
                 if wasRoot { onRootsChanged?() }

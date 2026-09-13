@@ -67,7 +67,7 @@ struct SidebarTree: View {
             if let row = rows.first(where: { $0.nodeID == next }) { proxy.scrollTo(row.id) }
         case .left, .right:
             guard host.selection.count == 1, let id = host.selection.first,
-                  case .node(_, _, let expandable, let expanded, _, _)? =
+                  case .node(_, _, let expandable, let expanded, _, _, _)? =
                     rows.first(where: { $0.nodeID == id }), expandable
             else { return }
             let wantOpen = direction == .right
@@ -88,9 +88,10 @@ private struct SidebarRowView: View {
 
     var body: some View {
         switch row {
-        case .node(let id, let depth, let expandable, let expanded, let entry, let rowID):
+        case .node(let id, let depth, let expandable, let expanded, let entry, let rowID, let parent):
             NodeRow(nodeID: id, depth: depth, expandable: expandable,
-                    expanded: expanded, entry: entry, ordered: ordered, rowID: rowID)
+                    expanded: expanded, entry: entry, ordered: ordered, rowID: rowID,
+                    parent: parent)
         case .folder(let id, let name, let depth, let expanded, let entry):
             FolderRow(folderID: id, name: name, depth: depth,
                       expanded: expanded, entry: entry)
@@ -162,6 +163,8 @@ private struct NodeRow: View {
     let ordered: [NodeID]
     /// Where this row is, which is more than which node it shows.
     let rowID: String
+    /// What it was reached through, so it can be taken back out.
+    let parent: NodeID?
     @Environment(HostContext.self) private var host
     @Environment(AppModel.self) private var model
     @State private var dropTargeted = false
@@ -259,6 +262,12 @@ private struct NodeRow: View {
         let targets = selected && host.selection.count > 1 ? host.selection : [nodeID]
         if targets.count == 1 {
             Button("Open in New Tab") { model.openInNewTab(targets[0]) }
+        }
+        // Out of the collection this row is in — not every collection the
+        // node belongs to, and never deleting it. The same channel can be in
+        // three aggregators, and removing it from one leaves the other two.
+        if let parent, host.canApply(.release(targets, from: parent)) {
+            Button("Remove from Collection") { host.apply(.release(targets, from: parent)) }
         }
         let rootTargets = targets.filter(host.roots.contains)
         if !rootTargets.isEmpty {
