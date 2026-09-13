@@ -259,19 +259,25 @@ import Foundation
     }
 
     /// The model does not share the reader's own collections file.
+    ///
+    /// Not "starts empty": every workspace owns a collection for its top level,
+    /// so a fresh store never is.
     @Test func aModelWithATemporaryWorkspaceHasItsOwnCollections() throws {
         let one = try makeModel()
         let two = try makeModel()
-        one.collections.create(named: "Only here")
-        #expect(two.collections.all.isEmpty, "two models wrote to the same collections")
+        let made = one.collections.create(named: "Only here")
+        #expect(two.collections.record(made.id) == nil, "two models wrote to the same collections")
     }
 
-    /// New Collection makes one and puts it in the sidebar.
-    @Test func aNewCollectionIsMounted() throws {
+    /// A new folder is a collection now — which is why there is no longer a
+    /// separate New Collection that did the same thing another way.
+    @Test func aNewFolderIsACollection() throws {
         let model = try makeModel()
-        model.newCollection()
-        let record = try #require(model.collections.all.first)
-        #expect(model.host.roots.contains(NodeID(canonical: record.uri)))
+        model.createRootFolder(named: "Reading")
+        let folder = try #require(model.rootLayout.entries.compactMap { entry -> RootFolder? in
+            if case .folder(let folder) = entry { return folder } else { return nil }
+        }.first)
+        #expect(model.collections.record(folder.id)?.name == "Reading")
     }
 
     /// "Delete Collection" is offered for collections and nothing else — on a

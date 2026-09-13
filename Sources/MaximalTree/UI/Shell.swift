@@ -57,7 +57,6 @@ struct ContentView: View {
                             // offer, by the same names.
                             ActionItem(model: model, id: "workspace.addFolder")
                             ActionItem(model: model, id: "workspace.newFolder")
-                            ActionItem(model: model, id: "collection.new")
                         } label: {
                             Label("Add", systemImage: "plus")
                         }

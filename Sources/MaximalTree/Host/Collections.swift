@@ -123,6 +123,17 @@ final class CollectionStore: @unchecked Sendable {
     private let lock = NSLock()
     private let url: URL
     private var records: [CollectionRecord]
+    /// Records kept in memory and never written: the groups of a workspace
+    /// that is only passing through. Written once it is kept.
+    private var transient: Set<UUID> = []
+    private var _onChange: (@Sendable () -> Void)?
+
+    /// Called after any change, from whatever thread made it — so that
+    /// anything drawing collections can catch up with a change it did not make.
+    var onChange: (@Sendable () -> Void)? {
+        get { lock.withLock { _onChange } }
+        set { lock.withLock { _onChange = newValue } }
+    }
 
     init(url: URL = CollectionStore.defaultURL) {
         self.url = url
@@ -135,6 +146,34 @@ final class CollectionStore: @unchecked Sendable {
         .appendingPathComponent("MaximalTree/collections.json")
 
     var all: [CollectionRecord] { lock.withLock { records } }
+
+    var byID: [UUID: CollectionRecord] {
+        lock.withLock { Dictionary(records.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last }) }
+    }
+
+    /// Put these records in, replacing any with the same id, and take those
+    /// out — in one write. How a whole workspace's groups are written back.
+    func replace(upserting incoming: [CollectionRecord], removing gone: Set<UUID>,
+                 transient isTransient: Bool = false) {
+        update { records in
+            records.removeAll { gone.contains($0.id) }
+            for record in incoming {
+                if let slot = records.firstIndex(where: { $0.id == record.id }) {
+                    records[slot] = record
+                } else {
+                    records.append(record)
+                }
+            }
+        } whileLocked: {
+            if isTransient { transient.formUnion(incoming.map(\.id)) }
+            transient.subtract(gone)
+        }
+    }
+
+    /// Stop holding these only in memory.
+    func makePermanent(_ ids: Set<UUID>) {
+        update { _ in } whileLocked: { transient.subtract(ids) }
+    }
 
     func record(_ id: UUID) -> CollectionRecord? {
         lock.withLock { records.first { $0.id == id } }
@@ -188,15 +227,24 @@ final class CollectionStore: @unchecked Sendable {
         update { $0 = CollectionRules.remove(uri, from: $0) }
     }
 
-    private func update(_ change: (inout [CollectionRecord]) -> Void) {
-        let snapshot: [CollectionRecord] = lock.withLock {
-            change(&records)
-            return records
-        }
-        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+    private func update(_ change: (inout [CollectionRecord]) -> Void,
+                        whileLocked also: () -> Void = {}) {
+        let (snapshot, drawnChanged, storedChanged, notify):
+            ([CollectionRecord], Bool, Bool, (@Sendable () -> Void)?) = lock.withLock {
+                let before = records, wasTransient = transient
+                change(&records)
+                also()
+                return (records.filter { !transient.contains($0.id) },
+                        before != records, before != records || wasTransient != transient,
+                        _onChange)
+            }
+        // Nothing to write is nothing written: a group opened or closed passes
+        // through here with its members unchanged.
+        guard storedChanged, let data = try? JSONEncoder().encode(snapshot) else { return }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
         try? data.write(to: url, options: .atomic)
+        if drawnChanged { notify?() }
     }
 }
 

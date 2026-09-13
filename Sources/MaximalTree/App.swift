@@ -466,24 +466,32 @@ final class AppModel {
 
     init(host: HostContext, workspaceFile: URL? = nil) {
         self.host = host
-        self.workspaceStore = WorkspaceStore(fileURL: workspaceFile)
-        // Beside the workspaces, wherever those are — so a model built with a
-        // temporary workspace file never writes into the reader's own
-        // collections.
-        self.collections = CollectionStore(url: workspaceFile.map {
-            $0.deletingLastPathComponent().appendingPathComponent("collections.json")
-        } ?? CollectionStore.defaultURL)
+        self.workspaceStore = WorkspaceStore(fileURL: workspaceFile ?? Self.isolatedLibraryUnderTest())
+        // The workspace store's own, never a second copy: two stores on one
+        // file would each hold a different idea of the collections and write
+        // over each other. Beside the workspaces, so a model built on a
+        // temporary workspace file never touches the reader's collections.
+        self.collections = workspaceStore.collections
+    }
+
+    /// Somewhere to keep the library while the test runner is using the app.
+    ///
+    /// The tests run inside the app itself, which launches like any launch
+    /// and builds its model on the default library — the reader's own. So
+    /// every test run loaded it, saved it back, and, once groups became
+    /// collections, migrated it. Nothing a test asserts depends on that
+    /// model, and none of it should ever touch real data.
+    private static func isolatedLibraryUnderTest() -> URL? {
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        else { return nil }
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("maximaltree-test-host-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("workspaces.json")
     }
 
     /// The collections the host keeps — see `CollectionProvider`.
     let collections: CollectionStore
-
-    /// An empty collection, in the sidebar, with its name ready to type.
-    func newCollection() {
-        let record = collections.create(named: "New Collection")
-        host.mount(record.uri)
-        store?.beginRename(NodeID(canonical: record.uri))
-    }
 
     private func refreshHolders(of uri: String) {
         refresh(collections.holders(of: uri))

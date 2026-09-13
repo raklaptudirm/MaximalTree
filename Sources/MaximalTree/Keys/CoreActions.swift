@@ -461,9 +461,6 @@ extension AppModel {
         act("workspace.newFolder", "New Folder", image: "folder.badge.plus") { model, _ in
             model.beginCreateFolder()
         }
-        act("collection.new", "New Collection", image: "square.stack.3d.up.badge.plus") { model, _ in
-            model.newCollection()
-        }
         act("collection.delete", "Delete Collection", image: "trash",
             when: .custom { ctx in
                 !ctx.targets.isEmpty

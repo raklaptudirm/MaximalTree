@@ -267,6 +267,13 @@ struct Workspace: Codable, Identifiable, Equatable {
     /// everything. Stored as uris because a NodeID only exists once its
     /// provider has resolved one.
     var revealedNodes: [String] = []
+    /// The groups that are closed, as collection URIs.
+    ///
+    /// Closed rather than open, because a group is open unless someone closed
+    /// it. Here rather than on the collection: whether a group is open is how
+    /// this workspace's sidebar looks, and a collection can appear in more than
+    /// one.
+    var collapsedGroups: [String] = []
 
     /// Made on the spot for a file that belongs to nowhere else, and not
     /// written to the library.
@@ -296,7 +303,9 @@ struct Workspace: Codable, Identifiable, Equatable {
 
     // Decodes the current shape (`layout`) or a pre-folders workspace (`rootURIs`),
     // so an existing library keeps loading — everything becomes loose roots.
-    private enum CodingKeys: String, CodingKey { case id, name, layout, rootURIs, revealedNodes }
+    private enum CodingKeys: String, CodingKey {
+        case id, name, layout, rootURIs, revealedNodes, collapsedGroups
+    }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -309,6 +318,7 @@ struct Workspace: Codable, Identifiable, Equatable {
             self.layout = RootLayout(looseRoots: uris)
         }
         revealedNodes = try container.decodeIfPresent([String].self, forKey: .revealedNodes) ?? []
+        collapsedGroups = try container.decodeIfPresent([String].self, forKey: .collapsedGroups) ?? []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -317,6 +327,7 @@ struct Workspace: Codable, Identifiable, Equatable {
         try container.encode(name, forKey: .name)
         try container.encode(layout, forKey: .layout)
         try container.encode(revealedNodes, forKey: .revealedNodes)
+        try container.encode(collapsedGroups, forKey: .collapsedGroups)
     }
 }
 
@@ -424,10 +435,18 @@ final class WorkspaceStore {
         library.workspaces.first { $0.id == library.activeID } ?? library.workspaces[0]
     }
 
+    /// Where the groups actually live — see `GroupFold`.
+    let collections: CollectionStore
+
     /// - Parameter fileURL: Overridable for tests; defaults to Application Support.
-    init(fileURL: URL? = nil) {
+    /// - Parameter collections: The collections the groups are kept in. By
+    ///   default those beside the workspace file, so a store opened on a
+    ///   temporary file never touches the reader's own.
+    init(fileURL: URL? = nil, collections: CollectionStore? = nil) {
         let url = fileURL ?? Self.defaultURL()
         self.fileURL = url
+        self.collections = collections ?? CollectionStore(
+            url: url.deletingLastPathComponent().appendingPathComponent("collections.json"))
 
         if let data = try? Data(contentsOf: url),
            let lib = try? JSONDecoder().decode(WorkspaceLibrary.self, from: data),
@@ -448,8 +467,110 @@ final class WorkspaceStore {
         if !library.workspaces.contains(where: { $0.id == library.activeID }) {
             library.activeID = library.workspaces[0].id
         }
+        foldGroupsIntoCollections()
         healRecency()
         persist()
+        // A change made to the collections elsewhere — a file renamed under a
+        // group, something deleted — has to reach the sidebar that draws them.
+        self.collections.onChange = { [weak self] in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.reprojectAll() else { return }
+                    self.persist()
+                }
+            }
+        }
+    }
+
+    // MARK: Groups, as collections
+
+    /// Turn every workspace's folders into collections, once.
+    ///
+    /// A workspace whose top-level collection already exists has been done
+    /// already. One that has none has not — which is also what happens if the
+    /// collections are ever lost, and then the layout still written beside
+    /// them rebuilds them rather than leaving an empty sidebar.
+    private func foldGroupsIntoCollections() {
+        let existing = collections.byID
+        for i in library.workspaces.indices where existing[library.workspaces[i].id] == nil {
+            let workspace = library.workspaces[i]
+            backUpLibraryOnce()
+            collections.replace(
+                upserting: GroupFold.collections(from: workspace.layout.entries,
+                                                 workspace: workspace.id, named: workspace.name),
+                removing: [])
+            library.workspaces[i].collapsedGroups = GroupFold.collapsed(in: workspace.layout.entries)
+        }
+        reprojectAll()
+    }
+
+    /// A copy of the library as it was before any of this, kept once.
+    ///
+    /// The layout is still written beside the collections, so this is not the
+    /// only way back. It is the one that does not depend on this code being
+    /// right.
+    private func backUpLibraryOnce() {
+        let backup = fileURL.deletingLastPathComponent()
+            .appendingPathComponent("workspaces.pre-collections.json")
+        let files = FileManager.default
+        guard files.fileExists(atPath: fileURL.path), !files.fileExists(atPath: backup.path)
+        else { return }
+        try? files.copyItem(at: fileURL, to: backup)
+    }
+
+    /// Redraw one workspace's layout from its collections. Whether it changed.
+    @discardableResult
+    private func reproject(at i: Int) -> Bool {
+        let workspace = library.workspaces[i]
+        let records = collections.byID
+        guard records[workspace.id] != nil else { return false }
+        let entries = GroupFold.layout(workspace: workspace.id, records: records,
+                                       collapsed: Set(workspace.collapsedGroups))
+        guard entries != workspace.layout.entries else { return false }
+        library.workspaces[i].layout.entries = entries
+        return true
+    }
+
+    @discardableResult
+    private func reprojectAll() -> Bool {
+        var changed = false
+        for i in library.workspaces.indices where reproject(at: i) { changed = true }
+        return changed
+    }
+
+    /// Write a workspace's layout back into its collections.
+    ///
+    /// Groups this change took out of the sidebar are deleted — unless another
+    /// workspace still shows them, since collections are shared between
+    /// workspaces and one sidebar forgetting a group is not the others doing so.
+    private func writeThrough(_ i: Int, previous: [RootEntry]) {
+        let workspace = library.workspaces[i]
+        let incoming = GroupFold.collections(from: workspace.layout.entries,
+                                             workspace: workspace.id, named: workspace.name)
+        let before = Set(GroupFold.collections(from: previous, workspace: workspace.id,
+                                               named: workspace.name).map(\.id))
+        let orphaned = before.subtracting(incoming.map(\.id))
+            .subtracting(reachable(fromAllBut: workspace.id))
+        collections.replace(upserting: incoming, removing: orphaned,
+                            transient: workspace.isEphemeral)
+    }
+
+    /// Every collection a workspace's sidebar is made of.
+    private func reachable(from workspace: UUID,
+                           in records: [UUID: CollectionRecord]) -> Set<UUID> {
+        var seen: Set<UUID> = []
+        var pending = [workspace]
+        while let id = pending.popLast() {
+            guard seen.insert(id).inserted, let record = records[id] else { continue }
+            pending += record.members.compactMap(CollectionRef.id(from:))
+        }
+        return seen
+    }
+
+    private func reachable(fromAllBut excluded: UUID) -> Set<UUID> {
+        let records = collections.byID
+        return library.workspaces.filter { $0.id != excluded }
+            .reduce(into: Set<UUID>()) { $0.formUnion(reachable(from: $1.id, in: records)) }
     }
 
     // MARK: Roots of the active workspace
@@ -457,6 +578,9 @@ final class WorkspaceStore {
     /// Resolve the active workspace's stored roots to live NodeIDs, dropping any
     /// that no longer resolve. Read-only — see `restoreRoots` for the launch path.
     func resolvedRoots(using providers: [NodeProvider]) -> [NodeID] {
+        if let i = library.workspaces.firstIndex(where: { $0.id == library.activeID }) {
+            reproject(at: i)
+        }
         var entries = active.layout.entries
         var ids: [NodeID] = []
         RootLayout.resolveInPlace(&entries, using: providers, into: &ids)
@@ -577,6 +701,9 @@ final class WorkspaceStore {
     func create(named name: String) -> Workspace {
         let workspace = Workspace(name: name)
         library.workspaces.append(workspace)
+        collections.replace(upserting: GroupFold.collections(from: [], workspace: workspace.id,
+                                                             named: name),
+                            removing: [])
         persist()
         return workspace
     }
@@ -587,6 +714,10 @@ final class WorkspaceStore {
         var workspace = Workspace(name: name, rootURIs: rootURIs)
         workspace.isEphemeral = true
         library.workspaces.append(workspace)
+        // In memory only, like the workspace: written down if it is kept.
+        collections.replace(upserting: GroupFold.collections(from: workspace.layout.entries,
+                                                             workspace: workspace.id, named: name),
+                            removing: [], transient: true)
         return workspace
     }
 
@@ -596,12 +727,17 @@ final class WorkspaceStore {
         guard let i = library.workspaces.firstIndex(where: { $0.id == id }),
               library.workspaces[i].isEphemeral else { return }
         library.workspaces[i].isEphemeral = false
+        collections.makePermanent(reachable(from: id, in: collections.byID))
         persist()
     }
 
     func rename(_ id: UUID, to name: String) {
         guard let i = library.workspaces.firstIndex(where: { $0.id == id }) else { return }
         library.workspaces[i].name = name
+        if var top = collections.record(id) {
+            top.name = name
+            collections.replace(upserting: [top], removing: [])
+        }
         persist()
     }
 
@@ -611,6 +747,10 @@ final class WorkspaceStore {
     func delete(_ id: UUID) {
         guard library.workspaces.count > 1,
               let i = library.workspaces.firstIndex(where: { $0.id == id }) else { return }
+        // Its groups go with it, except any another workspace still shows.
+        let doomed = reachable(from: id, in: collections.byID)
+            .subtracting(reachable(fromAllBut: id))
+        collections.replace(upserting: [], removing: doomed)
         library.workspaces.remove(at: i)
         library.recentIDs.removeAll { $0 == id }
         // The most recently used one, which is where you were before here.
@@ -660,10 +800,28 @@ final class WorkspaceStore {
 
     // MARK: Persistence
 
+    /// Change the active workspace, with its groups kept in its collections.
+    ///
+    /// Every group operation above is a pure function over a layout, and they
+    /// are left exactly as they were: this starts from the collections, lets
+    /// the operation work, and writes the result back.
+    ///
+    /// *Starts from the collections* is the part that matters. The layout in
+    /// memory is only as fresh as the last redraw, and something else — a file
+    /// renamed inside a group — can change the collections in between. An
+    /// operation working on the stale copy would write it back and quietly
+    /// undo that change.
     private func mutateActive(_ change: (inout Workspace) -> Void) {
         guard let i = library.workspaces.firstIndex(where: { $0.id == library.activeID })
         else { return }
+        reproject(at: i)
+        let previous = library.workspaces[i].layout.entries
         change(&library.workspaces[i])
+        let current = library.workspaces[i].layout.entries
+        if current != previous {
+            library.workspaces[i].collapsedGroups = GroupFold.collapsed(in: current)
+            writeThrough(i, previous: previous)
+        }
         persist()
     }
 
