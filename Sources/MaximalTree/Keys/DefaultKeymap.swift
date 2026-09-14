@@ -129,7 +129,7 @@ enum DefaultKeymap {
         // from the Finder lands.
         map.bind("SPC w k", to: "workspace.keep")
         // The sidebar's own folders, which organise roots without being nodes.
-        map.bind("SPC w f", to: "workspace.newFolder")
+        map.bind("SPC w f", to: "collection.new")
         map.bind("g w", to: "workspace.next")
         map.bind("g W", to: "workspace.previous")
 

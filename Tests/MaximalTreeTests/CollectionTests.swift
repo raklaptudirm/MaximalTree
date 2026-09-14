@@ -271,13 +271,13 @@ import Foundation
 
     /// A new folder is a collection now — which is why there is no longer a
     /// separate New Collection that did the same thing another way.
-    @Test func aNewFolderIsACollection() throws {
+    @Test func aNewCollectionIsAGroupInTheSidebar() throws {
         let model = try makeModel()
-        model.createRootFolder(named: "Reading")
+        model.newCollection()
         let folder = try #require(model.rootLayout.entries.compactMap { entry -> RootFolder? in
             if case .folder(let folder) = entry { return folder } else { return nil }
         }.first)
-        #expect(model.collections.record(folder.id)?.name == "Reading")
+        #expect(model.collections.record(folder.id)?.name == "New Collection")
     }
 
     /// "Delete Collection" is offered for collections and nothing else — on a

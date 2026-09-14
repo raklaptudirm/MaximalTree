@@ -458,8 +458,8 @@ extension AppModel {
             enabled: { $0.activeWorkspaceIsEphemeral }) { model, _ in
             model.keepActiveWorkspace()
         }
-        act("workspace.newFolder", "New Folder", image: "folder.badge.plus") { model, _ in
-            model.beginCreateFolder()
+        act("collection.new", "New Collection", image: "rectangle.stack.badge.plus") { model, _ in
+            model.newCollection()
         }
         act("collection.delete", "Delete Collection", image: "trash",
             when: .custom { ctx in
@@ -467,7 +467,9 @@ extension AppModel {
                     && ctx.targets.allSatisfy { $0.scheme == CollectionRef.scheme }
             }) { model, ctx in
             // Its members are not deleted: they go where the collection was.
-            model.host.apply(.delete(ctx.targets))
+            // Through the workspace store rather than the provider, so the row
+            // is gone when you click rather than a moment after.
+            model.deleteGroups(ctx.targets)
         }
         act("workspace.addFolder", "Mount Root…",
             image: "externaldrive.badge.plus") { model, _ in model.addFolder() }
@@ -555,8 +557,12 @@ extension AppModel {
         sidebar.toggle(node)
     }
 
+    /// What a row was reached through — a group's members have no listing to
+    /// look themselves up in, so the row's own record is the one that knows.
     private func parentOfNode(_ node: NodeID) -> NodeID? {
-        orderedExplorerNodes().first { host.cachedChildren(of: $0)?.contains(node) == true }
+        guard case .node(_, _, _, _, _, _, let parent)? = sidebarRows().first(where: { $0.nodeID == node })
+        else { return nil }
+        return parent
     }
 
     // MARK: Surfaces

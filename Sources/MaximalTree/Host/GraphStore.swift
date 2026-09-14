@@ -470,6 +470,22 @@ final class GraphStore: GraphBackend {
         return node
     }
 
+    private var nodesInFlight: Set<NodeID> = []
+
+    /// Fetch the records of nodes nothing has listed — the groups, which the
+    /// sidebar draws from its own tree rather than from a listing, so without
+    /// this they would be drawn by their raw URI instead of their name.
+    func ensureNodes(_ ids: [NodeID]) {
+        for id in ids where context.node(id) == nil && !nodesInFlight.contains(id) {
+            guard let p = provider(for: id) else { continue }
+            nodesInFlight.insert(id)
+            Task { @MainActor in
+                if let n = await p.node(for: id) { ingest(n) }
+                nodesInFlight.remove(id)
+            }
+        }
+    }
+
     private func ingestNode(_ id: NodeID) {
         guard let p = provider(for: id) else { return }
         Task { @MainActor in

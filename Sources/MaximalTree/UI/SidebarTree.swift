@@ -44,7 +44,10 @@ struct SidebarTree: View {
             }
         }
         .overlay {
-            if host.roots.isEmpty {
+            // The tree, not the mounted roots: a workspace holding only
+            // groups has no roots, and used to be told it was empty with the
+            // groups drawn right there underneath the message.
+            if model.rootLayout.entries.isEmpty {
                 ContentUnavailableView("No Roots", systemImage: "tray",
                                        description: Text("Add a root to get started."))
             }
@@ -92,9 +95,6 @@ private struct SidebarRowView: View {
             NodeRow(nodeID: id, depth: depth, expandable: expandable,
                     expanded: expanded, entry: entry, ordered: ordered, rowID: rowID,
                     parent: parent)
-        case .folder(let id, let name, let depth, let expanded, let entry):
-            FolderRow(folderID: id, name: name, depth: depth,
-                      expanded: expanded, entry: entry)
         case .more(let parent, let depth, _):
             MoreRow(parent: parent, depth: depth)
         }
@@ -173,6 +173,16 @@ private struct NodeRow: View {
 
     private var selected: Bool { host.selection.contains(nodeID) }
 
+    /// The collection this row is, if it is a group.
+    private var group: UUID? { CollectionRef.id(from: nodeID.uri) }
+
+    /// A group's name from the tree, for the moment before its record arrives —
+    /// otherwise a new group is drawn as its raw URI until it is fetched.
+    private var groupName: String? {
+        guard let group else { return nil }
+        return RootLayout.folderList(model.rootLayout.entries).first { $0.folder.id == group }?.folder.name
+    }
+
     var body: some View {
         let node = host.node(nodeID)
         RowChrome(depth: depth, expandable: expandable, expanded: expanded,
@@ -180,7 +190,7 @@ private struct NodeRow: View {
                   toggle: {
                       withAnimation(.easeOut(duration: 0.15)) { model.sidebar.toggle(nodeID) }
                   }) {
-            NodeIconView(node?.icon)
+            NodeIconView(node?.icon ?? (group == nil ? nil : NodeIcon("square.stack", tint: .secondary)))
             if host.pendingRename == nodeID {
                 // The host-owned inline rename (see HostContext.beginRename):
                 // Esc cancels, Return and focus loss commit.
@@ -197,12 +207,18 @@ private struct NodeRow: View {
                         if !focused, host.pendingRename == nodeID { commitRename(of: node) }
                     }
             } else {
-                Text(node?.label ?? nodeID.uri)
+                Text(node?.label ?? groupName ?? nodeID.uri)
                     .lineLimit(1)
             }
         }
         .onTapGesture { click() }
-        .draggable(dragPayload)
+        // Not `.draggable`: that has no moment when the drag starts, and a drop
+        // needs to know where the rows came from to move them rather than add.
+        .onDrag {
+            let payload = dragPayload
+            model.sidebar.drag = (payload.split(separator: "\n").map(String.init), parent)
+            return NSItemProvider(object: payload as NSString)
+        }
         .overlay {
             if dropTargeted {
                 RoundedRectangle(cornerRadius: 5)
@@ -211,12 +227,12 @@ private struct NodeRow: View {
             }
         }
         .modifier(DropTargetModifier(
-            // A collection takes a drop however it is drawn; a container that
-            // only holds things by containment still has to be one you can
-            // open, as before.
-            enabled: expandable || node?.accepts != nil,
+            // A group takes anything; any other node takes a drop only if it
+            // contains things, or accepts them as members.
+            enabled: group != nil || expandable || node?.accepts != nil,
             isTargeted: $dropTargeted,
             perform: { uris in
+                if let group { return model.drop(uris, onto: group) }
                 let ids = uris
                     .flatMap { $0.split(separator: "\n") }
                     .compactMap { NodeID(String($0)) }
@@ -251,8 +267,16 @@ private struct NodeRow: View {
         model.sidebar.anchor = anchor
         host.select(Array(next))
         // A lone plain selection also drives the canvas, Finder-style;
-        // multi-select only feeds actions.
-        if next == [nodeID] { host.open(nodeID) }
+        // multi-select only feeds actions. Except a group: it has nothing to
+        // draw in a pane, and replacing the tab you were reading with "No View"
+        // on every click is not what clicking a group has ever done. It opens
+        // and closes, the way a folder did.
+        guard next == [nodeID] else { return }
+        if group != nil, expandable {
+            withAnimation(.easeOut(duration: 0.15)) { model.sidebar.toggle(nodeID) }
+        } else if group == nil {
+            host.open(nodeID)
+        }
     }
 
     @ViewBuilder
@@ -266,15 +290,22 @@ private struct NodeRow: View {
         // Out of the collection this row is in — not every collection the
         // node belongs to, and never deleting it. The same channel can be in
         // three aggregators, and removing it from one leaves the other two.
-        if let parent, host.canApply(.release(targets, from: parent)) {
-            Button("Remove from Collection") { host.apply(.release(targets, from: parent)) }
+        // Rows the sidebar arranges — at the top level, or in a group — can be
+        // moved between places and taken out of the one they are in. A row
+        // inside a folder on disk is the folder's, not the sidebar's.
+        let inGroup = parent.flatMap { CollectionRef.id(from: $0.uri) } != nil
+        if parent == nil || inGroup {
+            MoveToCollectionMenu(targets: targets, parent: parent)
         }
-        let rootTargets = targets.filter(host.roots.contains)
-        if !rootTargets.isEmpty {
-            MoveToFolderMenu(roots: rootTargets)
-            if rootTargets.count == 1 {
-                Button("Remove from Sidebar") { model.removeRoot(rootTargets[0]) }
-            }
+        if inGroup {
+            Button("Remove from Collection") { model.remove(targets, from: parent) }
+        } else if parent == nil {
+            // For a collection that lives only here this deletes it, which is
+            // what removing something that exists only in the sidebar means.
+            Button("Remove from Sidebar") { model.remove(targets, from: nil) }
+        }
+        if let group {
+            Button("New Collection Inside") { model.newCollection(in: group) }
         }
         Divider()
         // Grouped by contributing plugin and ordered by how close each action
@@ -316,65 +347,6 @@ private struct NodeRow: View {
     }
 }
 
-/// A workspace folder: expansion, rename/delete menu, drag (as an entry ref),
-/// and dropping onto it nests the payload inside.
-private struct FolderRow: View {
-    let folderID: UUID
-    let name: String
-    let depth: Int
-    let expanded: Bool
-    let entry: SidebarRow.EntryPosition
-    @Environment(HostContext.self) private var host
-    @Environment(AppModel.self) private var model
-    @State private var dropTargeted = false
-
-    var body: some View {
-        RowChrome(depth: depth, expandable: true, expanded: expanded,
-                  selected: false,
-                  toggle: {
-                      withAnimation(.easeOut(duration: 0.15)) {
-                          model.setRootFolderExpanded(folderID, !expanded)
-                      }
-                  }) {
-            Image(systemName: "folder.fill").foregroundStyle(.tint)
-            Text(name).lineLimit(1)
-        }
-        .onTapGesture {
-            withAnimation(.easeOut(duration: 0.15)) {
-                model.setRootFolderExpanded(folderID, !expanded)
-            }
-        }
-        .draggable(EntryRef.folder(folderID).token)
-        .overlay {
-            if dropTargeted {
-                RoundedRectangle(cornerRadius: 5)
-                    .strokeBorder(Color.accentColor, lineWidth: 2)
-                    .padding(.horizontal, 8)
-            }
-        }
-        .dropDestination(for: String.self) { items, _ in
-            let refs = model.entryRefs(from: items, roots: host.roots)
-            guard !refs.isEmpty else { return false }
-            model.moveEntries(refs, toFolder: folderID, at: nil)
-            return true
-        } isTargeted: { dropTargeted = $0 }
-        .contextMenu {
-            Button("Rename Folder…") { model.beginRenameFolder(folder) }
-            Button("New Folder Inside") { model.beginCreateFolder(in: folderID) }
-            Button("Delete Folder", role: .destructive) { model.deleteRootFolder(folderID) }
-        }
-        .overlay(alignment: .top) {
-            InsertionStrip(container: entry.container, index: entry.index)
-        }
-    }
-
-    private var folder: RootFolder {
-        RootLayout.folderList(model.rootLayout.entries)
-            .first { $0.folder.id == folderID }?.folder
-            ?? RootFolder(id: folderID, name: name, entries: [], isExpanded: expanded)
-    }
-}
-
 private struct MoreRow: View {
     let parent: NodeID
     let depth: Int
@@ -398,30 +370,44 @@ private struct MoreRow: View {
     }
 }
 
-/// "Move to Folder ▸ …" for root targets (shared by row context menus).
-private struct MoveToFolderMenu: View {
-    let roots: [NodeID]
+/// "Move to Collection ▸ …" — every group, then the top level.
+private struct MoveToCollectionMenu: View {
+    let targets: [NodeID]
+    let parent: NodeID?
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        let refs = roots.map { EntryRef.root($0.uri) }
-        Menu("Move to Folder") {
-            ForEach(RootLayout.folderList(model.rootLayout.entries), id: \.folder.id) { item in
+        let moving = Set(targets.compactMap { CollectionRef.id(from: $0.uri) })
+        Menu("Move to Collection") {
+            ForEach(Self.destinations(model.rootLayout.entries, excluding: moving),
+                    id: \.folder.id) { item in
                 Button(String(repeating: "   ", count: item.depth) + item.folder.name) {
-                    model.moveEntries(refs, toFolder: item.folder.id)
+                    model.move(targets, from: parent, to: item.folder.id)
                 }
             }
             Divider()
-            Button("Top Level") { model.moveEntries(refs, toFolder: nil) }
-            Button("New Folder…") { model.beginCreateFolder(movingIn: roots.map(\.uri)) }
+            Button("Top Level") { model.move(targets, from: parent, to: nil) }
+            Button("New Collection…") { model.newCollection(movingIn: targets, from: parent) }
+        }
+    }
+
+    /// Every group a move could land in: not the groups being moved, and
+    /// nothing inside them — a group cannot go into itself.
+    static func destinations(_ entries: [RootEntry], excluding: Set<UUID>,
+                             depth: Int = 0) -> [(folder: RootFolder, depth: Int)] {
+        entries.flatMap { entry -> [(folder: RootFolder, depth: Int)] in
+            guard case .folder(let folder) = entry, !excluding.contains(folder.id) else { return [] }
+            return [(folder, depth)] + destinations(folder.entries, excluding: excluding,
+                                                    depth: depth + 1)
         }
     }
 }
 
 // MARK: - Drop helpers
 
-/// A thin strip along a top-level row's top edge: dropping there inserts the
-/// dragged entries before it (position-aware reorder). Invisible until hovered.
+/// A thin strip along a row's top edge, for any row the sidebar arranges:
+/// dropping there puts the dragged rows before it, in the same place. Invisible
+/// until hovered.
 private struct InsertionStrip: View {
     let container: UUID?
     let index: Int
@@ -436,10 +422,7 @@ private struct InsertionStrip: View {
             .frame(height: targeted ? max(minHeight, 3) : minHeight)
             .padding(.horizontal, 8)
             .dropDestination(for: String.self) { items, _ in
-                let refs = model.entryRefs(from: items, roots: host.roots)
-                guard !refs.isEmpty else { return false }
-                model.moveEntries(refs, toFolder: container, at: index)
-                return true
+                model.drop(items, onto: container, at: index)
             } isTargeted: { targeted = $0 }
     }
 }

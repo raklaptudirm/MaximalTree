@@ -204,6 +204,35 @@ import Foundation
         #expect(reopened.active.layout.entries == layout)
     }
 
+    /// A library written by 3a names the closed groups; groups are nodes now,
+    /// open only if opened. The ones that were open have to stay open — and
+    /// the separate list has to go, or it would be read again next launch.
+    @Test func groupsThatWereOpenStayOpen() throws {
+        let dir = try directory()
+        let file = dir.appendingPathComponent("workspaces.json")
+        // What 3a leaves behind: the groups as collections, and which were closed.
+        let seed = WorkspaceStore(fileURL: file)
+        let open = seed.createGroup(named: "Open")
+        let closed = seed.createGroup(named: "Closed")
+        var json = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as! [String: Any]
+        var workspaces = json["workspaces"] as! [[String: Any]]
+        workspaces[0]["collapsedGroups"] = [CollectionRef.uri(for: closed)]
+        workspaces[0]["revealedNodes"] = []
+        json["workspaces"] = workspaces
+        try JSONSerialization.data(withJSONObject: json).write(to: file)
+
+        let reopened = WorkspaceStore(fileURL: file)
+
+        #expect(reopened.active.revealedNodes.contains(CollectionRef.uri(for: open)))
+        #expect(!reopened.active.revealedNodes.contains(CollectionRef.uri(for: closed)))
+        #expect(reopened.active.collapsedGroups == nil, "the old list survived to be read again")
+        // And the layout still written beside the collections agrees, for a
+        // build from before this.
+        let folders = RootLayout.folderList(reopened.active.layout.entries).map(\.folder)
+        #expect(folders.first { $0.id == open }?.isExpanded == true)
+        #expect(folders.first { $0.id == closed }?.isExpanded == false)
+    }
+
     // MARK: Changes on the way through
 
     /// The hazard the store is built around.
@@ -216,25 +245,26 @@ import Foundation
         let dir = try directory()
         let file = dir.appendingPathComponent("workspaces.json")
         let store = WorkspaceStore(fileURL: file)
-        let folder = store.createFolder(named: "Drafts")
+        let folder = store.createGroup(named: "Drafts")
         store.reconcileRoots([NodeID("file:///docs/draft.typ")!], placingNewInto: folder)
 
         // What a rename does, from outside the workspace store, in the same turn.
         store.collections.remap(from: "file:///docs/draft.typ", to: "file:///docs/final.typ")
-        // Any group operation that rewrites the layout.
-        store.setFolderExpanded(folder, false)
+        // A group operation on the same group, before any redraw.
+        store.add(["file:///docs/other.typ"], to: folder, at: nil)
 
-        #expect(store.collections.record(folder)?.members == ["file:///docs/final.typ"],
-                "the stale layout was written back over the rename")
+        #expect(store.collections.record(folder)?.members
+                    == ["file:///docs/final.typ", "file:///docs/other.typ"],
+                "a stale copy was written back over the rename")
     }
 
     /// A deleted folder's collection goes — its contents spilled, as always.
     @Test func deletingAFolderDeletesItsCollection() throws {
         let store = WorkspaceStore(fileURL: try directory().appendingPathComponent("workspaces.json"))
-        let folder = store.createFolder(named: "Doomed")
+        let folder = store.createGroup(named: "Doomed")
         store.reconcileRoots([NodeID("file:///x")!], placingNewInto: folder)
 
-        store.deleteFolder(folder)
+        store.deleteGroup(folder)
 
         #expect(store.collections.record(folder) == nil)
         #expect(store.active.layout.entries == [.root("file:///x")])
@@ -261,8 +291,8 @@ import Foundation
     @Test func deletingAWorkspaceKeepsGroupsOthersStillShow() throws {
         let store = WorkspaceStore(fileURL: try directory().appendingPathComponent("workspaces.json"))
         let first = store.active
-        let own = store.createFolder(named: "Only mine")
-        let shared = store.createFolder(named: "Shared")
+        let own = store.createGroup(named: "Only mine")
+        let shared = store.createGroup(named: "Shared")
         let second = store.create(named: "Second")
         // The second workspace shows the shared group too.
         store.collections.adopt([CollectionRef.uri(for: shared)], into: second.id, at: nil)

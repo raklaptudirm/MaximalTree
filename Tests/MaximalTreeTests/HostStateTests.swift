@@ -400,83 +400,85 @@ import Foundation
 
     private func ids(_ uris: String...) -> [NodeID] { uris.compactMap(NodeID.init) }
 
-    @Test func reconcilePlacesNewRootsIntoTheTargetFolder() throws {
+    private func group(_ id: UUID) -> String { CollectionRef.uri(for: id) }
+
+    @Test func reconcilePlacesNewRootsIntoTheTargetGroup() throws {
         let store = try store()
         store.reconcileRoots(ids("file:///a"))
-        let folder = store.createFolder(named: "Work")
+        let group = store.createGroup(named: "Work")
 
-        store.reconcileRoots(ids("file:///a", "file:///b"), placingNewInto: folder)
-        #expect(store.folderID(containing: "file:///b") == folder)
-        #expect(store.folderID(containing: "file:///a") == nil, "existing roots aren't moved")
+        store.reconcileRoots(ids("file:///a", "file:///b"), placingNewInto: group)
+        #expect(store.groupContaining("file:///b") == group)
+        #expect(store.groupContaining("file:///a") == nil, "existing roots aren't moved")
     }
 
-    @Test func deletingAFolderKeepsItsRootsAsLoose() throws {
+    @Test func deletingAGroupKeepsItsRootsAsLoose() throws {
         let store = try store()
         store.reconcileRoots(ids("file:///a"))
-        let folder = store.createFolder(named: "Work")
-        store.moveRoots(["file:///a"], toFolder: folder)
-        #expect(store.folderID(containing: "file:///a") == folder)
+        let group = store.createGroup(named: "Work")
+        store.move(["file:///a"], from: nil, to: group, at: nil)
+        #expect(store.groupContaining("file:///a") == group)
 
-        store.deleteFolder(folder)
-        #expect(store.folderID(containing: "file:///a") == nil)
-        #expect(store.active.rootURIs.contains("file:///a"), "the root survives its folder")
+        store.deleteGroup(group)
+        #expect(store.groupContaining("file:///a") == nil)
+        #expect(store.active.rootURIs.contains("file:///a"), "the root survives its group")
     }
 
-    @Test func reconcilePrunesVanishedRootsFromFoldersButKeepsTheFolder() throws {
+    @Test func reconcilePrunesVanishedRootsFromGroupsButKeepsTheGroup() throws {
         let store = try store()
         store.reconcileRoots(ids("file:///a", "file:///b"))
-        let folder = store.createFolder(named: "Work")
-        store.moveRoots(["file:///a", "file:///b"], toFolder: folder)
+        let group = store.createGroup(named: "Work")
+        store.move(["file:///a", "file:///b"], from: nil, to: group, at: nil)
 
         store.reconcileRoots(ids("file:///a"))   // b unmounted
-        #expect(store.folderID(containing: "file:///a") == folder)
+        #expect(store.groupContaining("file:///a") == group)
         #expect(store.active.rootURIs == ["file:///a"])
-        // Empty or not, the folder is intentional — it stays.
+        // Empty or not, the group is intentional — it stays.
         #expect(store.active.layout.entries.contains {
-            if case .folder(let f) = $0 { return f.id == folder } else { return false }
+            if case .folder(let f) = $0 { return f.id == group } else { return false }
         })
     }
 
-    @Test func foldersNestAndMoveByIndex() throws {
+    @Test func groupsNestAndMoveByIndex() throws {
         let store = try store()
         store.reconcileRoots(ids("file:///a", "file:///b", "file:///c"))
-        let outer = store.createFolder(named: "Outer")
-        let inner = store.createFolder(named: "Inner", in: outer)
+        let outer = store.createGroup(named: "Outer")
+        let inner = store.createGroup(named: "Inner", in: outer)
 
         // Nesting: Inner sits inside Outer.
-        #expect(RootLayout.folder(outer, contains: inner, in: store.active.layout.entries))
+        #expect(store.collections.record(outer)?.members.contains(group(inner)) == true)
 
         // Position: put c first at the top level.
-        store.moveEntries([.root("file:///c")], toFolder: nil, at: 0)
+        store.move(["file:///c"], from: nil, to: nil, at: 0)
         #expect(store.active.layout.rootURIs.first == "file:///c")
 
-        // Move a root into the nested Inner folder.
-        store.moveEntries([.root("file:///a")], toFolder: inner, at: nil)
-        #expect(store.folderID(containing: "file:///a") == inner)
+        // Move a root into the nested Inner group.
+        store.move(["file:///a"], from: nil, to: inner, at: nil)
+        #expect(store.groupContaining("file:///a") == inner)
     }
 
-    @Test func aFolderCannotBeMovedIntoItsOwnDescendant() throws {
+    @Test func aGroupCannotBeMovedIntoItsOwnDescendant() throws {
         let store = try store()
-        let outer = store.createFolder(named: "Outer")
-        let inner = store.createFolder(named: "Inner", in: outer)
+        let outer = store.createGroup(named: "Outer")
+        let inner = store.createGroup(named: "Inner", in: outer)
 
-        // Refused: Outer into Inner would make a cycle. Layout is unchanged.
+        // Refused: Outer into Inner would make a cycle. Nothing changes.
         let before = store.active.layout
-        store.moveEntries([.folder(outer)], toFolder: inner, at: nil)
+        store.move([group(outer)], from: nil, to: inner, at: nil)
         #expect(store.active.layout == before)
-        #expect(RootLayout.folder(outer, contains: inner, in: store.active.layout.entries))
+        #expect(store.collections.record(outer)?.members.contains(group(inner)) == true)
     }
 
-    @Test func deletingANestedFolderSpillsItsContentsInPlace() throws {
+    @Test func deletingANestedGroupSpillsItsContentsInPlace() throws {
         let store = try store()
         store.reconcileRoots(ids("file:///a"))
-        let outer = store.createFolder(named: "Outer")
-        let inner = store.createFolder(named: "Inner", in: outer)
-        store.moveEntries([.root("file:///a")], toFolder: inner, at: nil)
+        let outer = store.createGroup(named: "Outer")
+        let inner = store.createGroup(named: "Inner", in: outer)
+        store.move(["file:///a"], from: nil, to: inner, at: nil)
 
-        store.deleteFolder(inner)
+        store.deleteGroup(inner)
         // a survives, now directly inside Outer (Inner's old home).
-        #expect(store.folderID(containing: "file:///a") == outer)
+        #expect(store.groupContaining("file:///a") == outer)
         #expect(store.active.rootURIs == ["file:///a"])
     }
 
@@ -484,8 +486,8 @@ import Foundation
     /// differs, not treat it as "old one vanished, new one appeared". Providers
     /// build ids with `NodeID(canonical:)` but resolve through the normalizing
     /// initializer, so the two can disagree — and the old prune-and-append lost
-    /// the root's folder and position, which reads as the root disappearing.
-    @Test func resolvingRewritesRootsInPlaceInsideTheirFolder() throws {
+    /// the root's group and position, which reads as the root disappearing.
+    @Test func restoringRewritesRootsInPlaceInsideTheirGroup() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("restore-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -497,22 +499,20 @@ import Foundation
             of: dir.lastPathComponent, with: "./\(dir.lastPathComponent)")
         #expect(stored != canonical)
 
-        var entries: [RootEntry] = [
-            .folder(RootFolder(name: "Work", entries: [.root(stored)])),
-        ]
-        var ids: [NodeID] = []
-        RootLayout.resolveInPlace(&entries, using: [FileSystemProvider()], into: &ids)
+        let store = try store()
+        let work = store.createGroup(named: "Work")
+        store.add([stored], to: work, at: nil)
 
-        #expect(ids.map(\.uri) == [canonical], "resolves to the live root")
-        #expect(entries.count == 1, "no duplicate re-appended at the top level")
-        guard case .folder(let folder) = entries[0] else {
-            Issue.record("the folder vanished"); return
-        }
-        #expect(folder.entries == [.root(canonical)],
-                "rewritten in place — still in its folder")
+        let restored = store.restoreRoots(using: [FileSystemProvider()])
+
+        #expect(restored.map(\.uri) == [canonical], "resolves to the live root")
+        #expect(store.collections.record(work)?.members == [canonical],
+                "rewritten in place — still in its group")
+        #expect(store.collections.record(store.active.id)?.members == [group(work)],
+                "no duplicate re-appended at the top level")
     }
 
-    @Test func restorePreservesFolderMembershipAcrossLaunches() throws {
+    @Test func restorePreservesGroupMembershipAcrossLaunches() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("restore2-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -521,12 +521,12 @@ import Foundation
         let store = try store()
         let root = try #require(NodeID(fileURL: dir))
         store.reconcileRoots([root])
-        let folder = store.createFolder(named: "Work")
-        store.moveRoots([root.uri], toFolder: folder)
+        let group = store.createGroup(named: "Work")
+        store.move([root.uri], from: nil, to: group, at: nil)
 
         let restored = store.restoreRoots(using: [FileSystemProvider()])
         #expect(restored == [root])
-        #expect(store.folderID(containing: root.uri) == folder)
+        #expect(store.groupContaining(root.uri) == group)
     }
 
     /// A root whose provider isn't loaded (plugin missing this launch) must not
@@ -538,14 +538,95 @@ import Foundation
         #expect(store.active.rootURIs == ["stub://thing"])
     }
 
-    @Test func entryRefTokensRoundTrip() {
-        let id = UUID()
-        #expect(EntryRef(token: EntryRef.root("file:///x").token) == .root("file:///x"))
-        #expect(EntryRef(token: EntryRef.folder(id).token) == .folder(id))
-        #expect(EntryRef(token: "garbage") == nil)
+    /// And stays kept when something else is mounted afterwards. It never was:
+    /// it is missing from the live roots because nothing can load it, and the
+    /// old reconcile pruned everything missing from them — silently, the next
+    /// time anything was mounted.
+    @Test func rootsWithNoProviderSurviveTheNextMount() throws {
+        let store = try store()
+        store.reconcileRoots([NodeID("file:///a")!, NodeID("nope://x")!])
+        let live = store.restoreRoots(using: [])          // nothing is loadable
+        store.reconcileRoots(live + [NodeID("file:///new")!])
+        #expect(store.active.layout.rootURIs.contains("nope://x"),
+                "a root was dropped because its plugin was not loaded")
     }
 
-    @Test func foldersAndMembershipPersist() throws {
+    /// Dropping on the strip above C means before C. The old layout removed
+    /// the row first and then inserted at the index measured before removal,
+    /// so anything moved downward landed one place past where it was aimed.
+    @Test func reorderingDownwardLandsBeforeTheTarget() throws {
+        let store = try store()
+        store.reconcileRoots(ids("file:///a", "file:///b", "file:///c"))
+        // The strip above C sits at index 2.
+        store.move(["file:///a"], from: nil, to: nil, at: 2)
+        #expect(store.active.layout.entries == [.root("file:///b"), .root("file:///a"),
+                                                .root("file:///c")])
+    }
+
+    /// Membership: the same root in two groups, taken out of one, is still in
+    /// the other — and still mounted.
+    @Test func removingFromOneGroupLeavesTheOther() throws {
+        let store = try store()
+        store.reconcileRoots(ids("file:///a"))
+        let left = store.createGroup(named: "Left")
+        let right = store.createGroup(named: "Right")
+        store.move(["file:///a"], from: nil, to: left, at: nil)
+        store.add(["file:///a"], to: right, at: nil)
+
+        store.remove(["file:///a"], from: left)
+
+        #expect(store.collections.record(left)?.members == [])
+        #expect(store.collections.record(right)?.members == ["file:///a"])
+        #expect(store.active.rootURIs == ["file:///a"], "no longer mounted")
+    }
+
+    /// A collection lives only in sidebars, so removing one from the only
+    /// sidebar that shows it deletes it — along with any group inside it that
+    /// nothing else holds — rather than leaving records nothing can reach.
+    @Test func removingACollectionFromTheOnlySidebarShowingItDeletesIt() throws {
+        let store = try store()
+        let outer = store.createGroup(named: "Outer")
+        let inner = store.createGroup(named: "Inner", in: outer)
+        store.add(["file:///a"], to: inner, at: nil)
+
+        store.remove([group(outer)], from: nil)
+
+        #expect(store.collections.record(outer) == nil, "left behind where nothing can reach it")
+        #expect(store.collections.record(inner) == nil, "a group inside it was left behind")
+        #expect(store.active.layout.entries.isEmpty)
+    }
+
+    /// Not when something else still shows it: that is only taking it out of
+    /// one place.
+    @Test func removingACollectionShownElsewhereKeepsIt() throws {
+        let store = try store()
+        let shared = store.createGroup(named: "Shared")
+        let nested = store.createGroup(named: "Nested", in: shared)
+        let other = store.create(named: "Other")
+        store.collections.adopt([group(shared)], into: other.id, at: nil)
+
+        store.remove([group(shared)], from: nil)
+
+        #expect(store.collections.record(shared) != nil, "another workspace still shows it")
+        #expect(store.collections.record(nested) != nil)
+    }
+
+    /// And a group inside the removed one is kept if another group holds it
+    /// too — it still lives somewhere.
+    @Test func aNestedGroupHeldElsewhereSurvivesItsParentsRemoval() throws {
+        let store = try store()
+        let doomed = store.createGroup(named: "Doomed")
+        let kept = store.createGroup(named: "Kept")
+        let both = store.createGroup(named: "Both", in: doomed)
+        store.add([group(both)], to: kept, at: nil)
+
+        store.remove([group(doomed)], from: nil)
+
+        #expect(store.collections.record(doomed) == nil)
+        #expect(store.collections.record(both) != nil, "deleted while another group held it")
+    }
+
+    @Test func groupsAndMembershipPersist() throws {
         let file = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("wsf-\(UUID().uuidString)", isDirectory: true)
             .appendingPathComponent("workspaces.json")
@@ -555,17 +636,11 @@ import Foundation
 
         let store = WorkspaceStore(fileURL: file)
         store.reconcileRoots([NodeID("file:///a")!])
-        let folder = store.createFolder(named: "Work")
-        store.moveRoots(["file:///a"], toFolder: folder)
+        let group = store.createGroup(named: "Work")
+        store.move(["file:///a"], from: nil, to: group, at: nil)
 
         let reloaded = WorkspaceStore(fileURL: file)
-        #expect(reloaded.folderID(containing: "file:///a") == folder)
-        if case .folder(let f)? = reloaded.active.layout.entries.first(where: {
-            if case .folder = $0 { return true } else { return false }
-        }) {
-            #expect(f.name == "Work")
-        } else {
-            Issue.record("folder did not persist")
-        }
+        #expect(reloaded.groupContaining("file:///a") == group)
+        #expect(reloaded.collections.record(group)?.name == "Work")
     }
 }

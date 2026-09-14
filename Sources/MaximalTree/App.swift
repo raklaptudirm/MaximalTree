@@ -459,10 +459,6 @@ final class AppModel {
     /// (toolbar menu, menu bar); ContentView presents the alerts.
     var showingCreateWorkspace = false
     var showingRenameWorkspace = false
-    /// Folder-name prompt state. Creating: `pendingFolderRename == nil`.
-    /// Renaming: it carries the folder being renamed.
-    var showingFolderPrompt = false
-    var pendingFolderRename: RootFolder?
 
     init(host: HostContext, workspaceFile: URL? = nil) {
         self.host = host
@@ -566,6 +562,7 @@ final class AppModel {
         // have seen it before. Order matters: the roots have to exist before
         // the tabs pointing into them are focused.
         store?.switchRoots(roots)
+        store?.ensureNodes(groupNodes)
         guard let id = activeWorkspaceID, let session = sessions[id] else {
             // First visit this run: fall back to what the workspace persisted.
             // Nothing is cached yet, so opening the tree fetches it fresh —
@@ -644,95 +641,108 @@ final class AppModel {
     @ObservationIgnored private var refreshTimer: Timer?
     @ObservationIgnored private var activationObserver: (any NSObjectProtocol)?
 
-    // MARK: Root folders
+    // MARK: The sidebar's groups
 
-    /// The sidebar's organization for the active workspace.
+    /// The active workspace's sidebar: its groups and what is in them.
     var rootLayout: RootLayout { workspaceStore.active.layout }
 
-    func createRootFolder(named name: String, in parent: UUID? = nil,
-                          movingInto uris: [String] = []) {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let id = workspaceStore.createFolder(named: trimmed.isEmpty ? "New Folder" : trimmed,
-                                             in: parent)
-        if !uris.isEmpty { workspaceStore.moveRoots(uris, toFolder: id) }
+    /// A new group called "New Collection", in `parent` or at the top level,
+    /// selected with its name ready to type.
+    ///
+    /// Marked open before it holds anything, so the first things dropped into
+    /// it are seen arriving — which is how a new folder always behaved.
+    func newCollection(in parent: UUID? = nil, movingIn ids: [NodeID] = [],
+                       from source: NodeID? = nil) {
+        let id = workspaceStore.createGroup(named: "New Collection", in: parent)
+        let node = NodeID(canonical: CollectionRef.uri(for: id))
+        if !ids.isEmpty { move(ids, from: source, to: id) }
+        sidebar.expandedNodes.insert(node)
+        if let parent { sidebar.expandedNodes.insert(NodeID(canonical: CollectionRef.uri(for: parent))) }
+        store?.ensureNodes([node])
+        host.select([node])
+        store?.beginRename(node)
     }
 
-    /// Reparent/reorder sidebar entries (roots and folders) — the drag-and-drop
-    /// backing. `at` is the insertion index within the destination (nil = end).
-    func moveEntries(_ refs: [EntryRef], toFolder id: UUID?, at index: Int? = nil) {
-        workspaceStore.moveEntries(refs, toFolder: id, at: index)
-    }
-
-    /// Parse dropped drag payloads into entry refs. Folder rows drag a
-    /// `folder:<id>` token; node rows drag raw node URIs (the same payload the
-    /// filesystem `.move` uses) — only those that are actually roots become
-    /// `.root` refs, so dragging a mere descendant into a sidebar folder is a
-    /// no-op.
-    func entryRefs(from payloads: [String], roots: [NodeID]) -> [EntryRef] {
-        let rootURIs = Set(roots.map(\.uri))
-        return payloads
-            .flatMap { $0.split(separator: "\n").map(String.init) }
-            .compactMap { token in
-                if let ref = EntryRef(token: token), case .folder = ref { return ref }
-                return rootURIs.contains(token) ? .root(token) : nil
-            }
-    }
-
-    func renameRootFolder(_ id: UUID, to name: String) {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        workspaceStore.renameFolder(id, to: trimmed)
-    }
-
-    func deleteRootFolder(_ id: UUID) { workspaceStore.deleteFolder(id) }
-
-    /// Roots to drop into a folder created via the prompt (empty for a bare
-    /// "New Folder…"), and the parent folder to create it inside (nil = top).
-    private(set) var pendingFolderRoots: [String] = []
-    private(set) var pendingFolderParent: UUID?
-
-    func beginCreateFolder(in parent: UUID? = nil, movingIn uris: [String] = []) {
-        pendingFolderRename = nil
-        pendingFolderRoots = uris
-        pendingFolderParent = parent
-        showingFolderPrompt = true
-    }
-
-    func beginRenameFolder(_ folder: RootFolder) {
-        pendingFolderRename = folder
-        pendingFolderRoots = []
-        pendingFolderParent = nil
-        showingFolderPrompt = true
-    }
-
-    /// Commit the folder-name prompt — create (optionally inside a parent /
-    /// moving roots in) or rename, depending on `pendingFolderRename`.
-    func commitFolderPrompt(name: String) {
-        if let folder = pendingFolderRename {
-            renameRootFolder(folder.id, to: name)
-        } else {
-            createRootFolder(named: name, in: pendingFolderParent, movingInto: pendingFolderRoots)
+    /// Dragged rows let go over a place in the group tree — a group, or a strip
+    /// between rows (`destination` nil is the top level).
+    @discardableResult
+    func drop(_ payloads: [String], onto destination: UUID?, at index: Int? = nil) -> Bool {
+        let uris = payloads.flatMap { $0.split(separator: "\n").map(String.init) }
+            .filter { NodeID($0) != nil }
+        guard !uris.isEmpty else { return false }
+        let plan = SidebarDrop.plan(dropping: uris, origin: dragOrigin(of: uris),
+                                    onto: destination, at: index,
+                                    adding: NSEvent.modifierFlags.contains(.option))
+        sidebar.drag = nil
+        switch plan {
+        case .move(let uris, let from, let to, let at):
+            workspaceStore.move(uris, from: from, to: to, at: at)
+        case .add(let uris, let to, let at):
+            workspaceStore.add(uris, to: to, at: at)
         }
-        pendingFolderRename = nil
-        pendingFolderRoots = []
-        pendingFolderParent = nil
+        return true
     }
 
-    func moveRoots(_ uris: [String], toFolder id: UUID?) {
-        workspaceStore.moveRoots(uris, toFolder: id)
+    /// Where a drag of these rows started, if this is the drag the sidebar
+    /// recorded — a drag from another app, or one abandoned earlier, is not.
+    ///
+    /// A move needs every row to actually be in the place it is moving from;
+    /// a selection spanning two groups is added rather than half-moved.
+    private func dragOrigin(of uris: [String]) -> SidebarDrop.Origin? {
+        guard let drag = sidebar.drag, Set(drag.uris) == Set(uris) else { return nil }
+        let holderID = drag.parent.map { CollectionRef.id(from: $0.uri) } ?? workspaceStore.active.id
+        guard let holder = holderID, let record = collections.record(holder),
+              Set(uris).isSubset(of: record.members) else { return .elsewhere }
+        return drag.parent == nil ? .topLevel : .group(holder)
     }
 
-    func setRootFolderExpanded(_ id: UUID, _ expanded: Bool) {
-        workspaceStore.setFolderExpanded(id, expanded)
+    /// Delete groups. Everything they held takes their place.
+    func deleteGroups(_ ids: [NodeID]) {
+        for id in ids { if let group = CollectionRef.id(from: id.uri) { workspaceStore.deleteGroup(group) } }
     }
 
-    /// The folder a newly mounted root should join: the one holding the current
-    /// node's root (so "New X" lands beside what you were looking at). Nil when
-    /// the focused node isn't under any folder-held root.
-    private func folderForNewRoot() -> UUID? {
+    /// Take rows out of the place they are in — `parent`, or the top level.
+    func remove(_ ids: [NodeID], from parent: NodeID?) {
+        workspaceStore.remove(ids.map(\.uri), from: parent.flatMap { CollectionRef.id(from: $0.uri) })
+    }
+
+    /// Move rows from where they are to `destination` (nil: the top level).
+    /// From inside something that is not a group, they are added instead.
+    func move(_ ids: [NodeID], from parent: NodeID?, to destination: UUID?) {
+        let uris = ids.map(\.uri)
+        switch parent {
+        case nil:
+            workspaceStore.move(uris, from: nil, to: destination, at: nil)
+        case let parent? where CollectionRef.id(from: parent.uri) != nil:
+            workspaceStore.move(uris, from: CollectionRef.id(from: parent.uri), to: destination, at: nil)
+        default:
+            workspaceStore.add(uris, to: destination, at: nil)
+        }
+    }
+
+    /// Every group in the active workspace, as the nodes the sidebar draws.
+    private var groupNodes: [NodeID] {
+        RootLayout.folderList(rootLayout.entries)
+            .map { NodeID(canonical: CollectionRef.uri(for: $0.folder.id)) }
+    }
+
+    /// The sidebar's tree changed, however it changed: bring along what the
+    /// rest of the app sees — the mounted roots the graph loads and watches,
+    /// and the records the group rows are drawn from.
+    private func sidebarTreeChanged() {
+        guard let store else { return }
+        let roots = workspaceStore.resolvedRoots(using: pluginHost.registry.providers)
+        if roots != host.roots { store.setRoots(roots) }
+        store.ensureNodes(groupNodes)
+    }
+
+    /// The group a newly mounted root should join: the one holding the current
+    /// node's root, so "New X" lands beside what you were looking at. Nil when
+    /// that root is at the top level.
+    private func groupForNewRoot() -> UUID? {
         guard let focused = host.focusedNode,
               let root = rootContaining(focused) else { return nil }
-        return workspaceStore.folderID(containing: root.uri)
+        return workspaceStore.groupContaining(root.uri)
     }
 
     /// The mounted root that contains `node`: the node itself if it's a root,
@@ -929,8 +939,12 @@ final class AppModel {
         store.onRootsChanged = { [weak self] in
             guard let self else { return }
             self.workspaceStore.reconcileRoots(self.host.roots,
-                                               placingNewInto: self.folderForNewRoot())
+                                               placingNewInto: self.groupForNewRoot())
         }
+        // One place for everything that follows a change to the sidebar's
+        // tree, whichever way it changed — a drag, a delete, a rename
+        // underneath a group.
+        workspaceStore.onActiveTreeChanged = { [weak self] in self?.sidebarTreeChanged() }
 
         let providers = pluginHost.registry.providers
         // Restore rewrites the layout in place (see `restoreRoots`) — roots keep
@@ -943,6 +957,7 @@ final class AppModel {
             workspaceStore.reconcileRoots(roots)
         }
         store.setRoots(roots)
+        store.ensureNodes(groupNodes)
         // After the roots exist, so the disclosed subtrees have something to
         // hang from; flattening them pulls their children in on its own.
         restoreRevealedNodesFromDisk()
@@ -963,5 +978,5 @@ final class AppModel {
     }
 
     /// Remove a root from the sidebar (the node itself is untouched).
-    func removeRoot(_ id: NodeID) { store?.unmount(id) }
+
 }

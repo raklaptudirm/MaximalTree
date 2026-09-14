@@ -33,8 +33,6 @@ enum SidebarRow: Identifiable, Equatable {
     /// several and "remove" has to know which one it means.
     case node(NodeID, depth: Int, expandable: Bool, expanded: Bool, entry: EntryPosition?,
               rowID: String, parent: NodeID?)
-    /// A workspace organization folder (host-side; no node behind it).
-    case folder(id: UUID, name: String, depth: Int, expanded: Bool, entry: EntryPosition)
     /// The pagination affordance under a partially loaded parent — keyed by
     /// the parent's row for the same reason.
     case more(parent: NodeID, depth: Int, rowID: String)
@@ -42,7 +40,6 @@ enum SidebarRow: Identifiable, Equatable {
     var id: String {
         switch self {
         case .node(_, _, _, _, _, let rowID, _): return rowID
-        case .folder(let id, _, _, _, _): return "f:\(id.uuidString)"
         case .more(_, _, let rowID): return rowID
         }
     }
@@ -54,7 +51,7 @@ enum SidebarRow: Identifiable, Equatable {
 
     var depth: Int {
         switch self {
-        case .node(_, let d, _, _, _, _, _), .folder(_, _, let d, _, _), .more(_, let d, _): return d
+        case .node(_, let d, _, _, _, _, _), .more(_, let d, _): return d
         }
     }
 }
@@ -103,18 +100,32 @@ enum SidebarRows {
             }
         }
 
-        func walkEntries(_ entries: [RootEntry], container: UUID?, depth: Int) {
+        func walkEntries(_ entries: [RootEntry], container: UUID?, depth: Int,
+                         parentRow: String? = nil, parent: NodeID? = nil,
+                         ancestors: Set<NodeID> = []) {
             for (index, entry) in entries.enumerated() {
                 let position = SidebarRow.EntryPosition(container: container, index: index)
                 switch entry {
                 case .root(let uri):
                     guard let id = NodeID(uri) else { continue }
-                    walkNode(id, depth: depth, entry: position)
+                    walkNode(id, depth: depth, entry: position,
+                             parentRow: parentRow, parent: parent, ancestors: ancestors)
                 case .folder(let folder):
-                    rows.append(.folder(id: folder.id, name: folder.name, depth: depth,
-                                        expanded: folder.isExpanded, entry: position))
-                    if folder.isExpanded {
-                        walkEntries(folder.entries, container: folder.id, depth: depth + 1)
+                    // A group is a node like any other: selected, opened, walked
+                    // to with the keyboard, taken out of its parent. What it holds
+                    // comes from the group tree, not a listing — it is already
+                    // known, and asking for it would draw a tick late.
+                    let id = NodeID(canonical: CollectionRef.uri(for: folder.id))
+                    let rowID = parentRow.map { "\($0)>\(id.uri)" } ?? "n:\(id.uri)"
+                    let expandable = !folder.entries.isEmpty && !ancestors.contains(id)
+                    let expanded = expandable && expandedNodes.contains(id)
+                    rows.append(.node(id, depth: depth, expandable: expandable,
+                                      expanded: expanded, entry: position,
+                                      rowID: rowID, parent: parent))
+                    if expanded {
+                        walkEntries(folder.entries, container: folder.id, depth: depth + 1,
+                                    parentRow: rowID, parent: id,
+                                    ancestors: ancestors.union([id]))
                     }
                 }
             }
@@ -185,6 +196,11 @@ final class SidebarState {
     /// The last plainly-clicked row — where a ⇧-range starts.
     var anchor: NodeID?
 
+    /// What is being dragged out of the sidebar, and what it was dragged out
+    /// of. Recorded when the drag starts, because a drop is handed only the
+    /// payload — and whether a drop moves or adds depends on where it came from.
+    var drag: (uris: [String], parent: NodeID?)?
+
     /// Called whenever the revealed set changes, so the host can persist it.
     /// Not called while restoring — that direction is a load, not an edit.
     var onExpansionChanged: ((Set<NodeID>) -> Void)?
@@ -236,5 +252,39 @@ enum SidebarDrop {
     static func mutation(dropping ids: [NodeID], onto target: NodeID,
                          accepts: AcceptedChildren?) -> GraphMutation {
         accepts == nil ? .move(ids, into: target) : .adopt(ids, into: target, at: nil)
+    }
+
+    /// Where dragged rows came from, as far as the sidebar's groups go.
+    enum Origin: Equatable {
+        case topLevel
+        case group(UUID)
+        /// Somewhere that is not the sidebar's to rearrange — inside a folder
+        /// on disk, a repository.
+        case elsewhere
+    }
+
+    enum GroupDrop: Equatable {
+        case move([String], from: UUID?, to: UUID?, at: Int?)
+        case add([String], to: UUID?, at: Int?)
+    }
+
+    /// Letting go over a place in the group tree: a group's row, or a strip
+    /// between rows. `destination` nil is the top level.
+    ///
+    /// A move, by default — dragging a row somewhere has always meant moving
+    /// it, and groups did exactly that before they were collections. Option
+    /// adds instead, leaving it where it was too, which membership is what
+    /// makes possible. Something dragged from inside a folder on disk was
+    /// never the sidebar's to move, and is added.
+    static func plan(dropping uris: [String], origin: Origin?, onto destination: UUID?,
+                     at index: Int?, adding: Bool) -> GroupDrop {
+        switch origin {
+        case .topLevel? where !adding:
+            return .move(uris, from: nil, to: destination, at: index)
+        case .group(let source)? where !adding:
+            return .move(uris, from: source, to: destination, at: index)
+        default:
+            return .add(uris, to: destination, at: index)
+        }
     }
 }

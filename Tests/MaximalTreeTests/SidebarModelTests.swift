@@ -148,34 +148,88 @@ import Foundation
         #expect(touched.values == ["stub://b"])
     }
 
-    @Test func foldersNestAndCarryEntryPositions() {
-        let inner = RootFolder(id: UUID(), name: "Inner",
-                               entries: [.root("stub://a")], isExpanded: true)
-        let outer = RootFolder(id: UUID(), name: "Outer",
-                               entries: [.folder(inner)], isExpanded: true)
-        let rows = SidebarRows.flatten(entries: [.folder(outer), .root("stub://b")],
-                                       expandedNodes: [], graph: graph)
-
-        guard case .folder(let outerID, _, 0, true, let outerPos) = rows[0],
-              case .folder(let innerID, _, 1, true, let innerPos) = rows[1],
-              case .node(let a, 2, _, _, let aPos, _, _) = rows[2],
-              case .node(let b, 0, _, _, let bPos, _, _) = rows[3]
-        else { Issue.record("unexpected shape: \(rows.map(\.id))"); return }
-
-        #expect(outerID == outer.id && innerID == inner.id)
-        #expect(a == id("a") && b == id("b"))
-        #expect(outerPos == .init(container: nil, index: 0))
-        #expect(innerPos == .init(container: outer.id, index: 0))
-        #expect(aPos == .init(container: inner.id, index: 0))
-        #expect(bPos == .init(container: nil, index: 1))
+    private func groupNode(_ folder: RootFolder) -> NodeID {
+        NodeID(canonical: CollectionRef.uri(for: folder.id))
     }
 
-    @Test func collapsedFolderHidesItsEntries() {
-        let folder = RootFolder(id: UUID(), name: "F",
-                                entries: [.root("stub://a")], isExpanded: false)
+    /// A group is a node row like any other, and carries where it sits so the
+    /// strips around it can drop into the right place.
+    @Test func groupsAreNodeRowsAndCarryTheirPositions() {
+        let inner = RootFolder(id: UUID(), name: "Inner", entries: [.root("stub://a")])
+        let outer = RootFolder(id: UUID(), name: "Outer", entries: [.folder(inner)])
+        let rows = SidebarRows.flatten(entries: [.folder(outer), .root("stub://b")],
+                                       expandedNodes: [groupNode(outer), groupNode(inner)],
+                                       graph: graph)
+
+        guard case .node(let o, 0, true, true, let oPos, _, let oParent) = rows[0],
+              case .node(let i, 1, true, true, let iPos, _, let iParent) = rows[1],
+              case .node(let a, 2, _, _, let aPos, _, let aParent) = rows[2],
+              case .node(let b, 0, _, _, let bPos, _, let bParent) = rows[3]
+        else { Issue.record("unexpected shape: \(rows.map(\.id))"); return }
+
+        #expect(o == groupNode(outer) && i == groupNode(inner))
+        #expect(a == id("a") && b == id("b"))
+        #expect(oPos == .init(container: nil, index: 0))
+        #expect(iPos == .init(container: outer.id, index: 0))
+        #expect(aPos == .init(container: inner.id, index: 0))
+        #expect(bPos == .init(container: nil, index: 1))
+        // And each knows what it is in, which is what "remove" acts on.
+        #expect(oParent == nil && iParent == groupNode(outer) && aParent == groupNode(inner))
+        #expect(bParent == nil)
+    }
+
+    /// Open is the node expansion now, groups included — closed unless opened.
+    @Test func aClosedGroupHidesWhatItHolds() {
+        let folder = RootFolder(id: UUID(), name: "F", entries: [.root("stub://a")])
         let rows = SidebarRows.flatten(entries: [.folder(folder)],
                                        expandedNodes: [], graph: graph)
         #expect(rows.count == 1)
+        #expect(rows.first?.nodeID == groupNode(folder))
+    }
+
+    /// An empty group has nothing to open, so no triangle — but it is still
+    /// somewhere to drop things.
+    @Test func anEmptyGroupIsNotExpandable() {
+        let empty = RootFolder(id: UUID(), name: "Empty", entries: [])
+        let rows = SidebarRows.flatten(entries: [.folder(empty)],
+                                       expandedNodes: [groupNode(empty)], graph: graph)
+        guard case .node(_, _, let expandable, _, _, _, _) = rows.first else {
+            Issue.record("expected the group's row"); return
+        }
+        #expect(!expandable)
+    }
+
+    // MARK: Dropping into the group tree
+
+    /// Dragging a row somewhere moves it, as it always has.
+    @Test func aDropMovesByDefault() {
+        let target = UUID(), source = UUID()
+        #expect(SidebarDrop.plan(dropping: ["file:///x"], origin: .group(source),
+                                 onto: target, at: nil, adding: false)
+                == .move(["file:///x"], from: source, to: target, at: nil))
+        #expect(SidebarDrop.plan(dropping: ["file:///x"], origin: .topLevel,
+                                 onto: target, at: 2, adding: false)
+                == .move(["file:///x"], from: nil, to: target, at: 2))
+    }
+
+    /// Option leaves it where it was as well.
+    @Test func optionAdds() {
+        let target = UUID()
+        #expect(SidebarDrop.plan(dropping: ["file:///x"], origin: .group(UUID()),
+                                 onto: target, at: nil, adding: true)
+                == .add(["file:///x"], to: target, at: nil))
+    }
+
+    /// From inside a folder on disk, or from a drag the sidebar did not start,
+    /// there is nothing of the sidebar's to move it out of.
+    @Test func aDropFromElsewhereAdds() {
+        let target = UUID()
+        #expect(SidebarDrop.plan(dropping: ["file:///x"], origin: .elsewhere,
+                                 onto: target, at: nil, adding: false)
+                == .add(["file:///x"], to: target, at: nil))
+        #expect(SidebarDrop.plan(dropping: ["file:///x"], origin: nil,
+                                 onto: target, at: nil, adding: false)
+                == .add(["file:///x"], to: target, at: nil))
     }
 
     private final class LockedBox: @unchecked Sendable {

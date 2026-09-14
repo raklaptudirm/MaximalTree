@@ -134,7 +134,7 @@ import SwiftUI
             "nav.back", "nav.forward", "tab.new", "tab.close",
             "finder.all", "finder.files", "finder.actions", "finder.nodeActions",
             "workspace.keep", "workspace.create", "workspace.rename", "workspace.delete",
-            "workspace.addFolder", "workspace.newFolder",
+            "workspace.addFolder", "collection.new",
         ]
         let missing = placed.filter { !known.contains($0) }
         #expect(missing.isEmpty, "menus name nothing: \(missing.joined(separator: ", "))")

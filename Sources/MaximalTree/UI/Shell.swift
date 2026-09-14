@@ -13,7 +13,6 @@ struct ContentView: View {
     @Environment(AppModel.self) private var model
     @Environment(HostContext.self) private var host
     @State private var workspaceNameDraft = ""
-    @State private var folderNameDraft = ""
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     /// Mirrors `model.sidebarVisible`, which is what the keyboard toggles.
     /// The inspector state to restore when zen mode ends.
@@ -56,7 +55,7 @@ struct ContentView: View {
                             // The same operations the menu bar and the finder
                             // offer, by the same names.
                             ActionItem(model: model, id: "workspace.addFolder")
-                            ActionItem(model: model, id: "workspace.newFolder")
+                            ActionItem(model: model, id: "collection.new")
                         } label: {
                             Label("Add", systemImage: "plus")
                         }
@@ -150,17 +149,6 @@ struct ContentView: View {
             TextField("Name", text: $workspaceNameDraft)
             Button("Rename") { model.renameActiveWorkspace(to: workspaceNameDraft) }
             Button("Cancel", role: .cancel) {}
-        }
-        .alert(model.pendingFolderRename == nil ? "New Folder" : "Rename Folder",
-               isPresented: $model.showingFolderPrompt) {
-            TextField("Name", text: $folderNameDraft)
-            Button(model.pendingFolderRename == nil ? "Create" : "Rename") {
-                model.commitFolderPrompt(name: folderNameDraft)
-            }
-            Button("Cancel", role: .cancel) {}
-        }
-        .onChange(of: model.showingFolderPrompt) { _, showing in
-            if showing { folderNameDraft = model.pendingFolderRename?.name ?? "" }
         }
         .onChange(of: model.showingCreateWorkspace) { _, showing in
             if showing { workspaceNameDraft = "" }
