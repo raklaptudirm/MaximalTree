@@ -23,6 +23,11 @@ struct Placements: Codable, Equatable {
 
     init() {}
 
+    /// A sidebar holding these, in order, and nothing else.
+    init(root: String, children list: [String]) {
+        set(list, for: root)
+    }
+
     /// The entry the sidebar is drawn from.
     ///
     /// The workspace's own id as a collection, which is what it has been since
@@ -30,6 +35,64 @@ struct Placements: Codable, Equatable {
     static func root(of workspace: UUID) -> String { CollectionRef.uri(for: workspace) }
 
     func children(of parent: String) -> [String] { children[parent] ?? [] }
+
+    /// Whether this is a collection the table made — named, so not the
+    /// sidebar itself, and not a reference to one whose record was lost.
+    static func isCollection(_ uri: String) -> Bool { CollectionRef.name(from: uri) != nil }
+
+    // MARK: Reading the sidebar
+
+    /// What the sidebar mounts: everything placed that is not a collection,
+    /// through collections, in the order shown, each once.
+    ///
+    /// Not into a plugin's node: an aggregator in the sidebar is mounted, and
+    /// what was put inside it is the aggregator's to show.
+    func leaves(from root: String) -> [String] {
+        var seen: Set<String> = [], result: [String] = []
+        walk(from: root) { uri, _ in
+            if !Self.isCollection(uri), seen.insert(uri).inserted { result.append(uri) }
+        }
+        return result
+    }
+
+    /// Every collection in the sidebar, in the order shown, with how deep it
+    /// sits — each once, at its first place — leaving out `excluded` and
+    /// everything inside it.
+    func collections(from root: String, excluding excluded: Set<UUID> = [])
+        -> [(uri: String, depth: Int)] {
+        var seen: Set<String> = [], result: [(uri: String, depth: Int)] = []
+        walk(from: root, skipping: excluded) { uri, depth in
+            if Self.isCollection(uri), seen.insert(uri).inserted { result.append((uri, depth)) }
+        }
+        return result
+    }
+
+    /// The collection with this id, under whatever name it has now.
+    func collection(_ id: UUID) -> String? {
+        func matches(_ uri: String) -> Bool { Self.isCollection(uri) && CollectionRef.id(from: uri) == id }
+        return children.keys.first(where: matches)
+            ?? children.values.lazy.joined().first(where: matches)
+    }
+
+    /// Everything that `uri` was placed directly inside.
+    func holders(of uri: String) -> [String] {
+        children.filter { $0.value.contains(uri) }.map(\.key).sorted()
+    }
+
+    /// Visit what is placed under `root`, depth first, descending only into
+    /// collections, never into one twice on the same path.
+    private func walk(from root: String, skipping excluded: Set<UUID> = [],
+                      _ visit: (String, Int) -> Void) {
+        func descend(_ parent: String, depth: Int, lineage: Set<String>) {
+            for uri in children(of: parent) {
+                if let id = CollectionRef.id(from: uri), excluded.contains(id) { continue }
+                visit(uri, depth)
+                guard Self.isCollection(uri), !lineage.contains(uri) else { continue }
+                descend(uri, depth: depth + 1, lineage: lineage.union([uri]))
+            }
+        }
+        descend(root, depth: 0, lineage: [root])
+    }
 
     // MARK: Placing
 
@@ -41,12 +104,30 @@ struct Placements: Codable, Equatable {
     @discardableResult
     mutating func adopt(_ uris: [String], into parent: String, at index: Int? = nil) -> Bool {
         guard !uris.isEmpty, !formsCycle(adopting: uris, into: parent) else { return false }
-        set(CollectionRules.adopt(uris, into: children(of: parent), at: index), for: parent)
+        set(Self.inserting(uris, into: children(of: parent), at: index), for: parent)
         return true
     }
 
+    /// Something already there moves to the new position rather than
+    /// appearing twice. The position counts what was ahead of it before
+    /// anything left, so moving something downward lands where it was aimed.
+    private static func inserting(_ uris: [String], into list: [String], at index: Int?) -> [String] {
+        let incoming = uris.reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+        let target = index ?? list.count
+        let shift = list.prefix(max(0, min(target, list.count))).filter(incoming.contains).count
+        var remaining = list.filter { !incoming.contains($0) }
+        remaining.insert(contentsOf: incoming, at: max(0, min(target - shift, remaining.count)))
+        return remaining
+    }
+
     mutating func release(_ uris: [String], from parent: String) {
-        set(CollectionRules.release(uris, from: children(of: parent)), for: parent)
+        set(children(of: parent).filter { !uris.contains($0) }, for: parent)
+    }
+
+    /// Replace what is placed inside `parent` outright — for respelling what is
+    /// already there, not rearranging it.
+    mutating func setChildren(_ list: [String], of parent: String) {
+        set(list, for: parent)
     }
 
     func formsCycle(adopting uris: [String], into parent: String) -> Bool {

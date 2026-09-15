@@ -57,6 +57,66 @@ import Foundation
         #expect(table.children["yt://aggregator"] == nil)
     }
 
+    /// A member already there moves rather than appearing twice, and naming
+    /// the same thing twice in one go places it once.
+    @Test func placingWhatIsAlreadyThereMovesIt() {
+        var table = Placements()
+        table.adopt(["a", "b", "c"], into: root)
+        table.adopt(["c", "c"], into: root, at: 0)
+        #expect(table.children(of: root) == ["c", "a", "b"])
+        table.adopt(["x"], into: root, at: 99)
+        #expect(table.children(of: root) == ["c", "a", "b", "x"], "past the end appends")
+        table.release(["a"], from: root)
+        #expect(table.children(of: root) == ["c", "b", "x"])
+    }
+
+    // MARK: Reading the sidebar
+
+    /// What the sidebar mounts: through groups, not into a plugin's node, each
+    /// once however many groups hold it.
+    @Test func theMountedRootsAreTheLeavesThroughGroups() {
+        var table = Placements()
+        table.adopt(["file:///top"], into: root)
+        let a = table.createCollection(named: "A", in: root)
+        let b = table.createCollection(named: "B", in: root)
+        table.adopt(["file:///shared", "yt://aggregator"], into: a)
+        table.adopt(["file:///shared"], into: b)
+        table.adopt(["yt://channel"], into: "yt://aggregator")
+
+        #expect(table.leaves(from: root) == ["file:///top", "file:///shared", "yt://aggregator"])
+    }
+
+    /// Every group, in the order shown and how deep — for the Move to
+    /// Collection menu, which leaves out what is being moved and what is in it.
+    @Test func theGroupsAreListedInOrderWithTheirDepth() {
+        var table = Placements()
+        let outer = table.createCollection(named: "Outer", in: root)
+        let inner = table.createCollection(named: "Inner", in: outer)
+        let other = table.createCollection(named: "Other", in: root)
+
+        #expect(table.collections(from: root).map(\.uri) == [outer, inner, other])
+        #expect(table.collections(from: root).map(\.depth) == [0, 1, 0])
+        #expect(table.collections(from: root, excluding: [CollectionRef.id(from: outer)!])
+                    .map(\.uri) == [other])
+    }
+
+    /// A hand-edited cycle is listed once, not for ever.
+    @Test func aCycleIsWalkedOnce() throws {
+        let a = CollectionRef.uri(for: UUID(), named: "A")
+        let records = try JSONDecoder().decode(Placements.self, from: JSONEncoder().encode(
+            ["children": [root: [a], a: [a, "file:///x"]]]))
+        #expect(records.collections(from: root).map(\.uri) == [a])
+        #expect(records.leaves(from: root) == ["file:///x"])
+    }
+
+    @Test func aGroupIsFoundByIdUnderItsCurrentName() {
+        var table = Placements()
+        let group = table.createCollection(named: "Old", in: root)
+        let renamed = table.rename(group, to: "New")
+        #expect(table.collection(CollectionRef.id(from: group)!) == renamed)
+        #expect(table.holders(of: renamed!) == [root])
+    }
+
     // MARK: Collections
 
     @Test func aCollectionIsANameWhereItWasPut() {
@@ -297,12 +357,15 @@ import Foundation
 
     // MARK: On disk
 
-    @Test func aWorkspaceWithoutPlacementsStillLoadsAndWritesNone() throws {
-        let json = #"{"id":"\#(workspace.uuidString)","name":"Main","layout":{"entries":[]},"revealedNodes":[]}"#
+    /// An older workspace is read as the layout it was written with, to be
+    /// migrated, and written back as placements only.
+    @Test func anOlderWorkspaceIsReadForMigrationAndWrittenAsPlacements() throws {
+        let json = #"{"id":"\#(workspace.uuidString)","name":"Main","layout":{"entries":[{"type":"root","uri":"file:///a"}]},"revealedNodes":[]}"#
         let decoded = try JSONDecoder().decode(Workspace.self, from: Data(json.utf8))
-        #expect(decoded.placements == nil)
+        #expect(decoded.legacyLayout?.entries == [.root("file:///a")])
         let written = String(decoding: try JSONEncoder().encode(decoded), as: UTF8.self)
-        #expect(!written.contains("placements"))
+        #expect(written.contains("placements"))
+        #expect(!written.contains("layout"))
     }
 
     @Test func placementsSurviveARoundTrip() throws {
@@ -314,5 +377,151 @@ import Foundation
 
         let back = try JSONDecoder().decode(Workspace.self, from: JSONEncoder().encode(workspace))
         #expect(back.placements == table)
+    }
+}
+
+/// The store opening a library written before placements, from real files.
+@MainActor
+@Suite struct PlacementMigrationTests {
+    private func directory() throws -> URL {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("placements-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func write(_ json: Any, to url: URL) throws {
+        try JSONSerialization.data(withJSONObject: json).write(to: url)
+    }
+
+    private func named(_ id: UUID, _ name: String) -> String { CollectionRef.uri(for: id, named: name) }
+
+    /// A library from the builds that kept groups in collections.json: a
+    /// nested group, an empty one, a loose root, and a group opened in the
+    /// sidebar — named by id alone, as expansion then did.
+    @Test func aCollectionsLibraryOpensAsTheSameSidebar() throws {
+        let dir = try directory()
+        let file = dir.appendingPathComponent("workspaces.json")
+        let main = UUID(), outer = UUID(), inner = UUID(), empty = UUID()
+        try write(["activeID": main.uuidString, "workspaces": [[
+            "id": main.uuidString, "name": "Main", "layout": ["entries": []],
+            "revealedNodes": ["file:///top", CollectionRef.uri(for: outer)],
+        ]]], to: file)
+        try write([
+            ["id": main.uuidString, "name": "Main",
+             "members": ["file:///top", CollectionRef.uri(for: outer), CollectionRef.uri(for: empty)]],
+            ["id": outer.uuidString, "name": "Outer", "members": ["file:///a", CollectionRef.uri(for: inner)]],
+            ["id": inner.uuidString, "name": "Inner", "members": ["file:///b"]],
+            ["id": empty.uuidString, "name": "Empty", "members": []],
+        ], to: dir.appendingPathComponent("collections.json"))
+        let original = try Data(contentsOf: file)
+        let originalCollections = try Data(contentsOf: dir.appendingPathComponent("collections.json"))
+
+        let store = WorkspaceStore(fileURL: file)
+
+        let root = store.active.root
+        #expect(store.active.placements.children == [
+            root: ["file:///top", named(outer, "Outer"), named(empty, "Empty")],
+            named(outer, "Outer"): ["file:///a", named(inner, "Inner")],
+            named(inner, "Inner"): ["file:///b"],
+        ])
+        #expect(store.active.rootURIs == ["file:///top", "file:///a", "file:///b"])
+        #expect(store.active.revealedNodes == ["collection://\(outer.uuidString.lowercased())?name=Outer",
+                                               "file:///top"].sorted(),
+                "the open group was lost, or kept under the name it no longer has")
+        // Backed up as they were, and collections.json left where it is.
+        #expect(try Data(contentsOf: dir.appendingPathComponent("workspaces.pre-placements.json")) == original)
+        #expect(try Data(contentsOf: dir.appendingPathComponent("collections.pre-placements.json"))
+                    == originalCollections)
+        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("collections.json").path))
+
+        // Written in the new shape: opening it again finds the same, and
+        // migrates nothing.
+        let written = String(decoding: try Data(contentsOf: file), as: UTF8.self)
+        #expect(!written.contains("\"layout\""))
+        try FileManager.default.removeItem(at: dir.appendingPathComponent("collections.json"))
+        let reopened = WorkspaceStore(fileURL: file)
+        #expect(reopened.active.placements == store.active.placements)
+        #expect(reopened.active.revealedNodes == store.active.revealedNodes)
+    }
+
+    /// From just before that, with the closed groups listed: the rest were open.
+    @Test func groupsThatWereOpenStayOpen() throws {
+        let dir = try directory()
+        let file = dir.appendingPathComponent("workspaces.json")
+        let main = UUID(), open = UUID(), closed = UUID()
+        try write(["activeID": main.uuidString, "workspaces": [[
+            "id": main.uuidString, "name": "Main", "layout": ["entries": []],
+            "collapsedGroups": [CollectionRef.uri(for: closed)],
+        ]]], to: file)
+        try write([
+            ["id": main.uuidString, "name": "Main",
+             "members": [CollectionRef.uri(for: open), CollectionRef.uri(for: closed)]],
+            ["id": open.uuidString, "name": "Open", "members": []],
+            ["id": closed.uuidString, "name": "Closed", "members": []],
+        ], to: dir.appendingPathComponent("collections.json"))
+
+        let store = WorkspaceStore(fileURL: file)
+
+        #expect(store.active.revealedNodes == [named(open, "Open")])
+    }
+
+    /// From before collections: folders in the layout, with their open state.
+    @Test func aFoldersLibraryOpensAsTheSameSidebar() throws {
+        let dir = try directory()
+        let file = dir.appendingPathComponent("workspaces.json")
+        let main = UUID(), outer = UUID(), inner = UUID()
+        let innerFolder: [String: Any] = ["id": inner.uuidString, "name": "Inner", "isExpanded": false,
+                                          "entries": [["type": "root", "uri": "file:///b"]]]
+        let outerFolder: [String: Any] = ["id": outer.uuidString, "name": "Outer", "isExpanded": true,
+                                          "entries": [["type": "root", "uri": "file:///a"],
+                                                      ["type": "folder", "folder": innerFolder]]]
+        try write(["activeID": main.uuidString, "workspaces": [[
+            "id": main.uuidString, "name": "Main",
+            "layout": ["entries": [["type": "root", "uri": "file:///top"],
+                                   ["type": "folder", "folder": outerFolder]]],
+        ]]], to: file)
+
+        let store = WorkspaceStore(fileURL: file)
+
+        #expect(store.active.placements.children == [
+            store.active.root: ["file:///top", named(outer, "Outer")],
+            named(outer, "Outer"): ["file:///a", named(inner, "Inner")],
+            named(inner, "Inner"): ["file:///b"],
+        ])
+        #expect(store.active.revealedNodes == [named(outer, "Outer")])
+    }
+
+    /// A group two workspaces both showed becomes one in each — and the second
+    /// is its own, so renaming it in one does not rename the other.
+    @Test func aSharedGroupBecomesOneOfEachWorkspacesOwn() throws {
+        let dir = try directory()
+        let file = dir.appendingPathComponent("workspaces.json")
+        let one = UUID(), two = UUID(), shared = UUID()
+        try write(["activeID": one.uuidString, "workspaces": [
+            ["id": one.uuidString, "name": "One", "layout": ["entries": []],
+             "revealedNodes": [CollectionRef.uri(for: shared)]],
+            ["id": two.uuidString, "name": "Two", "layout": ["entries": []],
+             "revealedNodes": [CollectionRef.uri(for: shared)]],
+        ]], to: file)
+        try write([
+            ["id": one.uuidString, "name": "One", "members": [CollectionRef.uri(for: shared)]],
+            ["id": two.uuidString, "name": "Two", "members": [CollectionRef.uri(for: shared)]],
+            ["id": shared.uuidString, "name": "Shared", "members": ["file:///s"]],
+        ], to: dir.appendingPathComponent("collections.json"))
+
+        let store = WorkspaceStore(fileURL: file)
+
+        let first = store.library.workspaces[0], second = store.library.workspaces[1]
+        let firstGroup = try #require(first.placements.children(of: first.root).first)
+        let secondGroup = try #require(second.placements.children(of: second.root).first)
+        #expect(firstGroup == named(shared, "Shared"))
+        #expect(secondGroup != firstGroup)
+        #expect(CollectionRef.name(from: secondGroup) == "Shared")
+        #expect(second.placements.children(of: secondGroup) == ["file:///s"])
+        #expect(second.revealedNodes == [secondGroup], "its open state did not follow the new identity")
+
+        store.renameGroup(try #require(CollectionRef.id(from: firstGroup)), to: "Renamed")
+        #expect(store.library.workspaces[1].placements.children(of: second.root) == [secondGroup])
     }
 }

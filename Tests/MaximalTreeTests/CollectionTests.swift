@@ -3,219 +3,127 @@ import Foundation
 @testable import MaximalTreeKit
 @testable import MaximalTree
 
-/// Collections: a name and an ordered list of references.
-///
-/// The rules first, because they are where the judgement is — where a deleted
-/// collection's members go, what dragging an existing member means, and which
-/// references a rename has to reach.
-@Suite struct CollectionRulesTests {
-
-    // MARK: Order
-
-    @Test func adoptingAppendsByDefault() {
-        #expect(CollectionRules.adopt(["c"], into: ["a", "b"], at: nil) == ["a", "b", "c"])
-    }
-
-    @Test func adoptingAtAPositionInsertsThere() {
-        #expect(CollectionRules.adopt(["x"], into: ["a", "b", "c"], at: 1) == ["a", "x", "b", "c"])
-    }
-
-    /// Dragging something already there reorders it rather than duplicating.
-    @Test func adoptingAMemberMovesIt() {
-        #expect(CollectionRules.adopt(["c"], into: ["a", "b", "c"], at: 0) == ["c", "a", "b"])
-    }
-
-    /// Downward, the insertion point is counted before the member leaves it —
-    /// so "put a after b" means after b, not one further along.
-    @Test func movingAMemberDownLandsWhereItWasAimed() {
-        // Dropped at index 2 means "before what was at 2", which was c.
-        #expect(CollectionRules.adopt(["a"], into: ["a", "b", "c"], at: 2) == ["b", "a", "c"])
-    }
-
-    @Test func adoptingTheSameThingTwiceInOneGoKeepsOne() {
-        #expect(CollectionRules.adopt(["x", "x"], into: ["a"], at: nil) == ["a", "x"])
-    }
-
-    @Test func aPositionPastTheEndAppends() {
-        #expect(CollectionRules.adopt(["x"], into: ["a"], at: 99) == ["a", "x"])
-    }
-
-    @Test func releasingRemovesOnlyWhatWasNamed() {
-        #expect(CollectionRules.release(["b"], from: ["a", "b", "c"]) == ["a", "c"])
-    }
-
-    // MARK: Deleting a collection
-
-    private func record(_ name: String, _ members: [String]) -> CollectionRecord {
-        CollectionRecord(id: UUID(), name: name, members: members)
-    }
-
-    /// What a group has always done: the contents are not thrown away, they
-    /// take the deleted collection's place.
-    @Test func deletingSpillsTheMembersInPlace() {
-        let inner = record("Inner", ["x", "y"])
-        let outer = record("Outer", ["a", inner.uri, "b"])
-        let after = CollectionRules.delete(inner.id, from: [outer, inner])
-
-        #expect(after.count == 1, "the deleted collection is still there")
-        #expect(after.first?.members == ["a", "x", "y", "b"])
-    }
-
-    /// A collection is not a list of duplicates.
-    @Test func spillingSkipsWhatTheHolderAlreadyHas() {
-        let inner = record("Inner", ["x", "a"])
-        let outer = record("Outer", ["a", inner.uri])
-        let after = CollectionRules.delete(inner.id, from: [outer, inner])
-        #expect(after.first?.members == ["a", "x"])
-    }
-
-    /// Several holders is what membership means, and each gets the members.
-    @Test func everyHolderReceivesTheMembers() {
-        let inner = record("Inner", ["x"])
-        let left = record("Left", [inner.uri])
-        let right = record("Right", ["r", inner.uri])
-        let after = CollectionRules.delete(inner.id, from: [left, right, inner])
-
-        #expect(after.first { $0.id == left.id }?.members == ["x"])
-        #expect(after.first { $0.id == right.id }?.members == ["r", "x"])
-    }
-
-    /// Nothing held it: it simply goes, and nothing else changes.
-    @Test func deletingAnUnheldCollectionTouchesNothingElse() {
-        let loose = record("Loose", ["x"])
-        let other = record("Other", ["y"])
-        #expect(CollectionRules.delete(loose.id, from: [loose, other]) == [other])
-    }
-
-    // MARK: Renames
-
-    @Test func aRenameIsFollowed() {
-        let records = [record("C", ["file:///a/old.txt", "file:///b"])]
-        let after = CollectionRules.remap(from: "file:///a/old.txt", to: "file:///a/new.txt",
-                                          in: records)
-        #expect(after.first?.members == ["file:///a/new.txt", "file:///b"])
-    }
-
-    /// The provider reports only the folder; everything inside moved with it.
-    @Test func aRenamedFolderTakesItsContentsAlong() {
-        let records = [record("C", ["file:///docs/notes/today.typ"])]
-        let after = CollectionRules.remap(from: "file:///docs/notes", to: "file:///docs/journal",
-                                          in: records)
-        #expect(after.first?.members == ["file:///docs/journal/today.typ"])
-    }
-
-    /// A prefix is not a parent: `notes` renamed must not touch `notes-old`.
-    @Test func aSiblingSharingThePrefixIsLeftAlone() {
-        let records = [record("C", ["file:///docs/notes-old/x.typ"])]
-        let after = CollectionRules.remap(from: "file:///docs/notes", to: "file:///docs/journal",
-                                          in: records)
-        #expect(after.first?.members == ["file:///docs/notes-old/x.typ"])
-    }
-
-    // MARK: Removal
-
-    @Test func aMemberReportedGoneIsDropped() {
-        let records = [record("C", ["file:///a", "file:///b"])]
-        #expect(CollectionRules.remove("file:///a", from: records).first?.members == ["file:///b"])
-    }
-
-    @Test func aRemovedFolderTakesItsContentsWithIt() {
-        let records = [record("C", ["file:///a/inside.txt", "file:///ab"])]
-        #expect(CollectionRules.remove("file:///a", from: records).first?.members == ["file:///ab"])
-    }
+@MainActor private func temporaryStore() throws -> WorkspaceStore {
+    let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("collections-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return WorkspaceStore(fileURL: dir.appendingPathComponent("workspaces.json"))
 }
 
-/// The store and the provider: what is written down, and what the tree sees.
+/// Collections as the tree sees them: nodes made of a workspace's placements.
 @MainActor
 @Suite struct CollectionProviderTests {
-    private func temporaryStore() -> CollectionStore {
-        CollectionStore(url: URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("collections-\(UUID().uuidString).json"))
+    private func provider(over store: WorkspaceStore,
+                          resolving resolve: @escaping @Sendable (String) async -> Node? = { _ in nil })
+        -> CollectionProvider {
+        CollectionProvider(
+            members: { uri in await MainActor.run { store.members(of: uri) } },
+            change: { mutation in await MainActor.run { store.applyToCollections(mutation) } },
+            resolveMember: resolve)
+    }
+
+    private func group(_ store: WorkspaceStore, _ id: UUID) throws -> NodeID {
+        NodeID(canonical: try #require(store.uri(of: id)))
     }
 
     /// Order is the user's, so it has to survive being written down.
-    @Test func orderSurvivesARestart() {
-        let url = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("collections-\(UUID().uuidString).json")
-        let first = CollectionStore(url: url)
-        let record = first.create(named: "Channels")
-        first.adopt(["yt://c", "yt://a", "yt://b"], into: record.id, at: nil)
-        first.adopt(["yt://b"], into: record.id, at: 0)
+    @Test func orderSurvivesARestart() throws {
+        let file = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("collections-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("workspaces.json")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        let first = WorkspaceStore(fileURL: file)
+        let channels = first.createGroup(named: "Channels")
+        first.add(["yt://c", "yt://a", "yt://b"], to: channels, at: nil)
+        first.add(["yt://b"], to: channels, at: 0)
 
-        let reopened = CollectionStore(url: url)
-        #expect(reopened.record(record.id)?.members == ["yt://b", "yt://c", "yt://a"])
-        #expect(reopened.record(record.id)?.name == "Channels")
+        let reopened = WorkspaceStore(fileURL: file)
+        let uri = try #require(reopened.uri(of: channels))
+        #expect(reopened.members(of: uri) == ["yt://b", "yt://c", "yt://a"])
+        #expect(CollectionRef.name(from: uri) == "Channels")
     }
 
     /// A member no provider can resolve is shown, not lost. Its plugin may
     /// simply not be loaded, and a sidebar entry silently deleted for that is
     /// far worse than one that is briefly inert.
-    @Test func aMemberThatDoesNotResolveIsKept() async {
-        let store = temporaryStore()
-        let record = store.create(named: "Mixed")
-        store.adopt(["file:///real", "jellyfin://item/abc"], into: record.id, at: nil)
-        let provider = CollectionProvider(store: store) { uri in
+    @Test func aMemberThatDoesNotResolveIsKept() async throws {
+        let store = try temporaryStore()
+        let mixed = store.createGroup(named: "Mixed")
+        store.add(["file:///real", "jellyfin://item/abc"], to: mixed, at: nil)
+        let provider = provider(over: store) { uri in
             uri.hasPrefix("file://") ? Node(id: NodeID(uri)!, type: "file") : nil
         }
 
-        let page = await provider.children(of: NodeID(canonical: record.uri), page: nil)
+        let page = await provider.children(of: try group(store, mixed), page: nil)
         #expect(page.items.map(\.id.uri) == ["file:///real", "jellyfin://item/abc"])
         #expect(page.items.last?.type == TypeID("collection.unavailable"))
-        // And it is still written down.
-        #expect(store.record(record.id)?.members.count == 2)
+        #expect(store.members(of: try group(store, mixed).uri)?.count == 2, "and it is still written down")
     }
 
-    /// A collection's identity is its id, not its name.
-    @Test func renamingKeepsTheIdentity() async throws {
-        let store = temporaryStore()
-        let record = store.create(named: "Old")
-        let provider = CollectionProvider(store: store) { _ in nil }
-        let id = NodeID(canonical: record.uri)
+    /// The name is in the URI, so a rename is a rename in the graph's sense —
+    /// the old identity to the new one — and the old one stops resolving.
+    @Test func renamingReportsTheNewIdentity() async throws {
+        let store = try temporaryStore()
+        let made = store.createGroup(named: "Old")
+        let old = try group(store, made)
+        let provider = provider(over: store)
 
-        let changes = try await provider.apply(.rename(id, to: "New"))
-        #expect(changes == [.modified(id)], "a rename was reported as a change of identity")
-        #expect(store.record(record.id)?.name == "New")
+        let changes = try await provider.apply(.rename(old, to: "New"))
+
+        let new = try group(store, made)
+        #expect(CollectionRef.name(from: new.uri) == "New")
+        #expect(changes.first == .renamed(from: old, to: new))
+        #expect(await provider.node(for: old) == nil, "the old name still resolves")
+        #expect(await provider.node(for: new)?.label == "New")
     }
 
-    /// Everything that held a deleted collection is told, since its members
+    /// Everything that held a deleted collection is told, since what it held
     /// just arrived there.
     @Test func deletingTellsEveryHolder() async throws {
-        let store = temporaryStore()
-        let outer = store.create(named: "Outer")
-        let inner = store.create(named: "Inner", in: outer.id)
-        store.adopt(["file:///x"], into: inner.id, at: nil)
-        let provider = CollectionProvider(store: store) { _ in nil }
+        let store = try temporaryStore()
+        let outer = store.createGroup(named: "Outer")
+        let inner = store.createGroup(named: "Inner", in: outer)
+        store.add(["file:///x"], to: inner, at: nil)
+        let (outerNode, innerNode) = (try group(store, outer), try group(store, inner))
 
-        let changes = try await provider.apply(.delete([NodeID(canonical: inner.uri)]))
-        #expect(changes.contains(.removed(NodeID(canonical: inner.uri))))
-        #expect(changes.contains(.childrenChanged(NodeID(canonical: outer.uri))))
-        #expect(store.record(outer.id)?.members == ["file:///x"])
+        let changes = try await provider(over: store).apply(.delete([innerNode]))
+
+        #expect(changes.contains(.removed(innerNode)))
+        #expect(changes.contains(.childrenChanged(outerNode)))
+        #expect(store.members(of: outerNode.uri) == ["file:///x"])
     }
 
     /// A collection takes anything, and says so — which is what makes it a
     /// drop target at all.
     @Test func aCollectionAcceptsAnything() async throws {
-        let store = temporaryStore()
-        let record = store.create(named: "Anything")
-        let provider = CollectionProvider(store: store) { _ in nil }
-        let node = try #require(await provider.node(for: NodeID(canonical: record.uri)))
+        let store = try temporaryStore()
+        let made = store.createGroup(named: "Anything")
+        let node = try #require(await provider(over: store).node(for: try group(store, made)))
         #expect(node.accepts == .any)
     }
 
+    /// Adopting through the graph places it in the collection.
+    @Test func adoptingPlacesIt() async throws {
+        let store = try temporaryStore()
+        let made = store.createGroup(named: "C")
+        let node = try group(store, made)
+        _ = try await provider(over: store).apply(.adopt([NodeID("file:///x")!], into: node, at: nil))
+        #expect(store.members(of: node.uri) == ["file:///x"])
+    }
+
     /// It adopts and releases its own members, and refuses to move — a move is
-    /// containment, which is not what a collection does.
-    @Test func itSupportsMembershipAndNotMoves() {
-        let store = temporaryStore()
-        let record = store.create(named: "C")
-        let provider = CollectionProvider(store: store) { _ in nil }
-        let id = NodeID(canonical: record.uri)
+    /// containment, which is not what a collection does. Decided from the URI.
+    @Test func itSupportsMembershipAndNotMoves() throws {
+        let store = try temporaryStore()
+        let provider = provider(over: store)
+        let id = NodeID(canonical: CollectionRef.uri(for: UUID(), named: "C"))
         let other = NodeID("file:///x")!
 
         #expect(provider.supports(.adopt([other], into: id, at: nil)))
         #expect(provider.supports(.release([other], from: id)))
         #expect(!provider.supports(.move([other], into: id)))
-        // And nothing about a collection that does not exist.
-        #expect(!provider.supports(.adopt([other], into: NodeID(canonical: CollectionRef.uri(for: UUID())), at: nil)))
+        #expect(!provider.supports(.adopt([other], into: other, at: nil)))
     }
 }
 
@@ -233,60 +141,59 @@ import Foundation
         return model
     }
 
+    private func members(_ model: AppModel, _ group: UUID) -> [String]? {
+        model.workspaceStore.uri(of: group).flatMap(model.workspaceStore.members(of:))
+    }
+
     /// A file renamed by the filesystem provider is followed into every
     /// collection that holds it — the whole point of writing references down
     /// is that they keep pointing at the thing.
     @Test func aRenameReportedElsewhereReachesTheCollections() throws {
         let model = try makeModel()
-        let record = model.collections.create(named: "Reading")
-        model.collections.adopt(["file:///docs/draft.typ"], into: record.id, at: nil)
+        let reading = model.workspaceStore.createGroup(named: "Reading")
+        model.workspaceStore.add(["file:///docs/draft.typ"], to: reading, at: nil)
 
         model.store?.notify([.renamed(from: NodeID("file:///docs/draft.typ")!,
                                       to: NodeID("file:///docs/final.typ")!)])
 
-        #expect(model.collections.record(record.id)?.members == ["file:///docs/final.typ"])
+        #expect(members(model, reading) == ["file:///docs/final.typ"])
     }
 
     /// Something actually deleted leaves the collections holding it.
     @Test func aRemovalReportedElsewhereReachesTheCollections() throws {
         let model = try makeModel()
-        let record = model.collections.create(named: "Reading")
-        model.collections.adopt(["file:///a.typ", "file:///b.typ"], into: record.id, at: nil)
+        let reading = model.workspaceStore.createGroup(named: "Reading")
+        model.workspaceStore.add(["file:///a.typ", "file:///b.typ"], to: reading, at: nil)
 
         model.store?.notify([.removed(NodeID("file:///a.typ")!)])
 
-        #expect(model.collections.record(record.id)?.members == ["file:///b.typ"])
+        #expect(members(model, reading) == ["file:///b.typ"])
     }
 
-    /// The model does not share the reader's own collections file.
-    ///
-    /// Not "starts empty": every workspace owns a collection for its top level,
-    /// so a fresh store never is.
+    /// A rename in one workspace stays there. A group migrated from a shared
+    /// collection is its own in each, and nothing else is ever shared.
     @Test func aModelWithATemporaryWorkspaceHasItsOwnCollections() throws {
         let one = try makeModel()
         let two = try makeModel()
-        let made = one.collections.create(named: "Only here")
-        #expect(two.collections.record(made.id) == nil, "two models wrote to the same collections")
+        let made = one.workspaceStore.createGroup(named: "Only here")
+        #expect(two.workspaceStore.uri(of: made) == nil, "two models wrote to the same library")
     }
 
-    /// A new folder is a collection now — which is why there is no longer a
-    /// separate New Collection that did the same thing another way.
     @Test func aNewCollectionIsAGroupInTheSidebar() throws {
         let model = try makeModel()
         model.newCollection()
-        let folder = try #require(model.rootLayout.entries.compactMap { entry -> RootFolder? in
-            if case .folder(let folder) = entry { return folder } else { return nil }
-        }.first)
-        #expect(model.collections.record(folder.id)?.name == "New Collection")
+        let group = try #require(model.placements.children(of: model.sidebarRoot).first)
+        #expect(CollectionRef.name(from: group) == "New Collection")
     }
 
     /// "Delete Collection" is offered for collections and nothing else — on a
     /// file it would be a second, differently worded way to trash something.
     @Test func deleteCollectionOnlyAppliesToCollections() throws {
         let model = try makeModel()
-        let record = model.collections.create(named: "C")
+        let made = model.workspaceStore.createGroup(named: "C")
+        let uri = try #require(model.workspaceStore.uri(of: made))
         let action = try #require(model.action("collection.delete"))
-        #expect(model.canRun(action, targets: [NodeID(canonical: record.uri)]))
+        #expect(model.canRun(action, targets: [NodeID(canonical: uri)]))
         #expect(!model.canRun(action, targets: [NodeID("file:///a.typ")!]))
     }
 }
@@ -298,7 +205,7 @@ import Foundation
         let parent = NodeID("collection://parent")!
         let child = NodeID("file:///x")!
         let rows = SidebarRows.flatten(
-            entries: [.root(parent.uri)], expandedNodes: [parent],
+            roots: [parent.uri], expandedNodes: [parent],
             graph: SidebarGraph(children: { $0 == parent ? [child] : [] },
                                 isExpandable: { $0 == parent },
                                 hasMore: { _ in false }))

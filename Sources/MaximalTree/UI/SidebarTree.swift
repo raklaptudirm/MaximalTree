@@ -32,7 +32,7 @@ struct SidebarTree: View {
                     // The one insertion point the row strips can't express: the
                     // very end of the top level.
                     InsertionStrip(container: nil,
-                                   index: model.rootLayout.entries.count,
+                                   index: model.placements.children(of: model.sidebarRoot).count,
                                    minHeight: 8)
                 }
                 .padding(.vertical, 4)
@@ -47,7 +47,7 @@ struct SidebarTree: View {
             // The tree, not the mounted roots: a workspace holding only
             // groups has no roots, and used to be told it was empty with the
             // groups drawn right there underneath the message.
-            if model.rootLayout.entries.isEmpty {
+            if model.placements.children(of: model.sidebarRoot).isEmpty {
                 ContentUnavailableView("No Roots", systemImage: "tray",
                                        description: Text("Add a root to get started."))
             }
@@ -176,12 +176,9 @@ private struct NodeRow: View {
     /// The collection this row is, if it is a group.
     private var group: UUID? { CollectionRef.id(from: nodeID.uri) }
 
-    /// A group's name from the tree, for the moment before its record arrives —
-    /// otherwise a new group is drawn as its raw URI until it is fetched.
-    private var groupName: String? {
-        guard let group else { return nil }
-        return RootLayout.folderList(model.rootLayout.entries).first { $0.folder.id == group }?.folder.name
-    }
+    /// A group's name, for the moment before its node arrives — otherwise a
+    /// new group is drawn as its raw URI until it is fetched. It is in the URI.
+    private var groupName: String? { CollectionRef.name(from: nodeID.uri) }
 
     var body: some View {
         let node = host.node(nodeID)
@@ -379,26 +376,18 @@ private struct MoveToCollectionMenu: View {
     var body: some View {
         let moving = Set(targets.compactMap { CollectionRef.id(from: $0.uri) })
         Menu("Move to Collection") {
-            ForEach(Self.destinations(model.rootLayout.entries, excluding: moving),
-                    id: \.folder.id) { item in
-                Button(String(repeating: "   ", count: item.depth) + item.folder.name) {
-                    model.move(targets, from: parent, to: item.folder.id)
+            // Not the groups being moved, and nothing inside them — a group
+            // cannot go into itself.
+            ForEach(model.placements.collections(from: model.sidebarRoot, excluding: moving),
+                    id: \.uri) { item in
+                Button(String(repeating: "   ", count: item.depth)
+                       + (CollectionRef.name(from: item.uri) ?? "")) {
+                    model.move(targets, from: parent, to: CollectionRef.id(from: item.uri))
                 }
             }
             Divider()
             Button("Top Level") { model.move(targets, from: parent, to: nil) }
             Button("New Collection…") { model.newCollection(movingIn: targets, from: parent) }
-        }
-    }
-
-    /// Every group a move could land in: not the groups being moved, and
-    /// nothing inside them — a group cannot go into itself.
-    static func destinations(_ entries: [RootEntry], excluding: Set<UUID>,
-                             depth: Int = 0) -> [(folder: RootFolder, depth: Int)] {
-        entries.flatMap { entry -> [(folder: RootFolder, depth: Int)] in
-            guard case .folder(let folder) = entry, !excluding.contains(folder.id) else { return [] }
-            return [(folder, depth)] + destinations(folder.entries, excluding: excluding,
-                                                    depth: depth + 1)
         }
     }
 }

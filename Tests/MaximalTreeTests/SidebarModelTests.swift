@@ -37,7 +37,7 @@ import Foundation
             },
             isExpandable: { ["stub://left", "stub://right"].contains($0.uri) },
             hasMore: { _ in false })
-        let rows = SidebarRows.flatten(entries: [.root("stub://left"), .root("stub://right")],
+        let rows = SidebarRows.flatten(roots: ["stub://left", "stub://right"],
                                        expandedNodes: [id("left"), id("right")], graph: shared)
 
         let copies = rows.filter { $0.nodeID == id("x") }
@@ -58,7 +58,7 @@ import Foundation
             },
             isExpandable: { _ in true },
             hasMore: { _ in false })
-        let rows = SidebarRows.flatten(entries: [.root("stub://a")],
+        let rows = SidebarRows.flatten(roots: ["stub://a"],
                                        expandedNodes: [id("a"), id("b")], graph: looping)
 
         #expect(rows.map(\.nodeID) == [id("a"), id("b"), id("a")])
@@ -82,7 +82,7 @@ import Foundation
             isExpandable: { !$0.uri.hasSuffix("child") },
             hasMore: { _ in false })
         let rows = SidebarRows.flatten(
-            entries: [.root("stub://left"), .root("stub://right")],
+            roots: ["stub://left", "stub://right"],
             expandedNodes: [id("left"), id("right"), id("x")], graph: shared)
 
         #expect(rows.filter { $0.nodeID == id("x/child") }.count == 2,
@@ -109,7 +109,7 @@ import Foundation
     }
 
     @Test func collapsedRootIsOneRow() {
-        let rows = SidebarRows.flatten(entries: [.root("stub://a")],
+        let rows = SidebarRows.flatten(roots: ["stub://a"],
                                        expandedNodes: [], graph: graph)
         #expect(rows.count == 1)
         #expect(rows[0].nodeID == id("a"))
@@ -117,7 +117,7 @@ import Foundation
     }
 
     @Test func expansionRecursesAndAppendsPagination() {
-        let rows = SidebarRows.flatten(entries: [.root("stub://a")],
+        let rows = SidebarRows.flatten(roots: ["stub://a"],
                                        expandedNodes: [id("a"), id("a/1")],
                                        graph: graph)
         // Rows are identified by their path: the same node can now be reached
@@ -143,60 +143,76 @@ import Foundation
             children: { touched.append($0.uri); return [] },
             isExpandable: { _ in true },
             hasMore: { _ in false })
-        _ = SidebarRows.flatten(entries: [.root("stub://a"), .root("stub://b")],
+        _ = SidebarRows.flatten(roots: ["stub://a", "stub://b"],
                                 expandedNodes: [id("b")], graph: counting)
         #expect(touched.values == ["stub://b"])
     }
 
-    private func groupNode(_ folder: RootFolder) -> NodeID {
-        NodeID(canonical: CollectionRef.uri(for: folder.id))
-    }
+    private let root = Placements.root(of: UUID())
 
     /// A group is a node row like any other, and carries where it sits so the
     /// strips around it can drop into the right place.
     @Test func groupsAreNodeRowsAndCarryTheirPositions() {
-        let inner = RootFolder(id: UUID(), name: "Inner", entries: [.root("stub://a")])
-        let outer = RootFolder(id: UUID(), name: "Outer", entries: [.folder(inner)])
-        let rows = SidebarRows.flatten(entries: [.folder(outer), .root("stub://b")],
-                                       expandedNodes: [groupNode(outer), groupNode(inner)],
-                                       graph: graph)
+        var table = Placements()
+        let outer = table.createCollection(named: "Outer", in: root)
+        let inner = table.createCollection(named: "Inner", in: outer)
+        table.adopt(["stub://a"], into: inner)
+        table.adopt(["stub://b"], into: root)
+        let (o, i) = (NodeID(canonical: outer), NodeID(canonical: inner))
+        let rows = SidebarRows.flatten(placements: table, root: root,
+                                       expandedNodes: [o, i], graph: graph)
 
-        guard case .node(let o, 0, true, true, let oPos, _, let oParent) = rows[0],
-              case .node(let i, 1, true, true, let iPos, _, let iParent) = rows[1],
+        guard case .node(let oRow, 0, true, true, let oPos, _, let oParent) = rows[0],
+              case .node(let iRow, 1, true, true, let iPos, _, let iParent) = rows[1],
               case .node(let a, 2, _, _, let aPos, _, let aParent) = rows[2],
               case .node(let b, 0, _, _, let bPos, _, let bParent) = rows[3]
         else { Issue.record("unexpected shape: \(rows.map(\.id))"); return }
 
-        #expect(o == groupNode(outer) && i == groupNode(inner))
+        #expect(oRow == o && iRow == i)
         #expect(a == id("a") && b == id("b"))
         #expect(oPos == .init(container: nil, index: 0))
-        #expect(iPos == .init(container: outer.id, index: 0))
-        #expect(aPos == .init(container: inner.id, index: 0))
+        #expect(iPos == .init(container: CollectionRef.id(from: outer), index: 0))
+        #expect(aPos == .init(container: CollectionRef.id(from: inner), index: 0))
         #expect(bPos == .init(container: nil, index: 1))
         // And each knows what it is in, which is what "remove" acts on.
-        #expect(oParent == nil && iParent == groupNode(outer) && aParent == groupNode(inner))
+        #expect(oParent == nil && iParent == o && aParent == i)
         #expect(bParent == nil)
     }
 
     /// Open is the node expansion now, groups included — closed unless opened.
     @Test func aClosedGroupHidesWhatItHolds() {
-        let folder = RootFolder(id: UUID(), name: "F", entries: [.root("stub://a")])
-        let rows = SidebarRows.flatten(entries: [.folder(folder)],
+        var table = Placements()
+        let group = table.createCollection(named: "F", in: root)
+        table.adopt(["stub://a"], into: group)
+        let rows = SidebarRows.flatten(placements: table, root: root,
                                        expandedNodes: [], graph: graph)
         #expect(rows.count == 1)
-        #expect(rows.first?.nodeID == groupNode(folder))
+        #expect(rows.first?.nodeID == NodeID(canonical: group))
     }
 
     /// An empty group has nothing to open, so no triangle — but it is still
     /// somewhere to drop things.
     @Test func anEmptyGroupIsNotExpandable() {
-        let empty = RootFolder(id: UUID(), name: "Empty", entries: [])
-        let rows = SidebarRows.flatten(entries: [.folder(empty)],
-                                       expandedNodes: [groupNode(empty)], graph: graph)
+        var table = Placements()
+        let empty = table.createCollection(named: "Empty", in: root)
+        let rows = SidebarRows.flatten(placements: table, root: root,
+                                       expandedNodes: [NodeID(canonical: empty)], graph: graph)
         guard case .node(_, _, let expandable, _, _, _, _) = rows.first else {
             Issue.record("expected the group's row"); return
         }
         #expect(!expandable)
+    }
+
+    /// What was put inside a plugin's node is the node's to show, through its
+    /// listing — the sidebar does not draw it as if the node were a group.
+    @Test func aPluginsNodeIsNotWalkedAsAGroup() {
+        var table = Placements()
+        table.adopt(["stub://aggregator"], into: root)
+        table.adopt(["stub://channel"], into: "stub://aggregator")
+        // Opened, even: its listing here has nothing in it.
+        let rows = SidebarRows.flatten(placements: table, root: root,
+                                       expandedNodes: [id("aggregator")], graph: graph)
+        #expect(rows.map(\.nodeID) == [id("aggregator")])
     }
 
     // MARK: Dropping into the group tree

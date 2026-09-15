@@ -1,76 +1,55 @@
 import Foundation
 import MaximalTreeKit
 
-/// One item in the sidebar's organization: a root, or a folder that holds more
-/// entries (folders nest). Pure host-side display; providers and the graph core
-/// never see it.
-enum RootEntry: Equatable, Identifiable {
+/// How a workspace's sidebar was written before placements: an ordered tree
+/// of roots and folders. Read, to migrate a library written by an older
+/// build, and never written.
+enum RootEntry: Equatable {
     case root(String)          // a root's canonical uri
     case folder(RootFolder)
-
-    var rootURIs: [String] {
-        switch self {
-        case .root(let uri): return [uri]
-        case .folder(let folder): return folder.rootURIs
-        }
-    }
-
-    /// Stable across reorders, so ForEach animates rather than rebuilds.
-    var id: String {
-        switch self {
-        case .root(let uri): return "r:\(uri)"
-        case .folder(let folder): return "f:\(folder.id.uuidString)"
-        }
-    }
 }
 
-/// A named, nestable group of entries in the sidebar.
-struct RootFolder: Codable, Identifiable, Equatable {
+/// A named, nestable group of entries, as an older build wrote it.
+struct RootFolder: Codable, Equatable {
     var id: UUID = UUID()
     var name: String
     var entries: [RootEntry] = []
     var isExpanded: Bool = true
-
-    var rootURIs: [String] { entries.flatMap(\.rootURIs) }
 }
 
-/// How a workspace's roots are grouped for display: an ordered tree of entries.
-/// This is the source of truth for the sidebar; the flat root set the graph core
-/// consumes (`context.roots`) is *derived* from it, so folders never leak below
-/// the host UI.
+/// The older sidebar, whole.
 struct RootLayout: Codable, Equatable {
     var entries: [RootEntry] = []
 
-    /// Every root uri, in display order (a folder's roots inline where it sits).
-    var rootURIs: [String] { entries.flatMap(\.rootURIs) }
-
-    /// A flat layout with every root loose — the shape a pre-folders workspace
-    /// migrates into.
-    init(looseRoots uris: [String] = []) {
-        entries = uris.map(RootEntry.root)
+    /// The same sidebar as collections, the shape the last builds before
+    /// placements kept it in: the top level under the workspace's id, and each
+    /// folder under its own.
+    func records(workspace: UUID, named name: String) -> [CollectionRecord] {
+        var records: [CollectionRecord] = []
+        func members(of entries: [RootEntry]) -> [String] {
+            entries.map { entry in
+                switch entry {
+                case .root(let uri):
+                    return uri
+                case .folder(let folder):
+                    records.append(CollectionRecord(id: folder.id, name: folder.name,
+                                                    members: members(of: folder.entries)))
+                    return CollectionRef.uri(for: folder.id)
+                }
+            }
+        }
+        return [CollectionRecord(id: workspace, name: name, members: members(of: entries))] + records
     }
 
-    // MARK: Recursive tree operations (pure, testable)
-
-    static func folderID(containing uri: String, in entries: [RootEntry]) -> UUID? {
-        for case .folder(let folder) in entries {
-            if folder.entries.contains(where: {
-                if case .root(let u) = $0 { return u == uri } else { return false }
-            }) { return folder.id }
-            if let nested = folderID(containing: uri, in: folder.entries) { return nested }
+    /// The folders that were open.
+    var openFolders: [UUID] {
+        func open(_ entries: [RootEntry]) -> [UUID] {
+            entries.flatMap { entry -> [UUID] in
+                guard case .folder(let folder) = entry else { return [] }
+                return (folder.isExpanded ? [folder.id] : []) + open(folder.entries)
+            }
         }
-        return nil
-    }
-
-    /// Every group in the tree, depth-tagged — for the "Move to Collection" menu.
-    static func folderList(_ entries: [RootEntry], depth: Int = 0)
-        -> [(folder: RootFolder, depth: Int)] {
-        var result: [(RootFolder, Int)] = []
-        for case .folder(let folder) in entries {
-            result.append((folder, depth))
-            result += folderList(folder.entries, depth: depth + 1)
-        }
-        return result
+        return open(entries)
     }
 }
 
@@ -79,24 +58,21 @@ struct RootLayout: Codable, Equatable {
 struct Workspace: Codable, Identifiable, Equatable {
     var id: UUID
     var name: String
-    var layout: RootLayout
-    /// Which nodes are revealed (disclosed) in the sidebar, as uris. Folder
-    /// expansion has always persisted here inside `layout`; node expansion is
-    /// the same kind of state — where the user left the tree open — and users
-    /// reasonably expect a relaunch to put it back rather than collapse
+    /// What was put inside what — the sidebar, and anything else something was
+    /// dropped into. See `Placements`.
+    var placements: Placements
+    /// Which nodes are revealed (disclosed) in the sidebar, as uris. Users
+    /// reasonably expect a relaunch to put the tree back rather than collapse
     /// everything. Stored as uris because a NodeID only exists once its
     /// provider has resolved one.
     var revealedNodes: [String] = []
-    /// The groups that are closed, as collection URIs.
-    ///
-    /// Closed rather than open, because a group is open unless someone closed
-    /// it. Here rather than on the collection: whether a group is open is how
-    /// this workspace's sidebar looks, and a collection can appear in more than
-    /// one.
-    var collapsedGroups: [String]? = nil
-    /// What was put inside what. Absent until this workspace's collections
-    /// are folded into it; read by nothing yet.
-    var placements: Placements? = nil
+
+    /// The shape an older build wrote, until it is migrated. Present only when
+    /// the file had no placements; never written.
+    var legacyLayout: RootLayout?
+    /// The groups a build from just before placements recorded as closed.
+    /// Read with `legacyLayout`, and gone with it.
+    var legacyCollapsedGroups: [String]?
 
     /// Made on the spot for a file that belongs to nowhere else, and not
     /// written to the library.
@@ -109,55 +85,55 @@ struct Workspace: Codable, Identifiable, Equatable {
     /// read back from disk is by definition a real one.
     var isEphemeral: Bool = false
 
-    /// Convenience for the flat root set (what older code and `resolvedRoots` want).
-    var rootURIs: [String] { layout.rootURIs }
+    /// The entry in `placements` the sidebar is drawn from.
+    var root: String { Placements.root(of: id) }
 
-    init(id: UUID = UUID(), name: String, layout: RootLayout = RootLayout(),
-         revealedNodes: [String] = []) {
+    /// What the sidebar mounts, in order.
+    var rootURIs: [String] { placements.leaves(from: root) }
+
+    init(id: UUID = UUID(), name: String, rootURIs: [String] = [], revealedNodes: [String] = []) {
         self.id = id
         self.name = name
-        self.layout = layout
+        self.placements = Placements(root: Placements.root(of: id), children: rootURIs)
         self.revealedNodes = revealedNodes
     }
 
-    init(id: UUID = UUID(), name: String, rootURIs: [String]) {
-        self.init(id: id, name: name, layout: RootLayout(looseRoots: rootURIs))
-    }
-
-    // Decodes the current shape (`layout`) or a pre-folders workspace (`rootURIs`),
-    // so an existing library keeps loading — everything becomes loose roots.
+    // Decodes the current shape (`placements`), or an older one to migrate:
+    // `layout`, or a pre-folders `rootURIs`, whose entries become loose roots.
     private enum CodingKeys: String, CodingKey {
-        case id, name, layout, rootURIs, revealedNodes, collapsedGroups, placements
+        case id, name, placements, layout, rootURIs, revealedNodes, collapsedGroups
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
+        revealedNodes = try container.decodeIfPresent([String].self, forKey: .revealedNodes) ?? []
+        if let placements = try container.decodeIfPresent(Placements.self, forKey: .placements) {
+            self.placements = placements
+            return
+        }
+        placements = Placements()
         if let layout = try container.decodeIfPresent(RootLayout.self, forKey: .layout) {
-            self.layout = layout
+            legacyLayout = layout
         } else {
             let uris = try container.decodeIfPresent([String].self, forKey: .rootURIs) ?? []
-            self.layout = RootLayout(looseRoots: uris)
+            legacyLayout = RootLayout(entries: uris.map(RootEntry.root))
         }
-        revealedNodes = try container.decodeIfPresent([String].self, forKey: .revealedNodes) ?? []
-        collapsedGroups = try container.decodeIfPresent([String].self, forKey: .collapsedGroups)
-        placements = try container.decodeIfPresent(Placements.self, forKey: .placements)
+        legacyCollapsedGroups = try container.decodeIfPresent([String].self, forKey: .collapsedGroups)
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(name, forKey: .name)
-        try container.encode(layout, forKey: .layout)
+        try container.encode(placements, forKey: .placements)
         try container.encode(revealedNodes, forKey: .revealedNodes)
-        try container.encodeIfPresent(collapsedGroups, forKey: .collapsedGroups)
-        try container.encodeIfPresent(placements, forKey: .placements)
     }
 }
 
 extension RootEntry: Codable {
-    // Explicit, stable JSON: {"type":"root","uri":…} / {"type":"folder","folder":…}.
+    // {"type":"root","uri":…} / {"type":"folder","folder":…}.
     private enum CodingKeys: String, CodingKey { case type, uri, folder }
 
     init(from decoder: Decoder) throws {
@@ -182,8 +158,7 @@ extension RootEntry: Codable {
 }
 
 extension RootFolder {
-    // Decode the current shape (`entries`) or a pre-nesting folder (`rootURIs`),
-    // so a library written before folders nested keeps loading.
+    // The current shape (`entries`) or a pre-nesting folder (`rootURIs`).
     private enum CodingKeys: String, CodingKey { case id, name, entries, rootURIs, isExpanded }
 
     init(from decoder: Decoder) throws {
@@ -260,18 +235,15 @@ final class WorkspaceStore {
         library.workspaces.first { $0.id == library.activeID } ?? library.workspaces[0]
     }
 
-    /// Where the groups actually live — see `GroupFold`.
-    let collections: CollectionStore
+    /// Called when the active workspace's sidebar changes, however it changed —
+    /// so the owner can bring the mounted roots and the group rows up to date
+    /// from one place.
+    @ObservationIgnored var onActiveTreeChanged: (() -> Void)?
 
     /// - Parameter fileURL: Overridable for tests; defaults to Application Support.
-    /// - Parameter collections: The collections the groups are kept in. By
-    ///   default those beside the workspace file, so a store opened on a
-    ///   temporary file never touches the reader's own.
-    init(fileURL: URL? = nil, collections: CollectionStore? = nil) {
+    init(fileURL: URL? = nil) {
         let url = fileURL ?? Self.defaultURL()
         self.fileURL = url
-        self.collections = collections ?? CollectionStore(
-            url: url.deletingLastPathComponent().appendingPathComponent("collections.json"))
 
         if let data = try? Data(contentsOf: url),
            let lib = try? JSONDecoder().decode(WorkspaceLibrary.self, from: data),
@@ -292,141 +264,94 @@ final class WorkspaceStore {
         if !library.workspaces.contains(where: { $0.id == library.activeID }) {
             library.activeID = library.workspaces[0].id
         }
-        foldGroupsIntoCollections()
+        migrateToPlacements()
         healRecency()
         persist()
-        // A change made to the collections elsewhere — a file renamed under a
-        // group, something deleted — has to reach the sidebar that draws them.
-        self.collections.onChange = { [weak self] in
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    guard let self, self.reprojectAll() else { return }
-                    self.persist()
-                    self.onActiveTreeChanged?()
-                }
-            }
-        }
     }
 
-    // MARK: Groups, as collections
+    // MARK: Migration
 
-    /// Turn every workspace's folders into collections, once.
+    /// Give every workspace written by an older build its placements, once.
     ///
-    /// A workspace whose top-level collection already exists has been done
-    /// already. One that has none has not — which is also what happens if the
-    /// collections are ever lost, and then the layout still written beside
-    /// them rebuilds them rather than leaving an empty sidebar.
-    private func foldGroupsIntoCollections() {
-        let existing = collections.byID
-        for i in library.workspaces.indices where existing[library.workspaces[i].id] == nil {
-            let workspace = library.workspaces[i]
-            backUpLibraryOnce()
-            collections.replace(
-                upserting: GroupFold.collections(from: workspace.layout.entries,
-                                                 workspace: workspace.id, named: workspace.name),
-                removing: [])
-            library.workspaces[i].collapsedGroups = GroupFold.collapsed(in: workspace.layout.entries)
-        }
-        // A group was open unless someone closed it; a node is closed unless
-        // someone opened it. Groups are nodes now, so the ones that were open
-        // join the open nodes — once, after which there is no separate list.
+    /// From the collections beside it, if it was written by a build that kept
+    /// its groups there; else from the layout it was written with. Whatever
+    /// its expansion said about groups is carried over, under the names the
+    /// groups now carry in their URIs.
+    ///
+    /// Collections were shared between workspaces, and placements are not: a
+    /// group two workspaces reached is copied into each, and every copy after
+    /// the first is given an identity of its own, or renaming it in one would
+    /// rename it in both.
+    private func migrateToPlacements() {
+        let records = Self.legacyCollections(besides: fileURL)
+        var claimed: Set<UUID> = []
         for i in library.workspaces.indices {
-            guard let closed = library.workspaces[i].collapsedGroups else { continue }
-            let id = library.workspaces[i].id
-            let open = reachable(from: id, in: collections.byID).subtracting([id])
-                .map(CollectionRef.uri(for:)).filter { !closed.contains($0) }
-            library.workspaces[i].revealedNodes =
-                Set(library.workspaces[i].revealedNodes).union(open).sorted()
-            library.workspaces[i].collapsedGroups = nil
+            var workspace = library.workspaces[i]
+            if let layout = workspace.legacyLayout {
+                backUpBeforePlacements()
+                var open: Set<UUID>
+                if records[workspace.id] != nil {
+                    workspace.placements = Placements.migrating(records, workspace: workspace.id)
+                    let closed = Set((workspace.legacyCollapsedGroups ?? []).compactMap(CollectionRef.id(from:)))
+                    open = workspace.legacyCollapsedGroups == nil ? []
+                        : Set(workspace.placements.collections(from: workspace.root)
+                                .compactMap { CollectionRef.id(from: $0.uri) }).subtracting(closed)
+                } else {
+                    let folders = Dictionary(uniqueKeysWithValues:
+                        layout.records(workspace: workspace.id, named: workspace.name).map { ($0.id, $0) })
+                    workspace.placements = Placements.migrating(folders, workspace: workspace.id)
+                    open = Set(layout.openFolders)
+                }
+                // Expansion named groups by id alone; they are named now.
+                open.formUnion(workspace.revealedNodes.compactMap(CollectionRef.id(from:)))
+                let placements = workspace.placements
+                workspace.revealedNodes = workspace.revealedNodes
+                    .filter { CollectionRef.id(from: $0) == nil }
+                    + open.compactMap { placements.collection($0) }
+                workspace.revealedNodes.sort()
+                workspace.legacyLayout = nil
+                workspace.legacyCollapsedGroups = nil
+            }
+            for (uri, _) in workspace.placements.collections(from: workspace.root) {
+                guard let id = CollectionRef.id(from: uri), !claimed.insert(id).inserted,
+                      let name = CollectionRef.name(from: uri) else { continue }
+                let fresh = CollectionRef.uri(for: UUID(), named: name)
+                workspace.placements.remap(from: uri, to: fresh)
+                workspace.revealedNodes = workspace.revealedNodes.map { $0 == uri ? fresh : $0 }
+            }
+            library.workspaces[i] = workspace
         }
-        reprojectAll()
     }
 
-    /// A copy of the library as it was before any of this, kept once.
-    ///
-    /// The layout is still written beside the collections, so this is not the
-    /// only way back. It is the one that does not depend on this code being
-    /// right.
-    private func backUpLibraryOnce() {
-        let backup = fileURL.deletingLastPathComponent()
-            .appendingPathComponent("workspaces.pre-collections.json")
+    /// The collections an older build kept beside the library, if any.
+    private static func legacyCollections(besides url: URL) -> [UUID: CollectionRecord] {
+        let file = url.deletingLastPathComponent().appendingPathComponent("collections.json")
+        guard let data = try? Data(contentsOf: file),
+              let records = try? JSONDecoder().decode([CollectionRecord].self, from: data)
+        else { return [:] }
+        return Dictionary(records.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+    }
+
+    /// Copies of the library and the collections as they were, kept once,
+    /// before anything is written in the new shape. Nothing reads
+    /// `collections.json` after this, and it is left where it is.
+    private func backUpBeforePlacements() {
+        let dir = fileURL.deletingLastPathComponent()
         let files = FileManager.default
-        guard files.fileExists(atPath: fileURL.path), !files.fileExists(atPath: backup.path)
-        else { return }
-        try? files.copyItem(at: fileURL, to: backup)
-    }
-
-    /// Redraw one workspace's layout from its collections. Whether it changed.
-    @discardableResult
-    private func reproject(at i: Int) -> Bool {
-        let workspace = library.workspaces[i]
-        let records = collections.byID
-        guard records[workspace.id] != nil else { return false }
-        // Open or closed is the node expansion now, groups included. Written
-        // into the mirrored layout anyway, so a build from before reads a
-        // sidebar opened the same way.
-        let groups = reachable(from: workspace.id, in: records).subtracting([workspace.id])
-        let collapsed = Set(groups.map(CollectionRef.uri(for:)))
-            .subtracting(workspace.revealedNodes)
-        let entries = GroupFold.layout(workspace: workspace.id, records: records,
-                                       collapsed: collapsed)
-        guard entries != workspace.layout.entries else { return false }
-        library.workspaces[i].layout.entries = entries
-        return true
-    }
-
-    /// Called when the active workspace's sidebar tree changes, however it
-    /// changed — so the owner can bring the mounted roots and the group rows'
-    /// records up to date from one place.
-    var onActiveTreeChanged: (() -> Void)?
-
-    @discardableResult
-    private func reprojectActive() -> Bool {
-        guard let i = library.workspaces.firstIndex(where: { $0.id == library.activeID })
-        else { return false }
-        return reproject(at: i)
-    }
-
-    private func treeChanged() {
-        let changed = reprojectActive()
-        persist()
-        if changed { onActiveTreeChanged?() }
-    }
-
-    @discardableResult
-    private func reprojectAll() -> Bool {
-        var changed = false
-        for i in library.workspaces.indices where reproject(at: i) { changed = true }
-        return changed
-    }
-
-    /// Every collection a workspace's sidebar is made of.
-    private func reachable(from workspace: UUID,
-                           in records: [UUID: CollectionRecord]) -> Set<UUID> {
-        var seen: Set<UUID> = []
-        var pending = [workspace]
-        while let id = pending.popLast() {
-            guard seen.insert(id).inserted, let record = records[id] else { continue }
-            pending += record.members.compactMap(CollectionRef.id(from:))
+        for (name, backup) in [("workspaces.json", "workspaces.pre-placements.json"),
+                               ("collections.json", "collections.pre-placements.json")] {
+            let from = dir.appendingPathComponent(name), to = dir.appendingPathComponent(backup)
+            guard files.fileExists(atPath: from.path), !files.fileExists(atPath: to.path) else { continue }
+            try? files.copyItem(at: from, to: to)
         }
-        return seen
-    }
-
-    private func reachable(fromAllBut excluded: UUID) -> Set<UUID> {
-        let records = collections.byID
-        return library.workspaces.filter { $0.id != excluded }
-            .reduce(into: Set<UUID>()) { $0.formUnion(reachable(from: $1.id, in: records)) }
     }
 
     // MARK: Roots of the active workspace
 
-    /// Everything mounted in the active workspace, resolved: the members that
-    /// are not groups, reachable from its top level. Read-only — see
+    /// Everything mounted in the active workspace, resolved. Read-only — see
     /// `restoreRoots` for the launch path.
     func resolvedRoots(using providers: [NodeProvider]) -> [NodeID] {
-        reprojectActive()
-        return Self.resolve(GroupFold.roots(workspace: active.id, records: collections.byID),
-                            using: providers)
+        Self.resolve(active.rootURIs, using: providers)
     }
 
     /// Members with no provider are left out: nothing can load them, and the
@@ -450,35 +375,27 @@ final class WorkspaceStore {
     /// will not resolve is dropped.
     @discardableResult
     func restoreRoots(using providers: [NodeProvider]) -> [NodeID] {
-        let records = collections.byID
-        var rewritten: [CollectionRecord] = []
-        for id in reachable(from: active.id, in: records) {
-            guard var record = records[id] else { continue }
-            var members: [String] = []
-            for member in record.members {
-                if let child = CollectionRef.id(from: member), records[child] != nil {
-                    members.append(member)                                    // a group
-                    continue
+        changeActive { placements, root in
+            for parent in [root] + placements.collections(from: root).map(\.uri) {
+                var members: [String] = []
+                for member in placements.children(of: parent) {
+                    if Placements.isCollection(member) {
+                        members.append(member)                                    // a group
+                        continue
+                    }
+                    guard let scheme = NodeID(member)?.scheme else { continue }   // malformed
+                    guard let provider = providers.first(where: { $0.schemes.contains(scheme) }) else {
+                        members.append(member)                                    // plugin not loaded
+                        continue
+                    }
+                    guard let resolved = provider.resolve(member) else { continue }
+                    if !members.contains(resolved.uri) { members.append(resolved.uri) }
                 }
-                guard let scheme = NodeID(member)?.scheme else { continue }   // malformed
-                guard let provider = providers.first(where: { $0.schemes.contains(scheme) }) else {
-                    members.append(member)                                    // plugin not loaded
-                    continue
-                }
-                guard let resolved = provider.resolve(member) else { continue }
-                if !members.contains(resolved.uri) { members.append(resolved.uri) }
+                placements.setChildren(members, of: parent)
             }
-            if members != record.members {
-                record.members = members
-                rewritten.append(record)
-            }
-        }
-        if !rewritten.isEmpty {
-            collections.replace(upserting: rewritten, removing: [], transient: active.isEphemeral)
         }
         let roots = resolvedRoots(using: providers)
         liveRoots = Set(roots.map(\.uri))
-        treeChanged()
         return roots
     }
 
@@ -489,7 +406,7 @@ final class WorkspaceStore {
     /// is never among the live roots, and pruning everything missing from them
     /// is how the sidebar used to lose it — silently, the next time anything
     /// else was mounted.
-    private var liveRoots: Set<String> = []
+    @ObservationIgnored private var liveRoots: Set<String> = []
 
     /// Bring the active workspace in line with the live root set, after
     /// something mounted or unmounted outside the sidebar.
@@ -500,135 +417,97 @@ final class WorkspaceStore {
     /// or not: they are there on purpose.
     func reconcileRoots(_ roots: [NodeID], placingNewInto group: UUID? = nil) {
         let desired = roots.map(\.uri)
-        let desiredSet = Set(desired)
-        var records = collections.byID
-        let tree = reachable(from: active.id, in: records)
-        var updated: [UUID: CollectionRecord] = [:]
-
-        let gone = liveRoots.subtracting(desiredSet)
-        if !gone.isEmpty {
-            for id in tree {
-                guard var record = records[id] else { continue }
-                let kept = record.members.filter { !gone.contains($0) }
-                guard kept != record.members else { continue }
-                record.members = kept
-                records[id] = record
-                updated[id] = record
+        let gone = liveRoots.subtracting(desired)
+        liveRoots = Set(desired)
+        let destination = uri(of: group)
+        changeActive { placements, root in
+            if !gone.isEmpty {
+                for parent in [root] + placements.collections(from: root).map(\.uri) {
+                    placements.release(Array(gone), from: parent)
+                }
             }
+            let placed = Set(placements.leaves(from: root))
+            let additions = desired.filter { !placed.contains($0) }
+            if !additions.isEmpty { placements.adopt(additions, into: destination ?? root) }
         }
-        let placed = Set(GroupFold.roots(workspace: active.id, records: records))
-        let additions = desired.filter { !placed.contains($0) }
-        let destination = group.flatMap { tree.contains($0) ? $0 : nil } ?? active.id
-        if !additions.isEmpty, var holder = records[destination] {
-            holder.members = CollectionRules.adopt(additions, into: holder.members, at: nil)
-            updated[destination] = holder
-        }
-        liveRoots = desiredSet
-        if !updated.isEmpty {
-            collections.replace(upserting: Array(updated.values), removing: [],
-                                transient: active.isEphemeral)
-        }
-        treeChanged()
     }
 
     // MARK: Groups in the active workspace
 
+    /// The URI a group of the active sidebar goes by now — nil is the top
+    /// level. Nil for a group the sidebar does not show.
+    ///
+    /// Groups are passed around by id because the id outlives a rename, and a
+    /// drag that started before one should still land.
+    func uri(of group: UUID?) -> String? {
+        guard let group, group != active.id else { return active.root }
+        return active.placements.collections(from: active.root)
+            .first { CollectionRef.id(from: $0.uri) == group }?.uri
+    }
+
     /// A new, empty group inside `parent`, or at the top level.
     @discardableResult
     func createGroup(named name: String, in parent: UUID? = nil) -> UUID {
-        let records = collections.byID
-        let tree = reachable(from: active.id, in: records)
-        let destination = parent.flatMap { tree.contains($0) ? $0 : nil } ?? active.id
-        guard var holder = records[destination] else { return active.id }
-        let group = CollectionRecord(id: UUID(), name: name, members: [])
-        holder.members.append(group.uri)
-        collections.replace(upserting: [group, holder], removing: [], transient: active.isEphemeral)
-        treeChanged()
-        return group.id
+        let destination = uri(of: parent) ?? active.root
+        var made = ""
+        changeActive { placements, _ in
+            made = placements.createCollection(named: name, in: destination)
+        }
+        return CollectionRef.id(from: made) ?? active.id
+    }
+
+    /// Rename a group. Its old URI and its new one, for whoever has to follow
+    /// the change — it is the same change a renamed file makes.
+    @discardableResult
+    func renameGroup(_ id: UUID, to name: String) -> (from: String, to: String)? {
+        guard id != active.id, let old = uri(of: id) else { return nil }
+        var new: String?
+        changeActive { placements, _ in new = placements.rename(old, to: name) }
+        guard let new, new != old else { return nil }
+        mutateActive { $0.revealedNodes = $0.revealedNodes.map { $0 == old ? new : $0 }.sorted() }
+        return (old, new)
     }
 
     /// Move things from one place in the sidebar to another: out of `source`
     /// and into `destination` (nil is the top level for both) at `index`.
     ///
     /// Within one place this is a reorder, and the position counts from before
-    /// the item leaves — so dropping on the strip above C lands before C. The
-    /// old layout removed first and inserted after, which put anything moved
-    /// downward one place past where it was aimed.
+    /// the item leaves — so dropping on the strip above C lands before C.
     func move(_ uris: [String], from source: UUID?, to destination: UUID?, at index: Int?) {
-        let records = collections.byID
-        let tree = reachable(from: active.id, in: records)
-        let from = source ?? active.id, to = destination ?? active.id
-        guard !uris.isEmpty, tree.contains(from), tree.contains(to),
-              !formsCycle(moving: uris, into: to, records: records) else { return }
-        var updated: [UUID: CollectionRecord] = [:]
-        if from != to, var holder = records[from] {
-            holder.members = CollectionRules.release(uris, from: holder.members)
-            updated[from] = holder
+        guard let from = uri(of: source), let to = uri(of: destination), !uris.isEmpty else { return }
+        changeActive { placements, _ in
+            guard !placements.formsCycle(adopting: uris, into: to) else { return }
+            if from != to { placements.release(uris, from: from) }
+            placements.adopt(uris, into: to, at: index)
         }
-        if var holder = updated[to] ?? records[to] {
-            holder.members = CollectionRules.adopt(uris, into: holder.members, at: index)
-            updated[to] = holder
-        }
-        collections.replace(upserting: Array(updated.values), removing: [],
-                            transient: active.isEphemeral)
-        treeChanged()
     }
 
     /// Put things into `destination` as well, leaving them where they already
     /// are — what membership allows, and what holding Option while dragging
     /// asks for.
     func add(_ uris: [String], to destination: UUID?, at index: Int?) {
-        let records = collections.byID
-        let to = destination ?? active.id
-        guard !uris.isEmpty, reachable(from: active.id, in: records).contains(to),
-              !formsCycle(moving: uris, into: to, records: records),
-              var holder = records[to] else { return }
-        holder.members = CollectionRules.adopt(uris, into: holder.members, at: index)
-        collections.replace(upserting: [holder], removing: [], transient: active.isEphemeral)
-        treeChanged()
+        guard let to = uri(of: destination) else { return }
+        changeActive { placements, _ in placements.adopt(uris, into: to, at: index) }
     }
 
     /// Delete a group. What it held takes its place wherever it was — nothing
     /// in a group is lost with the group.
     func deleteGroup(_ id: UUID) {
-        guard id != active.id else { return }
-        collections.delete(id)
-        treeChanged()
+        guard id != active.id, let group = uri(of: id) else { return }
+        changeActive { placements, _ in placements.delete(group) }
     }
 
     /// Take things out of one place in the sidebar — `group`, or the top level.
     ///
     /// Anything also somewhere else stays there, and stays mounted. A group
-    /// that now lives nowhere is deleted, and so is any group inside it that
-    /// nothing else holds: a collection exists only in sidebars, so for one
-    /// that is in no sidebar, removing it is deleting it. Left behind it would
-    /// be a record nothing can ever reach again.
-    ///
-    /// Only what this removal orphaned. A collection unreachable for some other
-    /// reason — left by an older build — is not this operation's to judge.
+    /// that now lives nowhere is gone, with any group inside it that nothing
+    /// else holds: a collection exists only in the sidebar, so removing it
+    /// from the last place it is shown is deleting it.
     func remove(_ uris: [String], from group: UUID?) {
-        let from = group ?? active.id
-        var records = collections.byID
-        guard reachable(from: active.id, in: records).contains(from),
-              var holder = records[from] else { return }
-        holder.members = CollectionRules.release(uris, from: holder.members)
-        records[from] = holder
-
-        let candidates = uris.compactMap(CollectionRef.id(from:))
-            .reduce(into: Set<UUID>()) { $0.formUnion(reachable(from: $1, in: records)) }
-        let stillShown = library.workspaces
-            .reduce(into: Set<UUID>()) { $0.formUnion(reachable(from: $1.id, in: records)) }
-        collections.replace(upserting: [holder], removing: candidates.subtracting(stillShown),
-                            transient: active.isEphemeral)
-        treeChanged()
-    }
-
-    /// Whether putting these into `destination` would put a group inside
-    /// itself — the one arrangement the sidebar cannot draw.
-    private func formsCycle(moving uris: [String], into destination: UUID,
-                            records: [UUID: CollectionRecord]) -> Bool {
-        uris.compactMap(CollectionRef.id(from:)).contains { group in
-            reachable(from: group, in: records).contains(destination)
+        guard let from = uri(of: group) else { return }
+        changeActive { placements, root in
+            placements.release(uris, from: from)
+            placements.collectGarbage(root: root)
         }
     }
 
@@ -643,8 +522,36 @@ final class WorkspaceStore {
 
     /// The group directly holding `uri`, if anything but the top level does.
     func groupContaining(_ uri: String) -> UUID? {
-        reprojectActive()
-        return RootLayout.folderID(containing: uri, in: active.layout.entries)
+        active.placements.collections(from: active.root)
+            .first { active.placements.children(of: $0.uri).contains(uri) }
+            .flatMap { CollectionRef.id(from: $0.uri) }
+    }
+
+    // MARK: Changes reported elsewhere
+
+    /// Follow a rename into every workspace — as something placed, and as
+    /// somewhere things were placed.
+    func remap(from old: String, to new: String) {
+        changeEvery { $0.remap(from: old, to: new) }
+    }
+
+    /// Something deleted, not merely unreachable, leaves every workspace, and
+    /// takes what was placed inside it along.
+    func removeEverywhere(_ uri: String) {
+        changeEvery { placements in placements.remove(uri) }
+    }
+
+    /// What a collection holds, from whichever workspace has it. Nil if none
+    /// does: an old name, or a collection deleted since.
+    func members(of collection: String) -> [String]? {
+        for workspace in library.workspaces {
+            let placements = workspace.placements
+            if placements.children[collection] != nil
+                || !placements.holders(of: collection).isEmpty {
+                return placements.children(of: collection)
+            }
+        }
+        return nil
     }
 
     // MARK: Library management
@@ -653,9 +560,6 @@ final class WorkspaceStore {
     func create(named name: String) -> Workspace {
         let workspace = Workspace(name: name)
         library.workspaces.append(workspace)
-        collections.replace(upserting: GroupFold.collections(from: [], workspace: workspace.id,
-                                                             named: name),
-                            removing: [])
         persist()
         return workspace
     }
@@ -666,10 +570,6 @@ final class WorkspaceStore {
         var workspace = Workspace(name: name, rootURIs: rootURIs)
         workspace.isEphemeral = true
         library.workspaces.append(workspace)
-        // In memory only, like the workspace: written down if it is kept.
-        collections.replace(upserting: GroupFold.collections(from: workspace.layout.entries,
-                                                             workspace: workspace.id, named: name),
-                            removing: [], transient: true)
         return workspace
     }
 
@@ -679,17 +579,12 @@ final class WorkspaceStore {
         guard let i = library.workspaces.firstIndex(where: { $0.id == id }),
               library.workspaces[i].isEphemeral else { return }
         library.workspaces[i].isEphemeral = false
-        collections.makePermanent(reachable(from: id, in: collections.byID))
         persist()
     }
 
     func rename(_ id: UUID, to name: String) {
         guard let i = library.workspaces.firstIndex(where: { $0.id == id }) else { return }
         library.workspaces[i].name = name
-        if var top = collections.record(id) {
-            top.name = name
-            collections.replace(upserting: [top], removing: [])
-        }
         persist()
     }
 
@@ -699,10 +594,6 @@ final class WorkspaceStore {
     func delete(_ id: UUID) {
         guard library.workspaces.count > 1,
               let i = library.workspaces.firstIndex(where: { $0.id == id }) else { return }
-        // Its groups go with it, except any another workspace still shows.
-        let doomed = reachable(from: id, in: collections.byID)
-            .subtracting(reachable(fromAllBut: id))
-        collections.replace(upserting: [], removing: doomed)
         library.workspaces.remove(at: i)
         library.recentIDs.removeAll { $0 == id }
         // The most recently used one, which is where you were before here.
@@ -752,18 +643,39 @@ final class WorkspaceStore {
 
     // MARK: Persistence
 
-    /// Change the active workspace's own settings — not its groups, which are
-    /// written as collections by the operations above.
-    ///
-    /// Redrawn from the collections before and after: the layout in memory is
-    /// only as fresh as its last redraw, and the mirror written beside it has
-    /// to match what is actually there.
+    /// Change the active workspace's placements, writing and telling the owner
+    /// only if anything actually changed.
+    private func changeActive(_ change: (inout Placements, String) -> Void) {
+        guard let i = library.workspaces.firstIndex(where: { $0.id == library.activeID })
+        else { return }
+        var placements = library.workspaces[i].placements
+        change(&placements, library.workspaces[i].root)
+        guard placements != library.workspaces[i].placements else { return }
+        library.workspaces[i].placements = placements
+        persist()
+        onActiveTreeChanged?()
+    }
+
+    /// The same, in every workspace.
+    private func changeEvery(_ change: (inout Placements) -> Void) {
+        var activeChanged = false, anyChanged = false
+        for i in library.workspaces.indices {
+            var placements = library.workspaces[i].placements
+            change(&placements)
+            guard placements != library.workspaces[i].placements else { continue }
+            library.workspaces[i].placements = placements
+            anyChanged = true
+            if library.workspaces[i].id == library.activeID { activeChanged = true }
+        }
+        if anyChanged { persist() }
+        if activeChanged { onActiveTreeChanged?() }
+    }
+
+    /// Change the active workspace's own settings — not its placements.
     private func mutateActive(_ change: (inout Workspace) -> Void) {
         guard let i = library.workspaces.firstIndex(where: { $0.id == library.activeID })
         else { return }
-        reproject(at: i)
         change(&library.workspaces[i])
-        reproject(at: i)
         persist()
     }
 

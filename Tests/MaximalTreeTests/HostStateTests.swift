@@ -381,9 +381,8 @@ import Foundation
 
         let store = WorkspaceStore(fileURL: file)
         #expect(store.active.rootURIs == ["file:///a", "file:///b"])
-        #expect(store.active.layout.entries.allSatisfy {
-            if case .root = $0 { return true } else { return false }
-        })
+        #expect(store.active.placements.children(of: store.active.root) == ["file:///a", "file:///b"],
+                "loose, at the top level")
     }
 }
 
@@ -400,7 +399,14 @@ import Foundation
 
     private func ids(_ uris: String...) -> [NodeID] { uris.compactMap(NodeID.init) }
 
-    private func group(_ id: UUID) -> String { CollectionRef.uri(for: id) }
+    /// What a group of the active sidebar holds.
+    private func members(_ store: WorkspaceStore, _ group: UUID?) -> [String]? {
+        store.uri(of: group).map(store.active.placements.children(of:))
+    }
+
+    private func group(_ store: WorkspaceStore, _ id: UUID) throws -> String {
+        try #require(store.uri(of: id))
+    }
 
     @Test func reconcilePlacesNewRootsIntoTheTargetGroup() throws {
         let store = try store()
@@ -434,9 +440,7 @@ import Foundation
         #expect(store.groupContaining("file:///a") == group)
         #expect(store.active.rootURIs == ["file:///a"])
         // Empty or not, the group is intentional — it stays.
-        #expect(store.active.layout.entries.contains {
-            if case .folder(let f) = $0 { return f.id == group } else { return false }
-        })
+        #expect(store.uri(of: group) != nil)
     }
 
     @Test func groupsNestAndMoveByIndex() throws {
@@ -446,11 +450,11 @@ import Foundation
         let inner = store.createGroup(named: "Inner", in: outer)
 
         // Nesting: Inner sits inside Outer.
-        #expect(store.collections.record(outer)?.members.contains(group(inner)) == true)
+        #expect(members(store, outer)?.contains(try group(store, inner)) == true)
 
         // Position: put c first at the top level.
         store.move(["file:///c"], from: nil, to: nil, at: 0)
-        #expect(store.active.layout.rootURIs.first == "file:///c")
+        #expect(store.active.rootURIs.first == "file:///c")
 
         // Move a root into the nested Inner group.
         store.move(["file:///a"], from: nil, to: inner, at: nil)
@@ -463,10 +467,9 @@ import Foundation
         let inner = store.createGroup(named: "Inner", in: outer)
 
         // Refused: Outer into Inner would make a cycle. Nothing changes.
-        let before = store.active.layout
-        store.move([group(outer)], from: nil, to: inner, at: nil)
-        #expect(store.active.layout == before)
-        #expect(store.collections.record(outer)?.members.contains(group(inner)) == true)
+        let before = store.active.placements
+        store.move([try group(store, outer)], from: nil, to: inner, at: nil)
+        #expect(store.active.placements == before)
     }
 
     @Test func deletingANestedGroupSpillsItsContentsInPlace() throws {
@@ -506,9 +509,8 @@ import Foundation
         let restored = store.restoreRoots(using: [FileSystemProvider()])
 
         #expect(restored.map(\.uri) == [canonical], "resolves to the live root")
-        #expect(store.collections.record(work)?.members == [canonical],
-                "rewritten in place — still in its group")
-        #expect(store.collections.record(store.active.id)?.members == [group(work)],
+        #expect(members(store, work) == [canonical], "rewritten in place — still in its group")
+        #expect(members(store, nil) == [try group(store, work)],
                 "no duplicate re-appended at the top level")
     }
 
@@ -547,7 +549,7 @@ import Foundation
         store.reconcileRoots([NodeID("file:///a")!, NodeID("nope://x")!])
         let live = store.restoreRoots(using: [])          // nothing is loadable
         store.reconcileRoots(live + [NodeID("file:///new")!])
-        #expect(store.active.layout.rootURIs.contains("nope://x"),
+        #expect(store.active.rootURIs.contains("nope://x"),
                 "a root was dropped because its plugin was not loaded")
     }
 
@@ -559,8 +561,7 @@ import Foundation
         store.reconcileRoots(ids("file:///a", "file:///b", "file:///c"))
         // The strip above C sits at index 2.
         store.move(["file:///a"], from: nil, to: nil, at: 2)
-        #expect(store.active.layout.entries == [.root("file:///b"), .root("file:///a"),
-                                                .root("file:///c")])
+        #expect(store.active.rootURIs == ["file:///b", "file:///a", "file:///c"])
     }
 
     /// Membership: the same root in two groups, taken out of one, is still in
@@ -575,55 +576,73 @@ import Foundation
 
         store.remove(["file:///a"], from: left)
 
-        #expect(store.collections.record(left)?.members == [])
-        #expect(store.collections.record(right)?.members == ["file:///a"])
+        #expect(members(store, left) == [])
+        #expect(members(store, right) == ["file:///a"])
         #expect(store.active.rootURIs == ["file:///a"], "no longer mounted")
     }
 
-    /// A collection lives only in sidebars, so removing one from the only
-    /// sidebar that shows it deletes it — along with any group inside it that
-    /// nothing else holds — rather than leaving records nothing can reach.
-    @Test func removingACollectionFromTheOnlySidebarShowingItDeletesIt() throws {
+    /// A collection lives only in the sidebar, so removing it from the last
+    /// place it is shown deletes it — along with any group inside it that
+    /// nothing else holds.
+    @Test func removingACollectionFromItsOnlyPlaceDeletesIt() throws {
         let store = try store()
         let outer = store.createGroup(named: "Outer")
         let inner = store.createGroup(named: "Inner", in: outer)
         store.add(["file:///a"], to: inner, at: nil)
+        let innerURI = try group(store, inner)
 
-        store.remove([group(outer)], from: nil)
+        store.remove([try group(store, outer)], from: nil)
 
-        #expect(store.collections.record(outer) == nil, "left behind where nothing can reach it")
-        #expect(store.collections.record(inner) == nil, "a group inside it was left behind")
-        #expect(store.active.layout.entries.isEmpty)
+        #expect(store.uri(of: outer) == nil)
+        #expect(store.active.placements.children[innerURI] == nil, "a group inside it was left behind")
+        #expect(store.active.placements.children.isEmpty)
     }
 
-    /// Not when something else still shows it: that is only taking it out of
+    /// Not when another group still holds it: that is only taking it out of
     /// one place.
-    @Test func removingACollectionShownElsewhereKeepsIt() throws {
-        let store = try store()
-        let shared = store.createGroup(named: "Shared")
-        let nested = store.createGroup(named: "Nested", in: shared)
-        let other = store.create(named: "Other")
-        store.collections.adopt([group(shared)], into: other.id, at: nil)
-
-        store.remove([group(shared)], from: nil)
-
-        #expect(store.collections.record(shared) != nil, "another workspace still shows it")
-        #expect(store.collections.record(nested) != nil)
-    }
-
-    /// And a group inside the removed one is kept if another group holds it
-    /// too — it still lives somewhere.
     @Test func aNestedGroupHeldElsewhereSurvivesItsParentsRemoval() throws {
         let store = try store()
         let doomed = store.createGroup(named: "Doomed")
         let kept = store.createGroup(named: "Kept")
         let both = store.createGroup(named: "Both", in: doomed)
-        store.add([group(both)], to: kept, at: nil)
+        store.add([try group(store, both)], to: kept, at: nil)
 
-        store.remove([group(doomed)], from: nil)
+        store.remove([try group(store, doomed)], from: nil)
 
-        #expect(store.collections.record(doomed) == nil)
-        #expect(store.collections.record(both) != nil, "deleted while another group held it")
+        #expect(store.uri(of: doomed) == nil)
+        #expect(store.uri(of: both) != nil, "deleted while another group held it")
+    }
+
+    /// Renaming a group gives it a new URI; the sidebar follows, open state
+    /// included, and it keeps its id — so a drag begun before still lands.
+    @Test func renamingAGroupKeepsItsPlaceAndItsOpenState() throws {
+        let store = try store()
+        let work = store.createGroup(named: "Work")
+        store.add(["file:///a"], to: work, at: nil)
+        let old = try group(store, work)
+        store.setRevealedNodes([old])
+
+        let renamed = try #require(store.renameGroup(work, to: "Job"))
+
+        #expect(renamed.from == old)
+        #expect(try group(store, work) == renamed.to)
+        #expect(CollectionRef.name(from: renamed.to) == "Job")
+        #expect(members(store, work) == ["file:///a"])
+        #expect(store.active.revealedNodes == [renamed.to])
+    }
+
+    /// Placements belong to their workspace: the other workspaces are not
+    /// arranged by this one.
+    @Test func workspacesDoNotShareTheirArrangement() throws {
+        let store = try store()
+        let first = store.active.id
+        let group = store.createGroup(named: "Mine")
+        let second = store.create(named: "Second")
+        store.setActive(second.id)
+        #expect(store.uri(of: group) == nil)
+        #expect(store.active.placements.children.isEmpty)
+        store.setActive(first)
+        #expect(store.uri(of: group) != nil)
     }
 
     @Test func groupsAndMembershipPersist() throws {
@@ -641,6 +660,6 @@ import Foundation
 
         let reloaded = WorkspaceStore(fileURL: file)
         #expect(reloaded.groupContaining("file:///a") == group)
-        #expect(reloaded.collections.record(group)?.name == "Work")
+        #expect(reloaded.uri(of: group).flatMap(CollectionRef.name(from:)) == "Work")
     }
 }

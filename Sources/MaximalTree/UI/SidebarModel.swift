@@ -65,10 +65,11 @@ struct SidebarGraph {
 }
 
 enum SidebarRows {
-    /// The visible tree, in order. Expanded folders recurse into their entries;
-    /// expanded nodes recurse into their children (asking `children` lazily, so
-    /// collapsed subtrees cost nothing and trigger no loads).
-    static func flatten(entries: [RootEntry],
+    /// The visible tree, in order. Expanded groups recurse into what was
+    /// placed in them; expanded nodes recurse into their children (asking
+    /// `children` lazily, so collapsed subtrees cost nothing and trigger no
+    /// loads).
+    static func flatten(placements: Placements, root: String,
                         expandedNodes: Set<NodeID>,
                         graph: SidebarGraph) -> [SidebarRow] {
         var rows: [SidebarRow] = []
@@ -100,39 +101,44 @@ enum SidebarRows {
             }
         }
 
-        func walkEntries(_ entries: [RootEntry], container: UUID?, depth: Int,
-                         parentRow: String? = nil, parent: NodeID? = nil,
-                         ancestors: Set<NodeID> = []) {
-            for (index, entry) in entries.enumerated() {
+        func walkPlaced(in holder: String, container: UUID?, depth: Int,
+                        parentRow: String? = nil, parent: NodeID? = nil,
+                        ancestors: Set<NodeID> = []) {
+            for (index, uri) in placements.children(of: holder).enumerated() {
                 let position = SidebarRow.EntryPosition(container: container, index: index)
-                switch entry {
-                case .root(let uri):
-                    guard let id = NodeID(uri) else { continue }
+                guard let id = NodeID(uri) else { continue }
+                guard Placements.isCollection(uri), let group = CollectionRef.id(from: uri) else {
                     walkNode(id, depth: depth, entry: position,
                              parentRow: parentRow, parent: parent, ancestors: ancestors)
-                case .folder(let folder):
-                    // A group is a node like any other: selected, opened, walked
-                    // to with the keyboard, taken out of its parent. What it holds
-                    // comes from the group tree, not a listing — it is already
-                    // known, and asking for it would draw a tick late.
-                    let id = NodeID(canonical: CollectionRef.uri(for: folder.id))
-                    let rowID = parentRow.map { "\($0)>\(id.uri)" } ?? "n:\(id.uri)"
-                    let expandable = !folder.entries.isEmpty && !ancestors.contains(id)
-                    let expanded = expandable && expandedNodes.contains(id)
-                    rows.append(.node(id, depth: depth, expandable: expandable,
-                                      expanded: expanded, entry: position,
-                                      rowID: rowID, parent: parent))
-                    if expanded {
-                        walkEntries(folder.entries, container: folder.id, depth: depth + 1,
-                                    parentRow: rowID, parent: id,
-                                    ancestors: ancestors.union([id]))
-                    }
+                    continue
+                }
+                // A group is a node like any other: selected, opened, walked
+                // to with the keyboard, taken out of its parent. What it holds
+                // comes from the placements, not a listing — it is already
+                // known, and asking for it would draw a tick late.
+                let rowID = parentRow.map { "\($0)>\(uri)" } ?? "n:\(uri)"
+                let expandable = !placements.children(of: uri).isEmpty && !ancestors.contains(id)
+                let expanded = expandable && expandedNodes.contains(id)
+                rows.append(.node(id, depth: depth, expandable: expandable,
+                                  expanded: expanded, entry: position,
+                                  rowID: rowID, parent: parent))
+                if expanded {
+                    walkPlaced(in: uri, container: group, depth: depth + 1,
+                               parentRow: rowID, parent: id, ancestors: ancestors.union([id]))
                 }
             }
         }
 
-        walkEntries(entries, container: nil, depth: 0)
+        walkPlaced(in: root, container: nil, depth: 0)
         return rows
+    }
+
+    /// A sidebar of nothing but these, at the top level.
+    static func flatten(roots: [String], expandedNodes: Set<NodeID>,
+                        graph: SidebarGraph) -> [SidebarRow] {
+        let root = Placements.root(of: UUID())
+        return flatten(placements: Placements(root: root, children: roots), root: root,
+                       expandedNodes: expandedNodes, graph: graph)
     }
 }
 

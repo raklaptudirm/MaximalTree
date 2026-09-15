@@ -510,7 +510,7 @@ extension AppModel {
     /// small bug.
     func sidebarRows() -> [SidebarRow] {
         SidebarRows.flatten(
-            entries: rootLayout.entries,
+            placements: placements, root: sidebarRoot,
             expandedNodes: sidebar.expandedNodes,
             graph: SidebarGraph(
                 children: { [host] in host.children(of: $0) },

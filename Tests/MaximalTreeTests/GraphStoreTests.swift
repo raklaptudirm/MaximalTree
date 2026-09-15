@@ -572,7 +572,7 @@ private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider
                            cursor: Cursor("2"))
         var touched: [String] = []
         let rows = SidebarRows.flatten(
-            entries: [.root("stub://library")], expandedNodes: [library],
+            roots: ["stub://library"], expandedNodes: [library],
             graph: SidebarGraph(
                 children: { touched.append($0.uri); return [self.id("stub://library/1")] },
                 isExpandable: { host.isExpandable($0) },
@@ -588,7 +588,7 @@ private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider
         let host = context(Node(id: folder, type: "stub.dir", hasChildren: true))
         var touched: [String] = []
         let rows = SidebarRows.flatten(
-            entries: [.root("stub://folder")], expandedNodes: [folder],
+            roots: ["stub://folder"], expandedNodes: [folder],
             graph: SidebarGraph(
                 children: { touched.append($0.uri); return [self.id("stub://folder/1")] },
                 isExpandable: { host.isExpandable($0) },

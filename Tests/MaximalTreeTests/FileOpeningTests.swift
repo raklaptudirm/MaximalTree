@@ -5,17 +5,13 @@ import Foundation
 /// Which workspace a file opened from the Finder belongs to.
 @Suite struct FileOpeningTests {
     private func workspace(_ name: String, roots: [String]) -> Workspace {
-        var layout = RootLayout()
-        layout.entries = roots.map { .root(URL(fileURLWithPath: $0).absoluteString) }
-        return Workspace(name: name, layout: layout)
+        Workspace(name: name, rootURIs: roots.map { URL(fileURLWithPath: $0).absoluteString })
     }
 
     /// A workspace whose roots are given as URIs rather than paths, for the
     /// providers that mount a directory without being the filesystem.
     private func uris(_ name: String, _ uris: [String]) -> Workspace {
-        var layout = RootLayout()
-        layout.entries = uris.map { .root($0) }
-        return Workspace(name: name, layout: layout)
+        Workspace(name: name, rootURIs: uris)
     }
 
     private func file(_ path: String) -> URL { URL(fileURLWithPath: path) }

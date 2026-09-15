@@ -171,7 +171,7 @@ final class AppModel {
     let pluginHost = PluginHost()
     /// Where the workspace library lives. Injectable so a test drives the
     /// real model without writing into the user's own workspaces.
-    private let workspaceStore: WorkspaceStore
+    let workspaceStore: WorkspaceStore
     private(set) var store: GraphStore?
 
     /// The finder: fuzzy search over everything the app knows about.
@@ -463,11 +463,6 @@ final class AppModel {
     init(host: HostContext, workspaceFile: URL? = nil) {
         self.host = host
         self.workspaceStore = WorkspaceStore(fileURL: workspaceFile ?? Self.isolatedLibraryUnderTest())
-        // The workspace store's own, never a second copy: two stores on one
-        // file would each hold a different idea of the collections and write
-        // over each other. Beside the workspaces, so a model built on a
-        // temporary workspace file never touches the reader's collections.
-        self.collections = workspaceStore.collections
     }
 
     /// Somewhere to keep the library while the test runner is using the app.
@@ -486,24 +481,17 @@ final class AppModel {
         return dir.appendingPathComponent("workspaces.json")
     }
 
-    /// The collections the host keeps — see `CollectionProvider`.
-    let collections: CollectionStore
-
-    private func refreshHolders(of uri: String) {
-        refresh(collections.holders(of: uri))
-    }
-
-    /// Tell the tree that these collections' listings changed.
+    /// Tell the tree that the listings of these collections changed.
     ///
     /// A turn later, because this is reached from inside the store working
     /// through a batch of changes, and reporting more to it mid-batch would
     /// interleave the two.
-    private func refresh(_ holders: [CollectionRecord]) {
-        guard !holders.isEmpty else { return }
-        let changes = holders.flatMap { holder -> [NodeChange] in
-            let id = NodeID(canonical: holder.uri)
+    private func refresh(_ holders: [String]) {
+        let changes = holders.filter(Placements.isCollection).flatMap { holder -> [NodeChange] in
+            let id = NodeID(canonical: holder)
             return [.childrenChanged(id), .modified(id)]
         }
+        guard !changes.isEmpty else { return }
         DispatchQueue.main.async { [weak self] in self?.store?.notify(changes) }
     }
 
@@ -643,8 +631,10 @@ final class AppModel {
 
     // MARK: The sidebar's groups
 
-    /// The active workspace's sidebar: its groups and what is in them.
-    var rootLayout: RootLayout { workspaceStore.active.layout }
+    /// The active workspace's sidebar: what was placed in it, and where.
+    var placements: Placements { workspaceStore.active.placements }
+    /// The entry in `placements` the sidebar is drawn from.
+    var sidebarRoot: String { workspaceStore.active.root }
 
     /// A new group called "New Collection", in `parent` or at the top level,
     /// selected with its name ready to type.
@@ -654,10 +644,13 @@ final class AppModel {
     func newCollection(in parent: UUID? = nil, movingIn ids: [NodeID] = [],
                        from source: NodeID? = nil) {
         let id = workspaceStore.createGroup(named: "New Collection", in: parent)
-        let node = NodeID(canonical: CollectionRef.uri(for: id))
+        guard let uri = workspaceStore.uri(of: id) else { return }
+        let node = NodeID(canonical: uri)
         if !ids.isEmpty { move(ids, from: source, to: id) }
         sidebar.expandedNodes.insert(node)
-        if let parent { sidebar.expandedNodes.insert(NodeID(canonical: CollectionRef.uri(for: parent))) }
+        if let parent, let holder = workspaceStore.uri(of: parent) {
+            sidebar.expandedNodes.insert(NodeID(canonical: holder))
+        }
         store?.ensureNodes([node])
         host.select([node])
         store?.beginRename(node)
@@ -690,10 +683,10 @@ final class AppModel {
     /// a selection spanning two groups is added rather than half-moved.
     private func dragOrigin(of uris: [String]) -> SidebarDrop.Origin? {
         guard let drag = sidebar.drag, Set(drag.uris) == Set(uris) else { return nil }
-        let holderID = drag.parent.map { CollectionRef.id(from: $0.uri) } ?? workspaceStore.active.id
-        guard let holder = holderID, let record = collections.record(holder),
-              Set(uris).isSubset(of: record.members) else { return .elsewhere }
-        return drag.parent == nil ? .topLevel : .group(holder)
+        let holder = drag.parent.map(\.uri) ?? sidebarRoot
+        guard drag.parent == nil || Placements.isCollection(holder),
+              Set(uris).isSubset(of: placements.children(of: holder)) else { return .elsewhere }
+        return drag.parent.flatMap { CollectionRef.id(from: $0.uri) }.map { .group($0) } ?? .topLevel
     }
 
     /// Delete groups. Everything they held takes their place.
@@ -722,8 +715,7 @@ final class AppModel {
 
     /// Every group in the active workspace, as the nodes the sidebar draws.
     private var groupNodes: [NodeID] {
-        RootLayout.folderList(rootLayout.entries)
-            .map { NodeID(canonical: CollectionRef.uri(for: $0.folder.id)) }
+        placements.collections(from: sidebarRoot).map { NodeID(canonical: $0.uri) }
     }
 
     /// The sidebar's tree changed, however it changed: bring along what the
@@ -892,9 +884,11 @@ final class AppModel {
         // a collection's members are other providers' nodes, resolved through
         // that broker, and a plugin can put a collection in its own listing.
         let broker = pluginHost.registry.hostBroker
-        pluginHost.registry.register(provider: CollectionProvider(store: collections) { uri in
-            await broker.node(for: uri)
-        })
+        let workspaces = workspaceStore
+        pluginHost.registry.register(provider: CollectionProvider(
+            members: { uri in await MainActor.run { workspaces.members(of: uri) } },
+            change: { mutation in await MainActor.run { workspaces.applyToCollections(mutation) } },
+            resolveMember: { uri in await broker.node(for: uri) }))
         // Under XCTest the test bundle compiles the plugin's sources directly; don't
         // also dlopen the .bundle into the same process, or the @objc principal class
         // collides. Tests exercise provider logic without the running host.
@@ -913,16 +907,16 @@ final class AppModel {
         store.onNodeRenamed = { [weak self] old, new in
             guard let self else { return }
             self.sidebar.remap(from: old, to: new)
-            // A collection's references are written down, so a rename has to
-            // reach them — descendants included, which only the collections do.
-            self.collections.remap(from: old.uri, to: new.uri)
-            self.refreshHolders(of: new.uri)
+            // Placements are written down, so a rename has to reach them —
+            // descendants included, which only the placements do.
+            self.workspaceStore.remap(from: old.uri, to: new.uri)
+            self.refresh(self.placements.holders(of: new.uri))
         }
         store.onNodeRemoved = { [weak self] id in
             guard let self else { return }
             // Read the holders first: once removed, nothing holds it.
-            let holders = self.collections.holders(of: id.uri)
-            self.collections.remove(id.uri)
+            let holders = self.placements.holders(of: id.uri)
+            self.workspaceStore.removeEverywhere(id.uri)
             self.refresh(holders)
         }
         // Every disclosure writes through to the active workspace, so quitting
