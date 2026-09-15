@@ -290,6 +290,13 @@ what was dropped, per workspace, and lists it as the node's children. No provide
 receives these mutations; a plugin reads its node's placed children through
 `NodeBroker.placedChildren(of:)` (an aggregator builds its feed from them).
 
+A node that is *also* a feed says so with a second identity whose `childStyle` is
+`.contents`: the aggregator is its channels in the sidebar, and selecting it lists the
+feed in the contents column. The feed's provider merges its members' listings with
+`FeedMerge.page`, supplying the order — the host never merges. Each member pages on its
+own; the merge's cursor records where each one is, and needs a member's pages to be the
+same when asked twice.
+
 *Content* editing (a file's bytes) is **not** a `GraphMutation` — that vocabulary is for
 tree structure. Content is type-specific manipulation a plugin does directly via its
 canvas (see `TextEditorPlugin` writing files). Keep the two distinct.

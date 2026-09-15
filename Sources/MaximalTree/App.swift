@@ -187,14 +187,19 @@ final class AppModel {
     /// What the middle column is listing: the sidebar's selection, when what
     /// is selected is something you go *into* rather than open in place.
     ///
+    /// Or what it produces. An aggregator is its channels in the sidebar and
+    /// its feed in the column: one thing, whose second identity declares
+    /// itself contents. Declared, not inferred from a paged listing — a
+    /// project whose directory happens to be large is not asking for a column.
+    ///
     /// Derived rather than stored, and derived from the sidebar's selection
     /// specifically — which is why the column never writes that selection
     /// itself. A row publishing itself there would re-derive this to the row,
     /// find a file has no contents, and close the column that was showing it.
     var contentsContainer: NodeID? {
-        guard host.selection.count == 1, let id = host.selection.first,
-              host.childStyle(of: id) == .contents else { return nil }
-        return id
+        guard host.selection.count == 1, let id = host.selection.first else { return nil }
+        if host.childStyle(of: id) == .contents { return id }
+        return host.node(id)?.identities.first { host.node($0)?.childStyle == .contents }
     }
 
     /// The highlighted row, if the column is on screen.
@@ -491,8 +496,12 @@ final class AppModel {
     /// Fetched again at once rather than only marked stale — the way a refresh
     /// is, so a listing on screen swaps in place — and only those already
     /// loaded.
+    ///
+    /// Their other identities too: a feed is made of what was placed in its
+    /// aggregator, so it changed as well.
     private func placementsChanged(_ parents: some Sequence<String>) {
-        let ids = parents.compactMap(NodeID.init)
+        let placed = parents.compactMap(NodeID.init)
+        let ids = placed + placed.flatMap { host.node($0)?.identities ?? [] }
         guard !ids.isEmpty else { return }
         DispatchQueue.main.async { [weak self] in
             self?.store?.notify(ids.map { .modified($0) })
