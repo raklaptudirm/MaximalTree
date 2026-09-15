@@ -94,6 +94,9 @@ struct Workspace: Codable, Identifiable, Equatable {
     /// this workspace's sidebar looks, and a collection can appear in more than
     /// one.
     var collapsedGroups: [String]? = nil
+    /// What was put inside what. Absent until this workspace's collections
+    /// are folded into it; read by nothing yet.
+    var placements: Placements? = nil
 
     /// Made on the spot for a file that belongs to nowhere else, and not
     /// written to the library.
@@ -124,7 +127,7 @@ struct Workspace: Codable, Identifiable, Equatable {
     // Decodes the current shape (`layout`) or a pre-folders workspace (`rootURIs`),
     // so an existing library keeps loading — everything becomes loose roots.
     private enum CodingKeys: String, CodingKey {
-        case id, name, layout, rootURIs, revealedNodes, collapsedGroups
+        case id, name, layout, rootURIs, revealedNodes, collapsedGroups, placements
     }
 
     init(from decoder: Decoder) throws {
@@ -139,6 +142,7 @@ struct Workspace: Codable, Identifiable, Equatable {
         }
         revealedNodes = try container.decodeIfPresent([String].self, forKey: .revealedNodes) ?? []
         collapsedGroups = try container.decodeIfPresent([String].self, forKey: .collapsedGroups)
+        placements = try container.decodeIfPresent(Placements.self, forKey: .placements)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -148,6 +152,7 @@ struct Workspace: Codable, Identifiable, Equatable {
         try container.encode(layout, forKey: .layout)
         try container.encode(revealedNodes, forKey: .revealedNodes)
         try container.encodeIfPresent(collapsedGroups, forKey: .collapsedGroups)
+        try container.encodeIfPresent(placements, forKey: .placements)
     }
 }
 

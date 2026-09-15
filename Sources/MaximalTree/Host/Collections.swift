@@ -19,9 +19,26 @@ struct CollectionRecord: Codable, Equatable, Identifiable {
 enum CollectionRef {
     static let scheme = "collection"
     static func uri(for id: UUID) -> String { "collection://\(id.uuidString.lowercased())" }
+
+    /// A collection that carries its name: `collection://<id>?name=<name>`.
+    ///
+    /// Encoded strictly — `&`, `=`, `+`, `#`, `?` and `/` included — so any
+    /// name reads back exactly, and the string is already canonical.
+    static func uri(for id: UUID, named name: String) -> String {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&=+#?/")
+        return uri(for: id) + "?name=" + (name.addingPercentEncoding(withAllowedCharacters: allowed) ?? "")
+    }
+
     static func id(from uri: String) -> UUID? {
         guard uri.hasPrefix("collection://") else { return nil }
-        return UUID(uuidString: String(uri.dropFirst("collection://".count)))
+        let rest = uri.dropFirst("collection://".count)
+        return UUID(uuidString: String(rest.prefix { $0 != "?" }))
+    }
+
+    static func name(from uri: String) -> String? {
+        guard id(from: uri) != nil else { return nil }
+        return URLComponents(string: uri)?.queryItems?.first { $0.name == "name" }?.value
     }
 }
 
