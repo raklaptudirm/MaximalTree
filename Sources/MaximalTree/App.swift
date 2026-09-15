@@ -481,18 +481,23 @@ final class AppModel {
         return dir.appendingPathComponent("workspaces.json")
     }
 
-    /// Tell the tree that the listings of these collections changed.
+    /// Tell the tree that what was placed in these changed: their listings,
+    /// and whether they have anything to open.
     ///
-    /// A turn later, because this is reached from inside the store working
+    /// A turn later, because this can be reached from inside the store working
     /// through a batch of changes, and reporting more to it mid-batch would
     /// interleave the two.
-    private func refresh(_ holders: [String]) {
-        let changes = holders.filter(Placements.isCollection).flatMap { holder -> [NodeChange] in
-            let id = NodeID(canonical: holder)
-            return [.childrenChanged(id), .modified(id)]
+    ///
+    /// Fetched again at once rather than only marked stale — the way a refresh
+    /// is, so a listing on screen swaps in place — and only those already
+    /// loaded.
+    private func placementsChanged(_ parents: some Sequence<String>) {
+        let ids = parents.compactMap(NodeID.init)
+        guard !ids.isEmpty else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.store?.notify(ids.map { .modified($0) })
+            self?.store?.refreshChildren(of: ids)
         }
-        guard !changes.isEmpty else { return }
-        DispatchQueue.main.async { [weak self] in self?.store?.notify(changes) }
     }
 
     // MARK: Workspaces
@@ -551,6 +556,10 @@ final class AppModel {
         // the tabs pointing into them are focused.
         store?.switchRoots(roots)
         store?.ensureNodes(groupNodes)
+        // What was placed in a node is the workspace's, and the listings
+        // cached are the last workspace's — for a plugin's node that takes
+        // drops, the same node holds something else here.
+        placementsChanged(Set(workspaces.flatMap { $0.placements.children.keys }))
         guard let id = activeWorkspaceID, let session = sessions[id] else {
             // First visit this run: fall back to what the workspace persisted.
             // Nothing is cached yet, so opening the tree fetches it fresh —
@@ -721,11 +730,12 @@ final class AppModel {
     /// The sidebar's tree changed, however it changed: bring along what the
     /// rest of the app sees — the mounted roots the graph loads and watches,
     /// and the records the group rows are drawn from.
-    private func sidebarTreeChanged() {
+    private func sidebarTreeChanged(_ parents: Set<String>) {
         guard let store else { return }
         let roots = workspaceStore.resolvedRoots(using: pluginHost.registry.providers)
         if roots != host.roots { store.setRoots(roots) }
         store.ensureNodes(groupNodes)
+        placementsChanged(parents)
     }
 
     /// The group a newly mounted root should join: the one holding the current
@@ -881,14 +891,14 @@ final class AppModel {
         registerCoreInspector(with: pluginHost.registry)
         registerBuiltInFinders(into: pluginHost.registry)
         // Before the plugins, so the broker they share is installed with it:
-        // a collection's members are other providers' nodes, resolved through
-        // that broker, and a plugin can put a collection in its own listing.
+        // a plugin can put a collection in its own listing, and a plugin's
+        // node that takes drops reads what was placed in it through the broker.
         let broker = pluginHost.registry.hostBroker
         let workspaces = workspaceStore
         pluginHost.registry.register(provider: CollectionProvider(
-            members: { uri in await MainActor.run { workspaces.members(of: uri) } },
-            change: { mutation in await MainActor.run { workspaces.applyToCollections(mutation) } },
-            resolveMember: { uri in await broker.node(for: uri) }))
+            exists: { uri in await MainActor.run { workspaces.members(of: uri) != nil } },
+            change: { mutation in await MainActor.run { workspaces.applyToCollections(mutation) } }))
+        broker.installPlacements { uri in await MainActor.run { workspaces.placedChildren(of: uri) } }
         // Under XCTest the test bundle compiles the plugin's sources directly; don't
         // also dlopen the .bundle into the same process, or the @objc principal class
         // collides. Tests exercise provider logic without the running host.
@@ -910,14 +920,9 @@ final class AppModel {
             // Placements are written down, so a rename has to reach them —
             // descendants included, which only the placements do.
             self.workspaceStore.remap(from: old.uri, to: new.uri)
-            self.refresh(self.placements.holders(of: new.uri))
         }
         store.onNodeRemoved = { [weak self] id in
-            guard let self else { return }
-            // Read the holders first: once removed, nothing holds it.
-            let holders = self.placements.holders(of: id.uri)
-            self.workspaceStore.removeEverywhere(id.uri)
-            self.refresh(holders)
+            self?.workspaceStore.removeEverywhere(id.uri)
         }
         // Every disclosure writes through to the active workspace, so quitting
         // at any moment leaves the tree the way it looks right now.
@@ -938,7 +943,8 @@ final class AppModel {
         // One place for everything that follows a change to the sidebar's
         // tree, whichever way it changed — a drag, a delete, a rename
         // underneath a group.
-        workspaceStore.onActiveTreeChanged = { [weak self] in self?.sidebarTreeChanged() }
+        workspaceStore.onActiveTreeChanged = { [weak self] in self?.sidebarTreeChanged($0) }
+        store.placements = workspaceStore
 
         let providers = pluginHost.registry.providers
         // Restore rewrites the layout in place (see `restoreRoots`) — roots keep

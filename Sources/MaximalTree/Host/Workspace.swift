@@ -222,7 +222,7 @@ struct WorkspaceLibrary: Codable {
 /// app is closed — the across-a-launch version of the rename problem).
 @MainActor
 @Observable
-final class WorkspaceStore {
+final class WorkspaceStore: PlacementHost {
     private let fileURL: URL
     private(set) var library: WorkspaceLibrary
 
@@ -235,10 +235,11 @@ final class WorkspaceStore {
         library.workspaces.first { $0.id == library.activeID } ?? library.workspaces[0]
     }
 
-    /// Called when the active workspace's sidebar changes, however it changed —
-    /// so the owner can bring the mounted roots and the group rows up to date
-    /// from one place.
-    @ObservationIgnored var onActiveTreeChanged: (() -> Void)?
+    /// Called when the active workspace's placements change, however they
+    /// changed, with every parent whose placed children are now different —
+    /// so the owner can bring the mounted roots, the group rows and the
+    /// listings of those parents up to date from one place.
+    @ObservationIgnored var onActiveTreeChanged: ((Set<String>) -> Void)?
 
     /// - Parameter fileURL: Overridable for tests; defaults to Application Support.
     init(fileURL: URL? = nil) {
@@ -487,7 +488,7 @@ final class WorkspaceStore {
     /// asks for.
     func add(_ uris: [String], to destination: UUID?, at index: Int?) {
         guard let to = uri(of: destination) else { return }
-        changeActive { placements, _ in placements.adopt(uris, into: to, at: index) }
+        place(uris, into: to, at: index)
     }
 
     /// Delete a group. What it held takes its place wherever it was — nothing
@@ -505,8 +506,29 @@ final class WorkspaceStore {
     /// from the last place it is shown is deleting it.
     func remove(_ uris: [String], from group: UUID?) {
         guard let from = uri(of: group) else { return }
+        unplace(uris, from: from)
+    }
+
+    // MARK: Placing, in any node
+
+    func placedChildren(of parent: String) -> [String] {
+        active.placements.children(of: parent)
+    }
+
+    /// Put these inside `parent` in the active workspace — a group, or any
+    /// node that takes drops.
+    @discardableResult
+    func place(_ uris: [String], into parent: String, at index: Int?) -> Bool {
+        var placed = false
+        changeActive { placements, _ in placed = placements.adopt(uris, into: parent, at: index) }
+        return placed
+    }
+
+    /// Take these out of `parent`. A collection that is now shown nowhere goes
+    /// with them.
+    func unplace(_ uris: [String], from parent: String) {
         changeActive { placements, root in
-            placements.release(uris, from: from)
+            placements.release(uris, from: parent)
             placements.collectGarbage(root: root)
         }
     }
@@ -648,27 +670,36 @@ final class WorkspaceStore {
     private func changeActive(_ change: (inout Placements, String) -> Void) {
         guard let i = library.workspaces.firstIndex(where: { $0.id == library.activeID })
         else { return }
-        var placements = library.workspaces[i].placements
+        let before = library.workspaces[i].placements
+        var placements = before
         change(&placements, library.workspaces[i].root)
-        guard placements != library.workspaces[i].placements else { return }
+        guard placements != before else { return }
         library.workspaces[i].placements = placements
         persist()
-        onActiveTreeChanged?()
+        onActiveTreeChanged?(Self.changedParents(from: before, to: placements))
+    }
+
+    private static func changedParents(from before: Placements, to after: Placements) -> Set<String> {
+        Set(before.children.keys).union(after.children.keys)
+            .filter { before.children[$0] != after.children[$0] }
     }
 
     /// The same, in every workspace.
     private func changeEvery(_ change: (inout Placements) -> Void) {
-        var activeChanged = false, anyChanged = false
+        var activeChanged: Set<String>?, anyChanged = false
         for i in library.workspaces.indices {
-            var placements = library.workspaces[i].placements
+            let before = library.workspaces[i].placements
+            var placements = before
             change(&placements)
-            guard placements != library.workspaces[i].placements else { continue }
+            guard placements != before else { continue }
             library.workspaces[i].placements = placements
             anyChanged = true
-            if library.workspaces[i].id == library.activeID { activeChanged = true }
+            if library.workspaces[i].id == library.activeID {
+                activeChanged = Self.changedParents(from: before, to: placements)
+            }
         }
         if anyChanged { persist() }
-        if activeChanged { onActiveTreeChanged?() }
+        if let activeChanged { onActiveTreeChanged?(activeChanged) }
     }
 
     /// Change the active workspace's own settings — not its placements.

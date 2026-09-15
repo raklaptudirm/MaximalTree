@@ -184,8 +184,10 @@ public struct Node: Identifiable, Hashable, Sendable {
     /// What this node will take as a member, or nil for nothing.
     ///
     /// Declared rather than only asked, so a drag can show where it will land
-    /// *while* it is moving instead of failing when it is let go. The owning
-    /// provider still has the final word, through `supports(.adopt)`.
+    /// *while* it is moving instead of failing when it is let go. A node that
+    /// declares it has its children placed rather than listed: the host keeps
+    /// what is dropped in it and answers for its children, and its provider's
+    /// own listing is not asked.
     public var accepts: AcceptedChildren?
 
     /// The same thing, seen another way.

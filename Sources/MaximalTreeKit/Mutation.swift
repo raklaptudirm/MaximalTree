@@ -18,9 +18,12 @@ public enum GraphMutation: Sendable {
     ///
     /// Not a move. A move is containment — identity is location, so the child
     /// changes what it is, and its own provider has to agree. Membership is a
-    /// reference the *parent* keeps: a channel put in an aggregator is still
-    /// the same channel, and can be in another aggregator as well. So this
-    /// goes to the destination's provider, and nothing is renamed.
+    /// reference kept for the parent: a channel put in an aggregator is still
+    /// the same channel, and can be in another aggregator as well. Nothing is
+    /// renamed, and no provider is asked — the host keeps what was placed, in
+    /// the workspace, for any node that declares `accepts`, and lists it as
+    /// that node's children. Its provider reads it with
+    /// `NodeBroker.placedChildren(of:)`.
     ///
     /// `at` is the position among the existing members; nil appends. Adopting
     /// something that is already a member puts it at the new position, which

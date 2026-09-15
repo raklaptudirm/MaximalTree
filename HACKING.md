@@ -284,6 +284,12 @@ container rows accept drops, `canApply` validates. `apply(_:)` **returns the `No
 its caches and remaps navigation history/selection — crucial because a rename changes a
 node's `NodeID`. Call `HostContext.apply(_:)` to trigger one, `canApply(_:)` to gate UI.
 
+`.adopt` and `.release` are the other kind of child: *placed* rather than contained.
+A node that declares `accepts` takes drops, and the host — not its provider — keeps
+what was dropped, per workspace, and lists it as the node's children. No provider
+receives these mutations; a plugin reads its node's placed children through
+`NodeBroker.placedChildren(of:)` (an aggregator builds its feed from them).
+
 *Content* editing (a file's bytes) is **not** a `GraphMutation` — that vocabulary is for
 tree structure. Content is type-specific manipulation a plugin does directly via its
 canvas (see `TextEditorPlugin` writing files). Keep the two distinct.

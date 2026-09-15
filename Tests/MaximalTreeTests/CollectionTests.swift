@@ -13,13 +13,10 @@ import Foundation
 /// Collections as the tree sees them: nodes made of a workspace's placements.
 @MainActor
 @Suite struct CollectionProviderTests {
-    private func provider(over store: WorkspaceStore,
-                          resolving resolve: @escaping @Sendable (String) async -> Node? = { _ in nil })
-        -> CollectionProvider {
+    private func provider(over store: WorkspaceStore) -> CollectionProvider {
         CollectionProvider(
-            members: { uri in await MainActor.run { store.members(of: uri) } },
-            change: { mutation in await MainActor.run { store.applyToCollections(mutation) } },
-            resolveMember: resolve)
+            exists: { uri in await MainActor.run { store.members(of: uri) != nil } },
+            change: { mutation in await MainActor.run { store.applyToCollections(mutation) } })
     }
 
     private func group(_ store: WorkspaceStore, _ id: UUID) throws -> NodeID {
@@ -42,23 +39,6 @@ import Foundation
         let uri = try #require(reopened.uri(of: channels))
         #expect(reopened.members(of: uri) == ["yt://b", "yt://c", "yt://a"])
         #expect(CollectionRef.name(from: uri) == "Channels")
-    }
-
-    /// A member no provider can resolve is shown, not lost. Its plugin may
-    /// simply not be loaded, and a sidebar entry silently deleted for that is
-    /// far worse than one that is briefly inert.
-    @Test func aMemberThatDoesNotResolveIsKept() async throws {
-        let store = try temporaryStore()
-        let mixed = store.createGroup(named: "Mixed")
-        store.add(["file:///real", "jellyfin://item/abc"], to: mixed, at: nil)
-        let provider = provider(over: store) { uri in
-            uri.hasPrefix("file://") ? Node(id: NodeID(uri)!, type: "file") : nil
-        }
-
-        let page = await provider.children(of: try group(store, mixed), page: nil)
-        #expect(page.items.map(\.id.uri) == ["file:///real", "jellyfin://item/abc"])
-        #expect(page.items.last?.type == TypeID("collection.unavailable"))
-        #expect(store.members(of: try group(store, mixed).uri)?.count == 2, "and it is still written down")
     }
 
     /// The name is in the URI, so a rename is a rename in the graph's sense —
@@ -103,27 +83,23 @@ import Foundation
         #expect(node.accepts == .any)
     }
 
-    /// Adopting through the graph places it in the collection.
-    @Test func adoptingPlacesIt() async throws {
+    /// What a collection is and the changes only a collection has. Placing is
+    /// the host's, for every node, and so is listing what was placed.
+    @Test func itLeavesPlacingToTheHost() async throws {
         let store = try temporaryStore()
         let made = store.createGroup(named: "C")
-        let node = try group(store, made)
-        _ = try await provider(over: store).apply(.adopt([NodeID("file:///x")!], into: node, at: nil))
-        #expect(store.members(of: node.uri) == ["file:///x"])
-    }
-
-    /// It adopts and releases its own members, and refuses to move — a move is
-    /// containment, which is not what a collection does. Decided from the URI.
-    @Test func itSupportsMembershipAndNotMoves() throws {
-        let store = try temporaryStore()
+        store.add(["file:///x"], to: made, at: nil)
         let provider = provider(over: store)
-        let id = NodeID(canonical: CollectionRef.uri(for: UUID(), named: "C"))
+        let id = try group(store, made)
         let other = NodeID("file:///x")!
 
-        #expect(provider.supports(.adopt([other], into: id, at: nil)))
-        #expect(provider.supports(.release([other], from: id)))
+        #expect(provider.supports(.rename(id, to: "D")))
+        #expect(provider.supports(.delete([id])))
+        #expect(!provider.supports(.adopt([other], into: id, at: nil)))
+        #expect(!provider.supports(.release([other], from: id)))
         #expect(!provider.supports(.move([other], into: id)))
-        #expect(!provider.supports(.adopt([other], into: other, at: nil)))
+        #expect(!provider.supports(.rename(other, to: "y")))
+        #expect(await provider.children(of: id, page: nil).items.isEmpty)
     }
 }
 
@@ -179,6 +155,53 @@ import Foundation
         #expect(two.workspaceStore.uri(of: made) == nil, "two models wrote to the same library")
     }
 
+    /// Only the parents whose placed children changed are reported, so only
+    /// their listings are fetched again.
+    @Test func aChangeReportsTheParentsItChanged() throws {
+        let store = try temporaryStore()
+        let left = store.createGroup(named: "Left")
+        let right = store.createGroup(named: "Right")
+        store.add(["file:///a"], to: left, at: nil)
+        var reported: [Set<String>] = []
+        store.onActiveTreeChanged = { reported.append($0) }
+
+        store.move(["file:///a"], from: left, to: right, at: nil)
+        store.place(["yt://channel"], into: "yt://aggregator", at: nil)
+
+        #expect(reported == [[try #require(store.uri(of: left)), try #require(store.uri(of: right))],
+                             ["yt://aggregator"]])
+    }
+
+    /// A plugin's node holds what was placed in it in this workspace, so
+    /// switching workspaces has to replace a listing cached from the last.
+    @Test func switchingWorkspacesRelistsWhatWasPlaced() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("collections-host-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let model = AppModel(host: HostContext(),
+                             workspaceFile: dir.appendingPathComponent("workspaces.json"))
+        model.pluginHost.registry.register(provider: AggregatorProvider())
+        model.start()
+        let aggregator = NodeID("agg://feed")!
+        model.workspaceStore.place(["file:///a"], into: aggregator.uri, at: nil)
+        model.store?.ensureNodes([aggregator])
+        try await waitUntil { model.host.node(aggregator) != nil }
+        model.store?.requestChildren(of: aggregator)
+        try await waitUntil { model.host.cachedChildren(of: aggregator)?.map(\.uri) == ["file:///a"] }
+
+        let other = model.workspaceStore.create(named: "Other")
+        model.switchWorkspace(to: other.id)
+
+        try await waitUntil { model.host.cachedChildren(of: aggregator) == [] }
+    }
+
+    private func waitUntil(_ condition: () -> Bool) async throws {
+        for _ in 0..<200 where !condition() {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(condition())
+    }
+
     @Test func aNewCollectionIsAGroupInTheSidebar() throws {
         let model = try makeModel()
         model.newCollection()
@@ -196,6 +219,14 @@ import Foundation
         #expect(model.canRun(action, targets: [NodeID(canonical: uri)]))
         #expect(!model.canRun(action, targets: [NodeID("file:///a.typ")!]))
     }
+}
+
+/// A plugin's node that takes anything, and lists nothing of its own.
+private struct AggregatorProvider: NodeProvider {
+    let schemes: Set<String> = ["agg"]
+    func resolve(_ uri: String) -> NodeID? { NodeID(uri) }
+    func node(for id: NodeID) async -> Node? { Node(id: id, type: "agg", accepts: .any) }
+    func children(of id: NodeID, page cursor: Cursor?) async -> Page<Node> { Page(items: []) }
 }
 
 /// A row reached through a collection knows which one, so "remove" can mean

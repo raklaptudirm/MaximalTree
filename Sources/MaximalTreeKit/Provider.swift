@@ -41,6 +41,17 @@ public protocol NodeBroker: Sendable {
     func node(for uri: String) async -> Node?
     /// The children of a URI, from whichever provider owns its scheme.
     func children(of uri: String, page: Cursor?) async -> Page<Node>
+    /// What the reader put inside a node, in order, as URIs — in the workspace
+    /// open now.
+    ///
+    /// For a node that declares `accepts`. The host keeps what is dropped into
+    /// it, so the provider keeps nothing and asks: an aggregator builds its
+    /// feed from whatever this says today.
+    func placedChildren(of uri: String) async -> [String]
+}
+
+public extension NodeBroker {
+    func placedChildren(of uri: String) async -> [String] { [] }
 }
 
 // Sensible defaults so simple providers stay small.

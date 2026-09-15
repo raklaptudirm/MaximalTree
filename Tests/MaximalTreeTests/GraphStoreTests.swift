@@ -682,8 +682,8 @@ private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider
 
 // MARK: - Membership
 
-/// Records which mutations it was asked about, and supports every adoption and
-/// release it is asked about — so a test can see *who* was asked.
+/// Records which mutations and listings it was asked for — so a test can see
+/// *who* was asked. Supports every adoption, release and move.
 @MainActor
 private final class RecordingProvider: NodeProvider, MutatingNodeProvider {
     nonisolated let schemes: Set<String>
@@ -691,9 +691,15 @@ private final class RecordingProvider: NodeProvider, MutatingNodeProvider {
     init(scheme: String) { schemes = [scheme] }
 
     nonisolated func resolve(_ uri: String) -> NodeID? { NodeID(uri) }
-    nonisolated func node(for id: NodeID) async -> Node? { nil }
+    /// Everything exists except what is called missing.
+    nonisolated func node(for id: NodeID) async -> Node? {
+        guard !id.uri.contains("missing") else { return nil }
+        let type = TypeID(id.scheme ?? "")
+        return Node(id: id, type: type, label: id.uri, accepts: type == "coll" ? .any : nil)
+    }
     nonisolated func children(of id: NodeID, page cursor: Cursor?) async -> Page<Node> {
-        Page(items: [])
+        await MainActor.run { asked.append("children") }
+        return Page(items: [])
     }
     nonisolated func supports(_ mutation: GraphMutation) -> Bool {
         MainActor.assumeIsolated {
@@ -708,14 +714,32 @@ private final class RecordingProvider: NodeProvider, MutatingNodeProvider {
     nonisolated func apply(_ mutation: GraphMutation) async throws -> [NodeChange] { [] }
 }
 
-/// Adopt and release: the collection decides, and the host refuses what would
-/// make the graph fold back on itself.
+/// Placements kept in a dictionary, recording what it was asked to do.
+@MainActor
+private final class RecordingPlacements: PlacementHost {
+    var table: [String: [String]] = [:]
+    private(set) var calls: [String] = []
+
+    func placedChildren(of parent: String) -> [String] { table[parent] ?? [] }
+    func place(_ uris: [String], into parent: String, at index: Int?) -> Bool {
+        calls.append("place")
+        table[parent, default: []] += uris.filter { !(table[parent] ?? []).contains($0) }
+        return true
+    }
+    func unplace(_ uris: [String], from parent: String) {
+        calls.append("unplace")
+        table[parent] = (table[parent] ?? []).filter { !uris.contains($0) }
+    }
+}
+
+/// Adopt and release: the host places, whoever owns the node, and refuses what
+/// the node does not take or what would make the graph fold back on itself.
 @MainActor
 @Suite struct MembershipRoutingTests {
     private func id(_ uri: String) -> NodeID { NodeID(uri)! }
 
     private func makeStore() -> (GraphStore, HostContext, collections: RecordingProvider,
-                                 items: RecordingProvider) {
+                                 items: RecordingProvider, placements: RecordingPlacements) {
         let context = HostContext()
         let registry = Registry()
         let collections = RecordingProvider(scheme: "coll")
@@ -723,68 +747,137 @@ private final class RecordingProvider: NodeProvider, MutatingNodeProvider {
         registry.register(provider: collections)
         registry.register(provider: items)
         let store = GraphStore(context: context, registry: registry, nav: NavigationModel())
+        let placements = RecordingPlacements()
+        store.placements = placements
         context._ingest(Node(id: id("coll://a"), type: "coll", accepts: .any))
         context._ingest(Node(id: id("coll://channels"), type: "coll",
                              accepts: .types(["channel"])))
         context._ingest(Node(id: id("item://x"), type: "item"))
         context._ingest(Node(id: id("item://ch"), type: "channel"))
-        return (store, context, collections, items)
+        return (store, context, collections, items, placements)
     }
 
-    /// The whole reason for a separate verb. A move asks the child's provider,
-    /// which is right for a file and wrong for membership: the child's owner
-    /// has never heard of the collection.
-    @Test func anAdoptionIsPutToTheCollectionNotTheChild() {
-        let (store, _, collections, items) = makeStore()
+    private func waitUntil(_ condition: () -> Bool) async throws {
+        for _ in 0..<200 where !condition() {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(condition())
+    }
+
+    /// Neither the node's provider nor the child's is asked: what was put
+    /// inside a node is the host's to keep, whoever owns the node.
+    @Test func anAdoptionIsTheHostsNotAnyProviders() {
+        let (store, _, collections, items, placements) = makeStore()
         #expect(store.canApply(.adopt([id("item://x")], into: id("coll://a"), at: nil)))
-        #expect(collections.asked == ["adopt"])
-        #expect(items.asked.isEmpty, "the child's provider was asked about a membership")
+        store.apply(.adopt([id("item://x")], into: id("coll://a"), at: nil))
+        #expect(placements.table["coll://a"] == ["item://x"])
+        #expect(collections.asked.isEmpty, "the node's provider was asked about a placement")
+        #expect(items.asked.isEmpty, "the child's provider was asked about a placement")
     }
 
-    @Test func aReleaseIsPutToTheCollection() {
-        let (store, _, collections, items) = makeStore()
+    @Test func aReleaseIsTheHostsToo() {
+        let (store, _, collections, items, placements) = makeStore()
+        placements.table["coll://a"] = ["item://x"]
         #expect(store.canApply(.release([id("item://x")], from: id("coll://a"))))
-        #expect(collections.asked == ["release"])
-        #expect(items.asked.isEmpty)
+        store.apply(.release([id("item://x")], from: id("coll://a")))
+        #expect(placements.table["coll://a"] == [])
+        #expect(collections.asked.isEmpty && items.asked.isEmpty)
+    }
+
+    /// With nowhere to keep them, nothing can be placed.
+    @Test func withoutPlacementsNothingIsPlaced() {
+        let (store, _, _, _, placements) = makeStore()
+        #expect(store.canApply(.adopt([id("item://x")], into: id("coll://a"), at: nil)))
+        withExtendedLifetime(placements) { store.placements = nil }
+        #expect(!store.canApply(.adopt([id("item://x")], into: id("coll://a"), at: nil)))
     }
 
     /// And a move keeps going where it always went, so files are unaffected.
     @Test func aMoveIsStillPutToTheChild() {
-        let (store, _, collections, items) = makeStore()
+        let (store, _, collections, items, _) = makeStore()
         _ = store.canApply(.move([id("item://x")], into: id("coll://a")))
         #expect(items.asked == ["move"])
         #expect(collections.asked.isEmpty)
     }
 
-    /// An aggregator of channels takes channels, and the host says no before
-    /// the provider is ever troubled.
-    @Test func aCollectionRefusesWhatItDoesNotAccept() {
-        let (store, _, collections, _) = makeStore()
+    /// An aggregator of channels takes channels, and nothing else is placed.
+    @Test func aNodeRefusesWhatItDoesNotAccept() {
+        let (store, _, _, _, placements) = makeStore()
         #expect(!store.canApply(.adopt([id("item://x")], into: id("coll://channels"), at: nil)))
+        store.apply(.adopt([id("item://x")], into: id("coll://channels"), at: nil))
+        #expect(placements.calls.isEmpty, "a refused adoption was placed")
         #expect(store.canApply(.adopt([id("item://ch")], into: id("coll://channels"), at: nil)))
-        #expect(collections.asked == ["adopt"], "the refused one reached the provider")
     }
 
-    /// Something that declares nothing takes nothing.
-    @Test func aNodeThatAcceptsNothingIsNotACollection() {
-        let (store, _, collections, _) = makeStore()
+    /// Something that declares nothing takes nothing — and has nothing placed
+    /// in it to release.
+    @Test func aNodeThatAcceptsNothingTakesNothing() {
+        let (store, _, _, _, placements) = makeStore()
         #expect(!store.canApply(.adopt([id("item://ch")], into: id("item://x"), at: nil)))
-        #expect(collections.asked.isEmpty)
+        #expect(!store.canApply(.release([id("item://ch")], from: id("item://x"))))
+        store.apply(.release([id("item://ch")], from: id("item://x")))
+        #expect(placements.calls.isEmpty)
+    }
+
+    // MARK: Listing
+
+    /// A node that takes drops lists what was dropped, in order — each child
+    /// resolved by its own provider, one that does not resolve kept inert —
+    /// and its own provider is never asked for children.
+    @Test func whatWasPlacedIsTheListing() async throws {
+        let (store, context, collections, _, placements) = makeStore()
+        placements.table["coll://a"] = ["item://x", "item://missing", "coll://b"]
+
+        store.requestChildren(of: id("coll://a"))
+        try await waitUntil { context.cachedChildren(of: id("coll://a")) != nil }
+
+        #expect(context.cachedChildren(of: id("coll://a")) == [id("item://x"), id("item://missing"), id("coll://b")])
+        #expect(context.node(id("item://missing"))?.type == TypeID("placed.unavailable"))
+        #expect(context.node(id("coll://b"))?.accepts == .any, "resolved by its own provider")
+        #expect(!collections.asked.contains("children"))
+    }
+
+    /// Whether it has anything to open is the host's to say too.
+    @Test func aNodeHasChildrenWhenSomethingWasPlacedInIt() async throws {
+        let (store, context, _, _, placements) = makeStore()
+        placements.table["coll://full"] = ["item://x"]
+        store.ensureNodes([id("coll://full"), id("coll://empty")])
+        try await waitUntil { context.node(id("coll://full")) != nil && context.node(id("coll://empty")) != nil }
+        #expect(context.node(id("coll://full"))?.hasChildren == true)
+        #expect(context.node(id("coll://empty"))?.hasChildren == false)
+    }
+
+    /// An adoption shows up in a listing already on screen.
+    @Test func anAdoptionRefreshesTheListing() async throws {
+        let (store, context, _, _, placements) = makeStore()
+        defer { withExtendedLifetime(placements) {} }   // the store holds it weakly
+        store.requestChildren(of: id("coll://a"))
+        try await waitUntil { context.cachedChildren(of: id("coll://a")) == [] }
+
+        store.apply(.adopt([id("item://x")], into: id("coll://a"), at: nil))
+        store.requestChildren(of: id("coll://a"))
+        try await waitUntil { context.cachedChildren(of: id("coll://a")) == [id("item://x")] }
     }
 
     // MARK: Cycles
 
-    @Test func aCollectionCannotAdoptItself() {
-        let (store, _, _, _) = makeStore()
-        #expect(!store.canApply(.adopt([id("coll://a")], into: id("coll://a"), at: nil)))
+    @Test func aNodeCannotAdoptItself() {
+        let (store, _, _, _, placements) = makeStore()
+        withExtendedLifetime(placements) {
+            #expect(!store.canApply(.adopt([id("coll://a")], into: id("coll://a"), at: nil)))
+            #expect(store.canApply(.adopt([id("item://x")], into: id("coll://a"), at: nil)))
+        }
     }
 
     /// a holds b; putting a into b would make a its own grandparent.
-    @Test func aCollectionCannotAdoptWhatAlreadyHoldsIt() {
-        let (store, context, _, _) = makeStore()
+    @Test func aNodeCannotAdoptWhatAlreadyHoldsIt() {
+        let (store, context, _, _, placements) = makeStore()
         context._ingest(Node(id: id("coll://b"), type: "coll", accepts: .any))
         context._setChildren([id("coll://b")], of: id("coll://a"))
-        #expect(!store.canApply(.adopt([id("coll://a")], into: id("coll://b"), at: nil)))
+        withExtendedLifetime(placements) {
+            #expect(!store.canApply(.adopt([id("coll://a")], into: id("coll://b"), at: nil)))
+            #expect(store.canApply(.adopt([id("coll://b")], into: id("coll://a"), at: nil)))
+        }
     }
 
     /// Deep as well as direct.
@@ -807,6 +900,15 @@ private final class RecordingProvider: NodeProvider, MutatingNodeProvider {
         let graph: [String: [String]] = ["coll://a": ["coll://b"], "coll://b": ["coll://a"]]
         #expect(!GraphStore.formsCycle(adopting: [id("coll://a")], into: id("coll://z"),
                                        children: { graph[$0.uri, default: []].map(self.id) }))
+    }
+
+    /// A plugin reads what was placed in its node through the broker; with
+    /// nothing installed, nothing.
+    @Test func thePlacedChildrenReachPluginsThroughTheBroker() async {
+        let broker = HostBroker()
+        #expect(await broker.placedChildren(of: "agg://a") == [])
+        broker.installPlacements { uri in uri == "agg://a" ? ["yt://channel"] : [] }
+        #expect(await broker.placedChildren(of: "agg://a") == ["yt://channel"])
     }
 }
 

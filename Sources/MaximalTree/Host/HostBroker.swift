@@ -12,11 +12,23 @@ import MaximalTreeKit
 final class HostBroker: NodeBroker, @unchecked Sendable {
     private let lock = NSLock()
     private var providers: [any NodeProvider] = []
+    private var placed: (@Sendable (String) async -> [String])?
 
     func install(_ providers: [any NodeProvider]) {
         lock.lock()
         defer { lock.unlock() }
         self.providers = providers
+    }
+
+    /// Where placed children are read from — installed by the owner of the
+    /// workspaces, which is not the plugin host.
+    func installPlacements(_ placed: @escaping @Sendable (String) async -> [String]) {
+        lock.withLock { self.placed = placed }
+    }
+
+    func placedChildren(of uri: String) async -> [String] {
+        guard let placed = lock.withLock({ placed }) else { return [] }
+        return await placed(uri)
     }
 
     private func provider(for id: NodeID) -> (any NodeProvider)? {

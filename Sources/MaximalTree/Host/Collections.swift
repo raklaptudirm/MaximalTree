@@ -39,28 +39,24 @@ enum CollectionRef {
 
 // MARK: - The provider
 
-/// Collections as nodes: a name, and whatever was put in them, in order.
+/// Collections as nodes: a name, and whatever was put in them.
 ///
 /// Built into the host rather than shipped as a plugin, because the sidebar is
-/// built out of them. Everything about a collection is in its workspace's
-/// placements, so the provider holds nothing: it asks the workspaces what a
-/// collection holds, and hands every change back to them.
+/// built out of them. What a collection holds is placed, so the host lists it
+/// like any node that takes drops; all that is left here is what a collection
+/// is — its name, which is in its URI — and the changes only a collection has:
+/// being renamed, deleted, and made.
 final class CollectionProvider: NodeProvider, MutatingNodeProvider, Sendable {
     let schemes: Set<String> = [CollectionRef.scheme]
-    /// What a collection holds, or nil if no workspace has it.
-    private let members: @Sendable (String) async -> [String]?
+    /// Whether any workspace has this collection.
+    private let exists: @Sendable (String) async -> Bool
     /// Make a change, and say what changed.
     private let change: @Sendable (GraphMutation) async -> [NodeChange]
-    /// How a member URI becomes a node. The broker in the app; a closure in a
-    /// test, which has no broker installed.
-    private let resolveMember: @Sendable (String) async -> Node?
 
-    init(members: @escaping @Sendable (String) async -> [String]?,
-         change: @escaping @Sendable (GraphMutation) async -> [NodeChange],
-         resolveMember: @escaping @Sendable (String) async -> Node?) {
-        self.members = members
+    init(exists: @escaping @Sendable (String) async -> Bool,
+         change: @escaping @Sendable (GraphMutation) async -> [NodeChange]) {
+        self.exists = exists
         self.change = change
-        self.resolveMember = resolveMember
     }
 
     func resolve(_ uri: String) -> NodeID? {
@@ -69,53 +65,31 @@ final class CollectionProvider: NodeProvider, MutatingNodeProvider, Sendable {
     }
 
     func node(for id: NodeID) async -> Node? {
-        guard let name = CollectionRef.name(from: id.uri),
-              let members = await members(id.uri) else { return nil }
+        guard let name = CollectionRef.name(from: id.uri), await exists(id.uri) else { return nil }
         return Node(id: id,
                     type: TypeID("collection"),
                     label: name,
                     icon: NodeIcon("square.stack", tint: .secondary),
-                    hasChildren: !members.isEmpty,
                     accepts: .any)
     }
 
+    /// Nothing of its own: everything in a collection was put there, and the
+    /// host lists that.
     func children(of id: NodeID, page cursor: Cursor?) async -> Page<Node> {
-        var nodes: [Node] = []
-        for member in await members(id.uri) ?? [] {
-            if let node = await resolveMember(member) {
-                nodes.append(node)
-            } else if let placeholder = Self.inert(member) {
-                nodes.append(placeholder)
-            }
-        }
-        return Page(items: nodes)
-    }
-
-    /// A member that did not resolve, shown rather than dropped.
-    ///
-    /// Its own id, not a stand-in's: when the plugin that owns it loads, the
-    /// same row becomes the real thing.
-    static func inert(_ uri: String) -> Node? {
-        guard let id = NodeID(uri) else { return nil }
-        let name = uri.split(separator: "/").last.map(String.init) ?? uri
-        return Node(id: id, type: TypeID("collection.unavailable"),
-                    label: name.removingPercentEncoding ?? name,
-                    icon: NodeIcon("questionmark.circle", tint: .gray))
+        Page(items: [])
     }
 
     // MARK: Mutations
 
-    /// Decided from the URIs alone: a collection's name is in its URI, so
-    /// whether something is one needs nobody to be asked.
+    /// Decided from the URI alone: a collection's name is in its URI, so
+    /// whether something is one needs nobody to be asked. Placing is not here
+    /// — that is the host's, for every node.
     func supports(_ mutation: GraphMutation) -> Bool {
         switch mutation {
         case .rename(let id, _): return Placements.isCollection(id.uri)
         case .delete(let ids): return !ids.isEmpty && ids.allSatisfy { Placements.isCollection($0.uri) }
         case .create(let parent, _, let asContainer): return asContainer && Placements.isCollection(parent.uri)
-        case .adopt(_, let into, _): return Placements.isCollection(into.uri)
-        case .release(_, let from): return Placements.isCollection(from.uri)
-        case .move: return false
-        @unknown default: return false
+        default: return false
         }
     }
 
@@ -128,7 +102,8 @@ final class CollectionProvider: NodeProvider, MutatingNodeProvider, Sendable {
 
 extension WorkspaceStore {
     /// A change to the active sidebar's collections, made through the graph —
-    /// and what it changed, for the graph to follow.
+    /// and what it changed, for the graph to follow. Not placing, which the
+    /// graph does itself.
     func applyToCollections(_ mutation: GraphMutation) -> [NodeChange] {
         func group(_ id: NodeID) -> UUID? { CollectionRef.id(from: id.uri) }
         func touched(_ uris: [String]) -> [NodeChange] {
@@ -157,19 +132,7 @@ extension WorkspaceStore {
             createGroup(named: name, in: uuid)
             return touched([parent.uri])
 
-        case .adopt(let ids, let into, let index):
-            guard let uuid = group(into) else { return [] }
-            add(ids.map(\.uri), to: uuid, at: index)
-            return touched([into.uri])
-
-        case .release(let ids, let from):
-            guard let uuid = group(from) else { return [] }
-            remove(ids.map(\.uri), from: uuid)
-            return touched([from.uri])
-
-        case .move:
-            return []
-        @unknown default:
+        default:
             return []
         }
     }

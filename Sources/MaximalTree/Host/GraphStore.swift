@@ -62,6 +62,22 @@ final class Registry: PluginRegistry {
     }
 }
 
+/// Where what the reader put inside a node is kept: the workspaces.
+///
+/// Placing is the host's, whoever's node it is. A provider owns its node and
+/// the children it lists itself; what was dropped into it was never the
+/// provider's to keep, and every node that takes drops would otherwise keep
+/// them its own way.
+@MainActor
+protocol PlacementHost: AnyObject {
+    /// What was put inside `parent`, in order.
+    func placedChildren(of parent: String) -> [String]
+    /// Put these inside `parent`. Whether it was done.
+    @discardableResult
+    func place(_ uris: [String], into parent: String, at index: Int?) -> Bool
+    func unplace(_ uris: [String], from parent: String)
+}
+
 /// The host's graph store: owns provider routing, the async load path, and drives
 /// the observable `HostContext`. Implements `GraphBackend` so all plugin-triggered
 /// reads/commands funnel through one object.
@@ -100,6 +116,10 @@ final class GraphStore: GraphBackend {
     /// Runs an action by id. Set by the owner, because dispatch needs the
     /// selection variants and the applicability rules that live up there.
     var onPerformAction: ((String, Int) -> Void)?
+
+    /// Where placed children live. With none, nothing can be placed, and every
+    /// node's children are its provider's.
+    weak var placements: PlacementHost?
 
     init(context: HostContext, registry: Registry, nav: NavigationModel) {
         self.context = context
@@ -284,12 +304,29 @@ final class GraphStore: GraphBackend {
 
     func canApply(_ mutation: GraphMutation) -> Bool {
         guard admits(mutation) else { return false }
+        if Self.isPlacement(mutation) { return placements != nil }
         return mutatingProvider(for: mutation)?.supports(mutation) ?? false
     }
 
     func apply(_ mutation: GraphMutation) {
-        guard admits(mutation),
-              let provider = mutatingProvider(for: mutation), provider.supports(mutation) else { return }
+        guard admits(mutation) else { return }
+        // Placing is the host's: no provider is asked, the node's own included.
+        // It hears of it the way everything else does — its listing changed.
+        switch mutation {
+        case .adopt(let ids, let parent, let index):
+            guard let placements, placements.place(ids.map(\.uri), into: parent.uri, at: index)
+            else { return }
+            process([.childrenChanged(parent), .modified(parent)])
+            return
+        case .release(let ids, let parent):
+            guard let placements else { return }
+            placements.unplace(ids.map(\.uri), from: parent.uri)
+            process([.childrenChanged(parent), .modified(parent)])
+            return
+        default:
+            break
+        }
+        guard let provider = mutatingProvider(for: mutation), provider.supports(mutation) else { return }
         Task { @MainActor in
             do {
                 let changes = try await provider.apply(mutation)
@@ -359,10 +396,11 @@ final class GraphStore: GraphBackend {
 
     /// The host's own conditions on a mutation, checked before any provider.
     ///
-    /// Only adoption has any. A provider cannot be trusted to refuse a cycle —
-    /// it sees its own list, not the graph — and a cycle is the host's
-    /// problem: the sidebar is what would walk into it for ever.
+    /// Only placing has any: the node has to take drops at all, and what it
+    /// takes. And a cycle is the host's problem — the sidebar is what would
+    /// walk into it for ever.
     private func admits(_ mutation: GraphMutation) -> Bool {
+        if case .release(_, let parent) = mutation { return context.node(parent)?.accepts != nil }
         guard case .adopt(let ids, let destination, _) = mutation else { return true }
         guard !ids.isEmpty,
               let accepts = context.node(destination)?.accepts,
@@ -399,15 +437,18 @@ final class GraphStore: GraphBackend {
         case .delete(let ids): anchor = ids.first
         case .move(let ids, _): anchor = ids.first
         case .create(let parent, _, _): anchor = parent
-        // The collection keeps the list, so the collection is asked. Routing
-        // these by the child — the way a move goes — would put the question
-        // to a provider that has never heard of the collection.
-        case .adopt(_, let destination, _): anchor = destination
-        case .release(_, let collection): anchor = collection
+        case .adopt, .release: anchor = nil   // the host's; see `apply`
         @unknown default: anchor = nil
         }
         guard let anchor else { return nil }
         return provider(for: anchor) as? MutatingNodeProvider
+    }
+
+    private static func isPlacement(_ mutation: GraphMutation) -> Bool {
+        switch mutation {
+        case .adopt, .release: return true
+        default: return false
+        }
     }
 
     func setRoots(_ ids: [NodeID]) {
@@ -461,13 +502,46 @@ final class GraphStore: GraphBackend {
     /// A leaf that some plugin contributes children to is, effectively, not a leaf:
     /// flip `hasChildren` so the sidebar offers a disclosure. Applied at every
     /// ingest point.
+    ///
+    /// And a node that takes drops has children exactly when something was put
+    /// in it — which its provider cannot know, since the host keeps that.
     private func decorate(_ node: Node) -> Node {
+        var node = node
+        if node.accepts != nil, let placements {
+            node.hasChildren = !placements.placedChildren(of: node.id.uri).isEmpty
+        }
         guard !node.hasChildren,
               registry.childContributions.contains(where: { $0.matches(node) })
         else { return node }
-        var node = node
         node.hasChildren = true
         return node
+    }
+
+    /// What was put inside a node, as nodes: each resolved by whoever owns it.
+    private func placedNodes(_ uris: [String]) async -> [Node] {
+        var nodes: [Node] = []
+        for uri in uris {
+            if let p = provider(forURI: uri), let id = p.resolve(uri), let node = await p.node(for: id) {
+                nodes.append(node)
+            } else if let placeholder = Self.unavailable(uri) {
+                nodes.append(placeholder)
+            }
+        }
+        return nodes
+    }
+
+    /// Something placed that did not resolve, shown rather than dropped.
+    ///
+    /// Its plugin may simply not be loaded, and an entry silently deleted for
+    /// that is far worse than one that is briefly inert. Its own id, not a
+    /// stand-in's: when the plugin loads, the same row becomes the real thing.
+    static func unavailable(_ uri: String) -> Node? {
+        guard let id = NodeID(uri) else { return nil }
+        let name = CollectionRef.name(from: uri)
+            ?? uri.split(separator: "/").last.map(String.init) ?? uri
+        return Node(id: id, type: TypeID("placed.unavailable"),
+                    label: name.removingPercentEncoding ?? name,
+                    icon: NodeIcon("questionmark.circle", tint: .gray))
     }
 
     private var nodesInFlight: Set<NodeID> = []
@@ -519,12 +593,20 @@ final class GraphStore: GraphBackend {
               let p = provider(for: id) else { return }
         childrenInFlight.insert(id)
         Task { @MainActor in
-            let page = await p.children(of: id, page: nil)
+            var subject = context.node(id)
+            if subject == nil { subject = (await p.node(for: id)).map(decorate) }
+
+            // A node that takes drops lists what was dropped into it; the
+            // provider is not asked.
+            let page: Page<Node>
+            if subject?.accepts != nil, let placements {
+                page = Page(items: await placedNodes(placements.placedChildren(of: id.uri)))
+            } else {
+                page = await p.children(of: id, page: nil)
+            }
             var items = page.items.map(decorate)
 
             // Merge in children contributed by other plugins, after the owner's.
-            var subject = context.node(id)
-            if subject == nil { subject = (await p.node(for: id)).map(decorate) }
             if let node = subject {
                 for contribution in registry.childContributions where contribution.matches(node) {
                     items += await contribution.children(id).map(decorate)
