@@ -251,6 +251,22 @@ targets:
         LD_RUNPATH_SEARCH_PATHS:
           - "@loader_path/../../../../Frameworks"
 
+  YouTubePlugin:
+    type: bundle
+    platform: macOS
+    sources: [Sources/YouTubePlugin]
+    dependencies:
+      - target: MaximalTreeKit
+        embed: false
+    settings:
+      base:
+        PRODUCT_NAME: YouTube
+        PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.plugin.youtube
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSPrincipalClass: YouTubePlugin
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@loader_path/../../../../Frameworks"
+
   MaximalTree:
     type: application
     platform: macOS
@@ -277,6 +293,12 @@ targets:
           destination: plugins
           codeSign: true
       - target: WebPlugin
+        embed: true
+        link: false
+        copy:
+          destination: plugins
+          codeSign: true
+      - target: YouTubePlugin
         embed: true
         link: false
         copy:
@@ -366,6 +388,7 @@ targets:
       - path: Sources/TypstPlugin/ProseStyle.swift
       - Sources/WebPlugin
       - Sources/TerminalPlugin
+      - path: Sources/YouTubePlugin/YouTubeCore.swift
     dependencies:
       - target: MaximalTree          # hosts the tests; wires TEST_HOST/BUNDLE_LOADER
       - target: MaximalEditorKit

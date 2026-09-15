@@ -121,6 +121,9 @@ Sources/
     WebCore.swift               #   http(s)+web:// provider, bookmark store (tested)
     Web.swift                   #   WKWebView sessions (delegates, favicons), actions
     WebViews.swift              #   page/bookmarks canvases + address-bar inspector
+  YouTubePlugin/                # reference placing adopter (loadable bundle)
+    YouTubeCore.swift           #   youtube:// URIs, channel RSS, provider + feeds (tested)
+    YouTube.swift               #   add channel / new feed actions, video canvas
 Vendor/typst-ffi/               # Rust staticlib: typst compiler/parser/renderers (C ABI)
 Vendor/highlight-js/            # highlight.min.js (BSD-3) — ~190 grammars, run in-process
 Tests/MaximalTreeTests/         # swift-testing suite (510 tests)
