@@ -293,6 +293,7 @@ private struct NodeRow: View {
         let inGroup = parent.flatMap { CollectionRef.id(from: $0.uri) } != nil
         if parent == nil || inGroup {
             MoveToCollectionMenu(targets: targets, parent: parent)
+            AddToCollectionMenu(targets: targets)
         }
         if inGroup {
             Button("Remove from Collection") { model.remove(targets, from: parent) }
@@ -364,6 +365,32 @@ private struct MoreRow: View {
         }
         .frame(height: 20)
         .padding(.horizontal, 8)
+    }
+}
+
+/// "Add to Collection ▸ …" — every group, and a new one.
+///
+/// Adding rather than moving, for a row that is not the sidebar's to move: one
+/// inside a channel's listing, a search result, a file in a folder. What you
+/// were looking at stays where it is, and the collection gains a reference —
+/// which is what a watch list is.
+struct AddToCollectionMenu: View {
+    let targets: [NodeID]
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let moving = Set(targets.compactMap { CollectionRef.id(from: $0.uri) })
+        Menu("Add to Collection") {
+            ForEach(model.placements.collections(from: model.sidebarRoot, excluding: moving),
+                    id: \.uri) { item in
+                Button(String(repeating: "   ", count: item.depth)
+                       + (CollectionRef.name(from: item.uri) ?? "")) {
+                    model.addToCollection(targets, uri: item.uri)
+                }
+            }
+            Divider()
+            Button("New Collection…") { model.addToNewCollection(targets) }
+        }
     }
 }
 

@@ -461,6 +461,10 @@ extension AppModel {
         act("collection.new", "New Collection", image: "rectangle.stack.badge.plus") { model, _ in
             model.newCollection()
         }
+        act("collection.watchLater", "Add to Watch Later", image: "clock.badge.checkmark",
+            when: .custom { !$0.targets.isEmpty }) { model, ctx in
+            model.addToCollection(ctx.targets, named: AppModel.watchLaterName)
+        }
         act("collection.delete", "Delete Collection", image: "trash",
             when: .custom { ctx in
                 !ctx.targets.isEmpty

@@ -139,6 +139,37 @@ struct ContentsList: View {
         // is the second click, the same bargain as everywhere else.
         .onTapGesture(count: 2) { model.openContentsRow(id) }
         .onTapGesture { model.highlightContentsRow(id) }
+        .contextMenu { menu(for: id) }
+        // A row here is not the sidebar's to move — it belongs to whatever is
+        // being listed — so dragging it into a collection adds it, which is
+        // what the drop plan makes of a drag it did not start.
+        .onDrag { NSItemProvider(object: id.uri as NSString) }
+    }
+
+    @ViewBuilder
+    private func menu(for id: NodeID) -> some View {
+        Button("Open in New Tab") { model.openInNewTab(id) }
+        Divider()
+        Button("Add to Watch Later") {
+            model.addToCollection([id], named: AppModel.watchLaterName)
+        }
+        AddToCollectionMenu(targets: [id])
+        let groups = model.actionGroups(for: .contextMenu, targets: [id])
+        if !groups.isEmpty {
+            ForEach(groups) { group in
+                Section {
+                    ForEach(group.actions) { action in
+                        Button { model.run(action, targets: [id]) } label: {
+                            if let image = action.systemImage {
+                                Label(action.title, systemImage: image)
+                            } else {
+                                Text(action.title)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -674,6 +674,49 @@ final class AppModel {
         store?.beginRename(node)
     }
 
+    /// What "Add to Watch Later" means: a collection of that name, in this
+    /// workspace.
+    ///
+    /// There is nothing else to it. A watch list is an ordered set of things
+    /// you meant to come back to, which is what a collection already is — so
+    /// it is drag-arrangeable, renameable, can hold anything, and is nobody
+    /// else's list: not YouTube's, not synced, not a feature of one plugin.
+    static let watchLaterName = "Watch Later"
+
+    /// Put these in the collection called `name`, making it at the top level
+    /// if this workspace has none — so the action works before the collection
+    /// exists.
+    ///
+    /// Added, not moved: a video listed inside a channel stays there, and one
+    /// already in the collection moves to the end rather than appearing twice.
+    func addToCollection(_ ids: [NodeID], named name: String) {
+        guard !ids.isEmpty else { return }
+        let destination = placements.collections(from: sidebarRoot)
+            .first { CollectionRef.name(from: $0.uri) == name }?.uri
+            ?? workspaceStore.uri(of: workspaceStore.createGroup(named: name))
+        guard let destination else { return }
+        workspaceStore.place(ids.map(\.uri), into: destination, at: nil)
+        store?.ensureNodes([NodeID(canonical: destination)])
+    }
+
+    /// Put these in a collection made for them, named and ready to rename.
+    func addToNewCollection(_ ids: [NodeID]) {
+        let id = workspaceStore.createGroup(named: "New Collection")
+        guard let uri = workspaceStore.uri(of: id) else { return }
+        workspaceStore.place(ids.map(\.uri), into: uri, at: nil)
+        let node = NodeID(canonical: uri)
+        sidebar.expandedNodes.insert(node)
+        store?.ensureNodes([node])
+        host.select([node])
+        store?.beginRename(node)
+    }
+
+    /// Put these in a collection that is already there.
+    func addToCollection(_ ids: [NodeID], uri: String) {
+        guard !ids.isEmpty else { return }
+        workspaceStore.place(ids.map(\.uri), into: uri, at: nil)
+    }
+
     /// Dragged rows let go over a place in the group tree — a group, or a strip
     /// between rows (`destination` nil is the top level).
     @discardableResult
