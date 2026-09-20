@@ -126,6 +126,14 @@ public struct Action: Identifiable {
     public var owner: String?
     public let handler: @MainActor (ActionContext) -> Void
 
+    /// The body, with its types packed away — what a key, the palette, or
+    /// another plugin reaches when it invokes this by id.
+    ///
+    /// Built from `handler` for an action written before commands existed,
+    /// which is all of them today. The dispatch path still calls `handler`
+    /// directly; this is the seam it moves to.
+    public let command: AnyCommand
+
     public init(
         id: String,
         title: String,
@@ -144,6 +152,7 @@ public struct Action: Identifiable {
         self.scope = scope
         self.surfaces = surfaces ?? scope.defaultSurfaces
         self.handler = handler
+        self.command = AnyCommand.handler(id: id, handler)
     }
 }
 

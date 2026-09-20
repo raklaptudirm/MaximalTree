@@ -57,6 +57,31 @@ public struct NodeID: Hashable, Sendable, Codable, CustomStringConvertible {
     }
 }
 
+extension NodeID {
+    /// A node is its URI, and it travels as one: `"file:///tmp/a.txt"`, not an
+    /// object wrapping a string. Synthesized `Codable` would give the wrapper,
+    /// which is unreadable in the place it matters most — a command's argument,
+    /// written by hand in a keymap or a script.
+    ///
+    /// Decoding canonicalizes, so a URI that arrives from outside the app is
+    /// held to the same rule as one built in it: two spellings of a node must
+    /// collapse to one identity before either is used as a key.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        guard let id = NodeID(raw) else {
+            throw DecodingError.dataCorruptedError(in: container,
+                                                   debugDescription: "Not a usable URI: \(raw)")
+        }
+        self = id
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(uri)
+    }
+}
+
 // MARK: - TypeID
 
 /// Identifies a node's type, e.g. `"file.directory"`. Owns which `TypeRenderer`
