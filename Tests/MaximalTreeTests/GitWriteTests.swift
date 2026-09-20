@@ -171,6 +171,7 @@ import Foundation
             func requestAttributes(of id: NodeID) {}
             func requestRelated(of id: NodeID) {}
             func perform(actionID: String, count: Int) {}
+            func run(command id: String, input: Any) async throws -> Any { NoAnswer() }
             func setKeyMode(_ mode: KeyMode) {}
         }
         let backend = Backend()

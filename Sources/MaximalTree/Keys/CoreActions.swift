@@ -129,10 +129,17 @@ extension AppModel {
     /// here does nothing rather than something surprising — which is also how
     /// the explorer motions stay the sidebar's own.
     func runCommand(_ id: String, count: Int = 1) {
-        guard let action = action(id) else { return }
         let targets = keyTargets()
-        guard canRun(action, targets: targets) else { return }
-        perform(action, targets: targets, count: count)
+        if let action = action(id) {
+            guard canRun(action, targets: targets) else { return }
+            perform(action, targets: targets, count: count)
+            return
+        }
+        // A command registered without presentation: nothing lists it, so
+        // there is no predicate to ask — being invoked by id is the whole of
+        // how it is reached.
+        guard let command = store?.registry.command(id) else { return }
+        invoke(command, in: ActionContext(host: host, targets: targets, count: count))
     }
 
     /// What a key press acts on.

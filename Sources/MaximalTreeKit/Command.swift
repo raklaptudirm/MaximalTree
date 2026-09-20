@@ -83,6 +83,32 @@ public enum CommandError: Error, Equatable {
     case unreadableArgument(command: String, reason: String)
     /// The answer couldn't be written down.
     case unwritableAnswer(command: String, reason: String)
+    /// The answer wasn't the type the caller expected. Only a typed caller can
+    /// hit this, and only by naming a command whose id belongs to a different
+    /// one than the type it asked for.
+    case wrongAnswer(command: String)
+    /// Nothing is registered under that id.
+    case noSuchCommand(command: String)
+}
+
+extension CommandError: CustomStringConvertible {
+    /// Written for the person who has to act on it, since this is what the
+    /// host puts in front of them when a command invoked from a key or a menu
+    /// fails — they didn't ask a question, so the answer has to explain itself.
+    public var description: String {
+        switch self {
+        case .wrongArgument(let command):
+            return "\(command) was given the wrong kind of argument."
+        case .unreadableArgument(let command, let reason):
+            return "\(command) couldn't read its argument: \(reason)"
+        case .unwritableAnswer(let command, let reason):
+            return "\(command) couldn't write down its answer: \(reason)"
+        case .wrongAnswer(let command):
+            return "\(command) answered with something else than was expected."
+        case .noSuchCommand(let command):
+            return "There is no command called \(command)."
+        }
+    }
 }
 
 // MARK: - A value crossing the boundary
@@ -178,13 +204,32 @@ public struct AnyCommand {
 
     private let typed: @MainActor (Any, ActionContext) async throws -> Any
     private let valued: @MainActor (CommandValue, ActionContext) async throws -> CommandValue
+    /// The same body again, for a command that finishes without suspending.
+    ///
+    /// Not an optimisation. A key that runs one of these has always completed
+    /// before the next keystroke is read, and putting it on a queue instead
+    /// would reorder a keymap against itself. So the ones that can still run
+    /// where they always did, and only what might take time waits its turn.
+    private let now: (@MainActor (Any, ActionContext) throws -> Any)?
 
     init(id: String,
          typed: @escaping @MainActor (Any, ActionContext) async throws -> Any,
-         valued: @escaping @MainActor (CommandValue, ActionContext) async throws -> CommandValue) {
+         valued: @escaping @MainActor (CommandValue, ActionContext) async throws -> CommandValue,
+         now: (@MainActor (Any, ActionContext) throws -> Any)? = nil) {
         self.id = id
         self.typed = typed
         self.valued = valued
+        self.now = now
+    }
+
+    /// Whether it finishes without suspending.
+    public var isImmediate: Bool { now != nil }
+
+    /// Run it here, without suspending. `nil` means it can't — it has to take
+    /// its turn like anything else that might take time.
+    @MainActor
+    public func runImmediately(_ input: Any, in context: ActionContext) throws -> Any? {
+        try now?(input, context)
     }
 
     /// Run it with the argument it expects, unserialized. `input` must be the
@@ -245,6 +290,7 @@ extension AnyCommand {
         AnyCommand(
             id: id,
             typed: { _, context in body(context); return NoAnswer() },
-            valued: { _, context in body(context); return .fields([:]) })
+            valued: { _, context in body(context); return .fields([:]) },
+            now: { _, context in body(context); return NoAnswer() })
     }
 }

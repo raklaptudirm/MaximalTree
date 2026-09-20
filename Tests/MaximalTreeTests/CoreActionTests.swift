@@ -103,16 +103,23 @@ import SwiftUI
         #expect(down.appliesTo.matches(ActionContext(host: model.host)))
     }
 
-    /// A repeat has to survive the trip from the key to the handler; `5 j`
-    /// moves five rows because the count reaches the action.
-    @Test func theRepeatCountReachesTheHandler() {
-        var seen: [Int] = []
-        let action = Action(id: "test.count", title: "Count") { ctx in seen.append(ctx.count) }
+    /// A repeat has to survive the trip from the key to the body; `5 j` moves
+    /// five rows because the count reaches the action.
+    @Test func theRepeatCountReachesTheHandler() async throws {
+        final class Seen: @unchecked Sendable {
+            var counts: [Int] = []
+        }
+        let seen = Seen()
+        let action = Action(id: "test.count", title: "Count") { ctx in
+            seen.counts.append(ctx.count)
+        }
         let host = HostContext()
 
-        action.handler(ActionContext(host: host, count: 5))
-        action.handler(ActionContext(host: host))
-        #expect(seen == [5, 1])
+        _ = try await action.command.run(NodeTargets(nodes: []),
+                                         in: ActionContext(host: host, count: 5))
+        _ = try await action.command.run(NodeTargets(nodes: []),
+                                         in: ActionContext(host: host))
+        #expect(seen.counts == [5, 1])
     }
 
     /// Never zero, so a handler can loop on it without checking.

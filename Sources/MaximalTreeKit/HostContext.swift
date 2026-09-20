@@ -117,6 +117,23 @@ public final class HostContext {
     ///
     /// Does nothing when the id is unknown or the action does not apply right
     /// now, so a caller need not guard either.
+    /// Run a command and wait for what it answers.
+    ///
+    /// The other door. `perform(_:count:)` is what a key or a menu goes
+    /// through: there is nothing to hand back, and a failure is the host's to
+    /// put in front of the reader, who pressed a key rather than asking anyone
+    /// a question. This one is for a caller that wants the answer — and a
+    /// caller that wants the answer takes the failure with it.
+    @MainActor
+    public func perform<C: Command>(_ command: C.Type, _ input: C.Input) async throws -> C.Output {
+        guard let backend else { throw CommandError.noSuchCommand(command: C.id) }
+        let answer = try await backend.run(command: C.id, input: input)
+        guard let answer = answer as? C.Output else {
+            throw CommandError.wrongAnswer(command: C.id)
+        }
+        return answer
+    }
+
     public func perform(_ actionID: String, count: Int = 1) {
         backend?.perform(actionID: actionID, count: count)
     }
@@ -315,5 +332,6 @@ public protocol GraphBackend: AnyObject {
     func requestAttributes(of id: NodeID)
     func requestRelated(of id: NodeID)
     func perform(actionID: String, count: Int)
+    @MainActor func run(command id: String, input: Any) async throws -> Any
     func setKeyMode(_ mode: KeyMode)
 }

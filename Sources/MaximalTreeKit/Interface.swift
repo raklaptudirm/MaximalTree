@@ -124,14 +124,8 @@ public struct Action: Identifiable {
     /// Which plugin contributed this, used to group the surfaces. Stamped by
     /// the host at registration; plugins leave it alone.
     public var owner: String?
-    public let handler: @MainActor (ActionContext) -> Void
-
     /// The body, with its types packed away — what a key, the palette, or
     /// another plugin reaches when it invokes this by id.
-    ///
-    /// Built from `handler` for an action written before commands existed,
-    /// which is all of them today. The dispatch path still calls `handler`
-    /// directly; this is the seam it moves to.
     public let command: AnyCommand
 
     public init(
@@ -151,7 +145,6 @@ public struct Action: Identifiable {
         self.shortcut = shortcut
         self.scope = scope
         self.surfaces = surfaces ?? scope.defaultSurfaces
-        self.handler = handler
         self.command = AnyCommand.handler(id: id, handler)
     }
 }
@@ -304,6 +297,11 @@ public protocol PluginRegistry: AnyObject {
     func register(inspector: InspectorContribution)
     func register(children: ChildContribution)
     func register(action: Action)
+    /// A command that isn't offered anywhere — invoked by id, by a key or by a
+    /// canvas, but never listed. An `Action` is one of these plus the title,
+    /// icon and predicate a surface needs to draw it; plenty of operations
+    /// need none of that and shouldn't have to invent them.
+    func register(command: AnyCommand)
     /// A list the finder can search — see `FinderSource`.
     func register(finder: FinderSource)
     /// Keys for a surface that is not a canvas. A canvas declares its own on
@@ -312,6 +310,10 @@ public protocol PluginRegistry: AnyObject {
 }
 
 public extension PluginRegistry {
+    /// Register a command written as a type, which is how they are written.
+    @MainActor
+    func register(_ command: some Command) { register(command: command.erased()) }
+
     /// Convenience for the common "render exactly this type" case.
     func registerCanvas(
         forType typeID: TypeID, priority: Int = 0,

@@ -150,6 +150,14 @@ struct ContentView: View {
             Button("Rename") { model.renameActiveWorkspace(to: workspaceNameDraft) }
             Button("Cancel", role: .cancel) {}
         }
+        .alert("Couldn't Do That", isPresented: Binding(
+            get: { model.commandFailure != nil },
+            set: { if !$0 { model.dismissCommandFailure() } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(model.commandFailure?.message ?? "")
+        }
         .onChange(of: model.showingCreateWorkspace) { _, showing in
             if showing { workspaceNameDraft = "" }
         }

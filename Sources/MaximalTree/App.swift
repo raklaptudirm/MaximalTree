@@ -174,6 +174,16 @@ final class AppModel {
     let workspaceStore: WorkspaceStore
     private(set) var store: GraphStore?
 
+    /// Commands that might suspend, one at a time — see `CommandQueue`.
+    let commandQueue = CommandQueue()
+
+    /// The last command that failed, until the reader waves it away.
+    ///
+    /// A key or a menu item has nowhere to put an error: whoever pressed it
+    /// asked for something to happen, not for an answer, so the host is the
+    /// one that has to say it didn't.
+    private(set) var commandFailure: CommandFailure?
+
     /// The finder: fuzzy search over everything the app knows about.
     var finderVisible = false
     let finder = FinderModel()
@@ -915,9 +925,61 @@ final class AppModel {
     /// A node is offered as each identity it also is (see `targetVariants`), so
     /// a git repository can be handed to an action written for directories.
     func perform(_ action: Action, targets: [NodeID]? = nil, count: Int = 1) {
-        action.handler(context(for: action, targets: targets, count: count)
-                       ?? ActionContext(host: host, targets: targets, count: count))
+        invoke(action.command,
+               in: context(for: action, targets: targets, count: count)
+                   ?? ActionContext(host: host, targets: targets, count: count))
     }
+
+    /// Run a command from a surface — a key, a menu, the palette.
+    ///
+    /// Nothing is handed back, because nothing asked for anything back, and a
+    /// failure goes to the reader rather than to the caller. One that finishes
+    /// where it stands does so; one that might take time takes its turn.
+    func invoke(_ command: AnyCommand, in context: ActionContext) {
+        let input = NodeTargets(nodes: context.targets, count: context.count)
+        do {
+            if try command.runImmediately(input, in: context) != nil { return }
+        } catch {
+            report(error, from: command.id)
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await commandQueue.serialized { try await command.run(input, in: context) }
+            } catch {
+                report(error, from: command.id)
+            }
+        }
+    }
+
+    /// Run a command by id and wait for its answer — the door for a caller
+    /// that wants the result, and takes the failure with it.
+    func run(commandID id: String, input: Any) async throws -> Any {
+        guard let command = store?.registry.command(id) else {
+            throw CommandError.noSuchCommand(command: id)
+        }
+        let context = action(id).flatMap { self.context(for: $0, targets: nil) }
+            ?? ActionContext(host: host, targets: nil)
+        if let answer = try command.runImmediately(input, in: context) { return answer }
+        return try await commandQueue.serialized { try await command.run(input, in: context) }
+    }
+
+    /// What the reader is told, in the order of who took the trouble to say it.
+    ///
+    /// A command's own `LocalizedError` comes first, because a plugin that
+    /// wrote a sentence for this moment meant it to be read. `String(describing:)`
+    /// is the floor, and it shows: `refused("no such channel")` is a Swift
+    /// value, not something to put in front of anybody. Anything reaching that
+    /// floor is a command that should have described itself.
+    func report(_ error: Error, from command: String) {
+        let message = (error as? CommandError)?.description
+            ?? (error as? LocalizedError)?.errorDescription
+            ?? String(describing: error)
+        commandFailure = CommandFailure(command: command, message: message)
+    }
+
+    func dismissCommandFailure() { commandFailure = nil }
 
     /// Actions the host contributes itself — node manipulation that belongs to no
     /// plugin because it rides the generic mutation vocabulary. Rename is the
@@ -985,6 +1047,10 @@ final class AppModel {
         // so there is one answer to "what happens when this id is invoked".
         store.onPerformAction = { [weak self] id, count in
             self?.runCommand(id, count: count)
+        }
+        store.onRunCommand = { [weak self] id, input in
+            guard let self else { throw CommandError.noSuchCommand(command: id) }
+            return try await run(commandID: id, input: input)
         }
         store.onSetKeyMode = { [weak self] mode in self?.keys.setMode(mode) }
         store.onRootsChanged = { [weak self] in

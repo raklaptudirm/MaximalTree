@@ -53,7 +53,17 @@ final class Registry: PluginRegistry {
         } else {
             actions.append(action)
         }
+        commands[action.id] = action.command
     }
+
+    /// Every registered body by id, an action's included — so "what happens
+    /// when this id is invoked" has one answer whether or not the operation
+    /// was ever given a title.
+    private(set) var commands: [String: AnyCommand] = [:]
+
+    func register(command: AnyCommand) { commands[command.id] = command }
+
+    func command(_ id: String) -> AnyCommand? { commands[id] }
 
     /// The plugin that provides `id`'s nodes, if a plugin does.
     func owner(of id: NodeID?) -> String? {
@@ -116,6 +126,7 @@ final class GraphStore: GraphBackend {
     /// Runs an action by id. Set by the owner, because dispatch needs the
     /// selection variants and the applicability rules that live up there.
     var onPerformAction: ((String, Int) -> Void)?
+    var onRunCommand: (@MainActor (String, Any) async throws -> Any)?
 
     /// Where placed children live. With none, nothing can be placed, and every
     /// node's children are its provider's.
@@ -690,6 +701,12 @@ final class GraphStore: GraphBackend {
     /// A plugin driving the app by name — the same path a key takes.
     func perform(actionID: String, count: Int) {
         onPerformAction?(actionID, count)
+    }
+
+    /// A caller that wants the answer, and will handle the failure.
+    func run(command id: String, input: Any) async throws -> Any {
+        guard let onRunCommand else { throw CommandError.noSuchCommand(command: id) }
+        return try await onRunCommand(id, input)
     }
 
     func requestRelated(of id: NodeID) {
