@@ -248,3 +248,42 @@ private final class Clock: @unchecked Sendable {
         try await waitUntil { model.host.cachedChildren(of: feed) == [YouTubeRef.video("a1").nodeID] }
     }
 }
+
+/// Renaming a feed in the sidebar, as the reader does it.
+@MainActor
+@Suite struct YouTubeRenameTests {
+    private func waitUntil(_ condition: () -> Bool) async throws {
+        for _ in 0..<300 where !condition() { try await Task.sleep(nanoseconds: 5_000_000) }
+        #expect(condition())
+    }
+
+    @Test func renamingAFeedFollowsItEverywhereItIsPlaced() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("youtube-rename-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let model = AppModel(host: HostContext(), workspaceFile: dir.appendingPathComponent("workspaces.json"))
+        let registry = model.pluginHost.registry
+        let fake = FakeYouTube()
+        fake.feeds[alpha] = feedXML(alpha, title: "Alpha", videos: [("a1", "A one", "2026-09-01T10:00:00+00:00")])
+        registry.register(provider: YouTubeProvider(broker: registry.broker, fetch: { try fake.fetch($0) }))
+        model.start()
+        registry.hostBroker.install(registry.providers)
+
+        let id = UUID()
+        let old = YouTubeRef.aggregator(id, name: "YouTube Feed").nodeID
+        // Mounted in the sidebar, holding a channel — what the actions do.
+        model.workspaceStore.place([old.uri], into: model.sidebarRoot, at: nil)
+        let channel = YouTubeRef.channel(alpha).nodeID
+        model.store?.ensureNodes([old, channel])
+        try await waitUntil { model.host.node(old) != nil && model.host.node(channel) != nil }
+        model.host.apply(.adopt([channel], into: old, at: nil))
+        try await waitUntil { !model.workspaceStore.placedChildren(of: old.uri).isEmpty }
+
+        model.host.apply(.rename(old, to: "YouTube"))
+
+        let new = YouTubeRef.aggregator(id, name: "YouTube").nodeID
+        try await waitUntil { model.placements.children(of: model.sidebarRoot) == [new.uri] }
+        #expect(model.workspaceStore.placedChildren(of: new.uri) == [YouTubeRef.channel(alpha).uri])
+        #expect(model.placements.children[old.uri] == nil, "its channels were left under the old name")
+    }
+}

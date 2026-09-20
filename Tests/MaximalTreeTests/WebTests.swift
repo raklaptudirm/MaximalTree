@@ -71,6 +71,16 @@ import Foundation
     }
 }
 
+/// The tests run inside the app, on the app's own stores. They must not be the
+/// reader's.
+@Suite struct WebStorageTests {
+    @Test func theStoresStayOutOfTheRealLibraryUnderTest() {
+        let temporary = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath().path
+        #expect(BookmarkStore.shared.fileURL.resolvingSymlinksInPath().path.hasPrefix(temporary))
+        #expect(FaviconStore.shared.directory.resolvingSymlinksInPath().path.hasPrefix(temporary))
+    }
+}
+
 @Suite struct BookmarkStoreTests {
     private func tempStore() -> BookmarkStore {
         BookmarkStore(fileURL: URL(fileURLWithPath: NSTemporaryDirectory())

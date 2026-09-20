@@ -5,6 +5,30 @@ import MaximalTreeKit
 // and the persisted bookmark store. No WebKit here — this file is what the
 // test target compiles.
 
+// MARK: - Where the plugin keeps things
+
+/// The directory the plugin's stores live in — and, under the test runner,
+/// somewhere else.
+///
+/// The tests run inside the app, so the defaults are the reader's own files: a
+/// test that bookmarked a page rewrote the real bookmarks, and one that cached
+/// an icon wrote into the real icons. Nothing a test asserts depends on that
+/// data, and none of it should ever touch it. The same bargain `AppModel`
+/// strikes for the workspace library.
+enum WebStorage {
+    static func directory() -> URL {
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else {
+            let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("maximaltree-web-test-\(UUID().uuidString)", isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir
+        }
+        return FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("MaximalTree", isDirectory: true)
+    }
+}
+
 // MARK: - Favicons
 
 /// Favicons that outlive the session that fetched them.
@@ -24,16 +48,15 @@ final class FaviconStore: @unchecked Sendable {
     nonisolated(unsafe) static var shared = FaviconStore()
 
     private let lock = NSLock()
-    private let directory: URL
+    let directory: URL
     /// Hosts already read from (or written to) disk this run, so the sidebar
     /// isn't doing file I/O for every row it draws. `nil` records a host with
     /// no icon, which is just as worth remembering.
     private var cache: [String: Data?] = [:]
 
     init(directory: URL? = nil) {
-        self.directory = directory ?? FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MaximalTree/web-favicons", isDirectory: true)
+        self.directory = directory
+            ?? WebStorage.directory().appendingPathComponent("web-favicons", isDirectory: true)
     }
 
     /// The cached icon for `host`, or nil when we've never got one. Never
@@ -178,12 +201,11 @@ final class BookmarkStore: @unchecked Sendable {
 
     private let lock = NSLock()
     private var bookmarks: [Bookmark]
-    private let fileURL: URL
+    let fileURL: URL
 
     init(fileURL: URL? = nil) {
-        self.fileURL = fileURL ?? FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MaximalTree/web-bookmarks.json")
+        self.fileURL = fileURL
+            ?? WebStorage.directory().appendingPathComponent("web-bookmarks.json")
         bookmarks = (try? Data(contentsOf: self.fileURL))
             .flatMap { try? JSONDecoder().decode([Bookmark].self, from: $0) } ?? []
     }
