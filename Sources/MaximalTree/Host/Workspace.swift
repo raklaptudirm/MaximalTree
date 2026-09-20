@@ -394,6 +394,17 @@ final class WorkspaceStore: PlacementHost {
                 }
                 placements.setChildren(members, of: parent)
             }
+            // A stored *parent* is resolved in place too. A provider can spell
+            // an identity differently than it was written — an older URI, or a
+            // name that used to be part of it — and what was placed inside it
+            // would otherwise stay filed under a name nothing points at any
+            // more, which reads as an aggregator that lost its channels.
+            for key in placements.children.keys where key != root && !Placements.isCollection(key) {
+                guard let scheme = NodeID(key)?.scheme,
+                      let provider = providers.first(where: { $0.schemes.contains(scheme) }),
+                      let resolved = provider.resolve(key), resolved.uri != key else { continue }
+                placements.remap(from: key, to: resolved.uri)
+            }
         }
         let roots = resolvedRoots(using: providers)
         liveRoots = Set(roots.map(\.uri))

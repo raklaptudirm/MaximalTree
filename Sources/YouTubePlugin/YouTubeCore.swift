@@ -10,10 +10,17 @@ import MaximalTreeKit
 /// Everything the plugin names.
 ///
 /// A channel and a video are named by YouTube's own ids. A feed — an aggregator
-/// of channels — has nothing on YouTube's side, so it is named the way a
-/// collection is: an id of its own, and its name in the URI. It is two things,
-/// with two URIs that differ only in what they are: the aggregator, which holds
-/// channels, and its feed, which lists their videos.
+/// of channels — has nothing on YouTube's side, so it gets an id of its own. It
+/// is two things, with two URIs that differ only in what they are: the
+/// aggregator, which holds channels, and its feed, which lists their videos.
+///
+/// Its *name* is not in its URI. A collection can carry its name there because
+/// everything that refers to one lives in the table a rename rewrites; an
+/// aggregator is referred to from two places — the sidebar that holds it, and
+/// the entry holding its channels — and anything that writes one of those
+/// while the other is mid-rename splits the two apart, leaving a feed whose
+/// channels are filed under a name nothing points at. The name lives in the
+/// plugin's store, where renaming it is not a change of identity at all.
 enum YouTubeRef: Equatable {
     case channel(String)
     case video(String)
@@ -21,8 +28,8 @@ enum YouTubeRef: Equatable {
     /// A search, named by what was searched for — so it can be mounted, kept,
     /// and opened again tomorrow.
     case search(String)
-    case aggregator(UUID, name: String)
-    case feed(UUID, name: String)
+    case aggregator(UUID)
+    case feed(UUID)
 
     static let scheme = "youtube"
 
@@ -32,15 +39,16 @@ enum YouTubeRef: Equatable {
         let raw = String(components.percentEncodedPath.drop { $0 == "/" })
         guard !raw.isEmpty else { return nil }
         let id = raw.removingPercentEncoding ?? raw
-        let name = components.queryItems?.first { $0.name == "name" }?.value ?? ""
         if kind == "search" { self = .search(id); return }
         guard !id.contains("/") else { return nil }
         switch kind {
         case "channel": self = .channel(id)
         case "video": self = .video(id)
         case "playlist": self = .playlist(id)
-        case "aggregator": guard let uuid = UUID(uuidString: id) else { return nil }; self = .aggregator(uuid, name: name)
-        case "feed": guard let uuid = UUID(uuidString: id) else { return nil }; self = .feed(uuid, name: name)
+        // A `?name=` an older build wrote is dropped, which is what makes
+        // resolving one canonical: the host rewrites what it stored to this.
+        case "aggregator": guard let uuid = UUID(uuidString: id) else { return nil }; self = .aggregator(uuid)
+        case "feed": guard let uuid = UUID(uuidString: id) else { return nil }; self = .feed(uuid)
         default: return nil
         }
     }
@@ -51,8 +59,8 @@ enum YouTubeRef: Equatable {
         case .video(let id): return "youtube://video/\(id)"
         case .playlist(let id): return "youtube://playlist/\(id)"
         case .search(let query): return "youtube://search/" + Self.encoded(query)
-        case .aggregator(let id, let name): return Self.named("aggregator", id, name)
-        case .feed(let id, let name): return Self.named("feed", id, name)
+        case .aggregator(let id): return "youtube://aggregator/\(id.uuidString.lowercased())"
+        case .feed(let id): return "youtube://feed/\(id.uuidString.lowercased())"
         }
     }
 
@@ -60,10 +68,6 @@ enum YouTubeRef: Equatable {
 
     /// Encoded strictly, so any name reads back exactly and the URI is already
     /// canonical.
-    private static func named(_ kind: String, _ id: UUID, _ name: String) -> String {
-        "youtube://\(kind)/\(id.uuidString.lowercased())?name=" + encoded(name)
-    }
-
     /// Strictly enough that anything — a query with a slash, an ampersand, a
     /// question mark — reads back exactly as it was typed.
     private static func encoded(_ text: String) -> String {
@@ -283,15 +287,14 @@ final class YouTubeProvider: NodeProvider, MutatingNodeProvider, @unchecked Send
             return Node(id: id, type: TypeID("youtube.search"), label: query,
                         icon: NodeIcon("magnifyingglass", tint: .red),
                         subtitle: "YouTube", hasChildren: true, childStyle: .contents)
-        case .aggregator(let uuid, let name):
+        case .aggregator(let uuid):
             return Node(id: id, type: TypeID("youtube.aggregator"),
-                        label: name.isEmpty ? "YouTube Feed" : name,
+                        label: store.feedName(uuid),
                         icon: NodeIcon("rectangle.stack.badge.play", tint: .red),
                         accepts: .types([TypeID("youtube.channel")]),
-                        identities: [YouTubeRef.feed(uuid, name: name).nodeID])
-        case .feed(_, let name):
-            return Node(id: id, type: TypeID("youtube.feed"),
-                        label: name.isEmpty ? "YouTube Feed" : name,
+                        identities: [YouTubeRef.feed(uuid).nodeID])
+        case .feed(let uuid):
+            return Node(id: id, type: TypeID("youtube.feed"), label: store.feedName(uuid),
                         icon: NodeIcon("play.rectangle.on.rectangle", tint: .red),
                         hasChildren: true, childStyle: .contents)
         }
@@ -322,10 +325,10 @@ final class YouTubeProvider: NodeProvider, MutatingNodeProvider, @unchecked Send
             guard let listing = try? await innerTube.search(query, after: cursor?.token)
             else { return Page(items: []) }
             return await page(of: listing)
-        case .feed(let uuid, let name)?:
+        case .feed(let uuid)?:
             // The channels are the aggregator's, placed by the reader and kept
             // by the host.
-            let aggregator = YouTubeRef.aggregator(uuid, name: name).uri
+            let aggregator = YouTubeRef.aggregator(uuid).uri
             let channels = await broker.placedChildren(of: aggregator)
                 .compactMap { uri -> String? in
                     if case .channel(let channelID)? = YouTubeRef(uri: uri) { return channelID }
@@ -463,8 +466,7 @@ final class YouTubeProvider: NodeProvider, MutatingNodeProvider, @unchecked Send
 
     // MARK: Mutations
 
-    /// A feed can be renamed — its name is in its URI, so that is a rename in
-    /// the graph's sense, for the aggregator and its feed both.
+    /// A feed can be renamed.
     func supports(_ mutation: GraphMutation) -> Bool {
         guard case .rename(let id, _) = mutation, case .aggregator? = YouTubeRef(uri: id.uri) else {
             return false
@@ -472,13 +474,16 @@ final class YouTubeProvider: NodeProvider, MutatingNodeProvider, @unchecked Send
         return true
     }
 
+    /// Renaming a feed changes what it is called and nothing else.
+    ///
+    /// Not its identity: it keeps its URI, so what was placed in it and what
+    /// holds it are untouched, and there is no window in which the two could
+    /// disagree. Its feed is told as well, since that is the same thing seen
+    /// as what it produces.
     func apply(_ mutation: GraphMutation) async throws -> [NodeChange] {
         guard case .rename(let id, let name) = mutation,
-              case .aggregator(let uuid, let old)? = YouTubeRef(uri: id.uri), name != old else { return [] }
-        return [
-            .renamed(from: id, to: YouTubeRef.aggregator(uuid, name: name).nodeID),
-            .renamed(from: YouTubeRef.feed(uuid, name: old).nodeID,
-                     to: YouTubeRef.feed(uuid, name: name).nodeID),
-        ]
+              case .aggregator(let uuid)? = YouTubeRef(uri: id.uri) else { return [] }
+        store.remember(feedName: name, for: uuid)
+        return [.modified(id), .modified(YouTubeRef.feed(uuid).nodeID)]
     }
 }

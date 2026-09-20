@@ -78,12 +78,15 @@ private let alpha = "UCaaaaaaaaaaaaaaaaaaaaaa", beta = "UCbbbbbbbbbbbbbbbbbbbbbb
 
     @Test func everyURIReadsBack() {
         let id = UUID()
-        for ref in [YouTubeRef.channel(alpha), .video("abc_-1"), .aggregator(id, name: "Watch & Learn / 2"),
-                    .feed(id, name: "")] {
+        for ref in [YouTubeRef.channel(alpha), .video("abc_-1"), .aggregator(id), .feed(id)] {
             #expect(YouTubeRef(uri: ref.uri) == ref)
             #expect(NodeID(ref.uri)?.uri == ref.uri, "not canonical")
         }
-        #expect(YouTubeRef(uri: "youtube://aggregator/not-a-uuid?name=x") == nil)
+        #expect(YouTubeRef(uri: "youtube://aggregator/not-a-uuid") == nil)
+        // A name an older build wrote is dropped, which is what heals a
+        // library that has one filed under it.
+        #expect(YouTubeRef(uri: "youtube://aggregator/\(id.uuidString.lowercased())?name=Old")
+                == .aggregator(id))
         #expect(YouTubeRef(uri: "youtube://shorts/x") == nil, "a kind it does not know")
     }
 }
@@ -130,6 +133,13 @@ private final class Clock: @unchecked Sendable {
         return fake
     }()
 
+    private func temporaryYouTubeStore() throws -> YouTubeStore {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("yt-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return YouTubeStore(directory: dir)
+    }
+
     private func provider(placed: [String: [String]] = [:], clock: Clock = Clock()) -> YouTubeProvider {
         let fake = fake
         return YouTubeProvider(broker: FixedBroker(placed: placed), innerTube: .offline,
@@ -151,11 +161,11 @@ private final class Clock: @unchecked Sendable {
     /// now, merged newest first.
     @Test func aFeedIsItsChannelsVideosNewestFirst() async throws {
         let id = UUID()
-        let aggregator = YouTubeRef.aggregator(id, name: "Mine")
+        let aggregator = YouTubeRef.aggregator(id)
         let provider = provider(placed: [aggregator.uri: [YouTubeRef.channel(alpha).uri,
                                                           YouTubeRef.channel(beta).uri,
                                                           "file:///not-a-channel"]])
-        let page = await provider.children(of: YouTubeRef.feed(id, name: "Mine").nodeID, page: nil)
+        let page = await provider.children(of: YouTubeRef.feed(id).nodeID, page: nil)
         #expect(page.items.map(\.label) == ["B two", "A two", "B one", "A one"])
         #expect(page.next == nil)
     }
@@ -164,10 +174,10 @@ private final class Clock: @unchecked Sendable {
     /// the column.
     @Test func anAggregatorTakesChannelsAndIsItsFeed() async throws {
         let id = UUID()
-        let node = try #require(await provider().node(for: YouTubeRef.aggregator(id, name: "Mine").nodeID))
+        let node = try #require(await provider().node(for: YouTubeRef.aggregator(id).nodeID))
         #expect(node.accepts == .types([TypeID("youtube.channel")]))
-        #expect(node.identities == [YouTubeRef.feed(id, name: "Mine").nodeID])
-        let feed = try #require(await provider().node(for: YouTubeRef.feed(id, name: "Mine").nodeID))
+        #expect(node.identities == [YouTubeRef.feed(id).nodeID])
+        let feed = try #require(await provider().node(for: YouTubeRef.feed(id).nodeID))
         #expect(feed.childStyle == .contents)
     }
 
@@ -193,18 +203,24 @@ private final class Clock: @unchecked Sendable {
         #expect(await provider.channelID(for: .page(URL(string: "https://www.youtube.com/@nobody")!)) == nil)
     }
 
-    /// Renaming a feed renames both of its identities.
-    @Test func renamingAFeedRenamesItAndItsFeed() async throws {
+    /// Renaming a feed changes what it is called, not what it is — so what
+    /// was placed in it cannot be left behind under the old name.
+    @Test func renamingAFeedChangesItsNameAndNotItsIdentity() async throws {
         let id = UUID()
-        let old = YouTubeRef.aggregator(id, name: "Old").nodeID
-        let provider = provider()
-        #expect(provider.supports(.rename(old, to: "New")))
+        let feed = YouTubeRef.aggregator(id).nodeID
+        let store = try temporaryYouTubeStore()
+        let provider = YouTubeProvider(broker: FixedBroker(placed: [:]), innerTube: .offline,
+                                       store: store, fetch: { _ in throw URLError(.badURL) })
+        #expect(provider.supports(.rename(feed, to: "Watching")))
         #expect(!provider.supports(.rename(YouTubeRef.channel(alpha).nodeID, to: "New")))
-        let changes = try await provider.apply(.rename(old, to: "New"))
-        #expect(changes == [
-            .renamed(from: old, to: YouTubeRef.aggregator(id, name: "New").nodeID),
-            .renamed(from: YouTubeRef.feed(id, name: "Old").nodeID, to: YouTubeRef.feed(id, name: "New").nodeID),
-        ])
+
+        let changes = try await provider.apply(.rename(feed, to: "Watching"))
+
+        #expect(changes == [.modified(feed), .modified(YouTubeRef.feed(id).nodeID)],
+                "a rename that changes identity leaves what was placed in it behind")
+        #expect(await provider.node(for: feed)?.label == "Watching")
+        #expect(await provider.node(for: YouTubeRef.feed(id).nodeID)?.label == "Watching")
+        #expect(store.feedName(id) == "Watching", "the name did not outlive the run")
     }
 }
 
@@ -230,8 +246,8 @@ private final class Clock: @unchecked Sendable {
         registry.hostBroker.install(registry.providers)
 
         let id = UUID()
-        let aggregator = YouTubeRef.aggregator(id, name: "Mine").nodeID
-        let feed = YouTubeRef.feed(id, name: "Mine").nodeID
+        let aggregator = YouTubeRef.aggregator(id).nodeID
+        let feed = YouTubeRef.feed(id).nodeID
         let channel = YouTubeRef.channel(alpha).nodeID
         model.store?.ensureNodes([aggregator, channel])
         try await waitUntil { model.host.node(aggregator) != nil && model.host.node(channel) != nil }
@@ -258,7 +274,9 @@ private final class Clock: @unchecked Sendable {
         #expect(condition())
     }
 
-    @Test func renamingAFeedFollowsItEverywhereItIsPlaced() async throws {
+    /// Renaming a feed cannot lose its channels, because it does not move it:
+    /// its URI is its id, and its name is the plugin's to keep.
+    @Test func renamingAFeedLeavesEverythingWhereItIs() async throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("youtube-rename-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -272,7 +290,7 @@ private final class Clock: @unchecked Sendable {
         registry.hostBroker.install(registry.providers)
 
         let id = UUID()
-        let old = YouTubeRef.aggregator(id, name: "YouTube Feed").nodeID
+        let old = YouTubeRef.aggregator(id).nodeID
         // Mounted in the sidebar, holding a channel — what the actions do.
         model.workspaceStore.place([old.uri], into: model.sidebarRoot, at: nil)
         let channel = YouTubeRef.channel(alpha).nodeID
@@ -281,11 +299,48 @@ private final class Clock: @unchecked Sendable {
         model.host.apply(.adopt([channel], into: old, at: nil))
         try await waitUntil { !model.workspaceStore.placedChildren(of: old.uri).isEmpty }
 
-        model.host.apply(.rename(old, to: "YouTube"))
+        let before = model.placements
 
-        let new = YouTubeRef.aggregator(id, name: "YouTube").nodeID
-        try await waitUntil { model.placements.children(of: model.sidebarRoot) == [new.uri] }
-        #expect(model.workspaceStore.placedChildren(of: new.uri) == [YouTubeRef.channel(alpha).uri])
-        #expect(model.placements.children[old.uri] == nil, "its channels were left under the old name")
+        model.host.apply(.rename(old, to: "YouTube"))
+        try await waitUntil { model.host.node(old)?.label == "YouTube" }
+
+        #expect(model.placements == before, "a rename rearranged what was placed")
+        #expect(model.workspaceStore.placedChildren(of: old.uri) == [YouTubeRef.channel(alpha).uri])
+        #expect(model.placements.children(of: model.sidebarRoot) == [old.uri])
+    }
+
+    /// A library an older build left split — the sidebar holding it under one
+    /// name, its channels filed under another — is made whole when it loads,
+    /// because a stored parent is resolved in place like a stored member.
+    @Test func aLibrarySplitByAnOldRenameHeals() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("youtube-split-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = dir.appendingPathComponent("workspaces.json")
+        let workspace = UUID(), feed = UUID()
+        let root = Placements.root(of: workspace)
+        let named = { (name: String) in
+            "youtube://aggregator/\(feed.uuidString.lowercased())?name=\(name)"
+        }
+        try JSONSerialization.data(withJSONObject: [
+            "activeID": workspace.uuidString,
+            "workspaces": [["id": workspace.uuidString, "name": "Youtube", "revealedNodes": [],
+                            "placements": ["children": [
+                                root: [named("YouTube%20Feed")],
+                                named("YouTube"): ["youtube://channel/\(alpha)"],
+                            ]]]],
+        ]).write(to: file)
+
+        let model = AppModel(host: HostContext(), workspaceFile: file)
+        let registry = model.pluginHost.registry
+        registry.register(provider: YouTubeProvider(broker: registry.broker, innerTube: .offline,
+                                                    fetch: { _ in throw URLError(.badURL) }))
+        model.start()
+        try await waitUntil { model.placements.children.count == 2 }
+
+        let bare = YouTubeRef.aggregator(feed).uri
+        #expect(model.placements.children(of: model.sidebarRoot) == [bare])
+        #expect(model.workspaceStore.placedChildren(of: bare) == ["youtube://channel/\(alpha)"],
+                "the channels stayed under a name nothing points at")
     }
 }

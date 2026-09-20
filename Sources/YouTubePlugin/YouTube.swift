@@ -65,7 +65,7 @@ final class YouTubePlugin: NSObject, Plugin {
             systemImage: "rectangle.stack.badge.play",
             scope: .workspace,
             handler: { ctx in
-                ctx.host.mount(YouTubeRef.aggregator(UUID(), name: "YouTube Feed").uri)
+                ctx.host.mount(YouTubeRef.aggregator(UUID()).uri)
             }
         ))
 

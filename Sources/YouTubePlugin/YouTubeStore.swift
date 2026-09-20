@@ -65,6 +65,9 @@ final class YouTubeStore: @unchecked Sendable {
     private var videos: [String: VideoRecord] = [:]
     private var playlists: [String: PlaylistRecord] = [:]
     private var searches: [String] = []
+    /// What each feed is called. Here rather than in its URI, so renaming one
+    /// is not a change of identity — see `YouTubeRef`.
+    private var feedNames: [String: String] = [:]
     /// Thumbnails read (or written) this run, so drawing a row is not a disk
     /// read each time. `nil` records one we have no image for.
     private var icons: [String: Data?] = [:]
@@ -80,6 +83,7 @@ final class YouTubeStore: @unchecked Sendable {
         videos = Dictionary(uniqueKeysWithValues: (known?.videos ?? []).map { ($0.id, $0) })
         playlists = Dictionary(uniqueKeysWithValues: (known?.playlists ?? []).map { ($0.id, $0) })
         searches = known?.searches ?? []
+        feedNames = known?.feedNames ?? [:]
     }
 
     // MARK: What things are called
@@ -110,6 +114,20 @@ final class YouTubeStore: @unchecked Sendable {
                                                     line: item.line, seen: now)
             }
             trim()
+        }
+        write()
+    }
+
+    /// What a feed is called, or what a new one is called until it is renamed.
+    func feedName(_ id: UUID) -> String {
+        lock.withLock { feedNames[id.uuidString.lowercased()] } ?? "YouTube Feed"
+    }
+
+    func remember(feedName name: String, for id: UUID) {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        lock.withLock {
+            if name.isEmpty { feedNames[id.uuidString.lowercased()] = nil }
+            else { feedNames[id.uuidString.lowercased()] = name }
         }
         write()
     }
@@ -206,6 +224,8 @@ final class YouTubeStore: @unchecked Sendable {
         var videos: [VideoRecord]
         var playlists: [PlaylistRecord]
         var searches: [String]
+        /// Absent in a file written before feeds kept their names here.
+        var feedNames: [String: String]?
     }
 
     private static func read<T: Decodable>(_ type: T.Type, at url: URL) -> T? {
@@ -214,7 +234,8 @@ final class YouTubeStore: @unchecked Sendable {
 
     private func write() {
         let known = lock.withLock {
-            Known(videos: Array(videos.values), playlists: Array(playlists.values), searches: searches)
+            Known(videos: Array(videos.values), playlists: Array(playlists.values),
+                  searches: searches, feedNames: feedNames)
         }
         guard let data = try? JSONEncoder().encode(known) else { return }
         try? data.write(to: directory.appendingPathComponent("known.json"), options: .atomic)
