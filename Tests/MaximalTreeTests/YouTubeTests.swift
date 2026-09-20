@@ -4,7 +4,7 @@ import Foundation
 @testable import MaximalTree
 
 /// A channel's feed in the shape YouTube writes it, with invented videos.
-private func feedXML(_ channelID: String, title: String, videos: [(id: String, title: String, published: String)]) -> Data {
+func feedXML(_ channelID: String, title: String, videos: [(id: String, title: String, published: String)]) -> Data {
     let entries = videos.map { video in
         """
          <entry>
@@ -132,8 +132,8 @@ private final class Clock: @unchecked Sendable {
 
     private func provider(placed: [String: [String]] = [:], clock: Clock = Clock()) -> YouTubeProvider {
         let fake = fake
-        return YouTubeProvider(broker: FixedBroker(placed: placed), freshFor: 60,
-                               now: { clock.now }, fetch: { try fake.fetch($0) })
+        return YouTubeProvider(broker: FixedBroker(placed: placed), innerTube: .offline,
+                               freshFor: 60, now: { clock.now }, fetch: { try fake.fetch($0) })
     }
 
     @Test func aChannelIsItsNameAndItsVideosAsContents() async throws {
@@ -224,7 +224,8 @@ private final class Clock: @unchecked Sendable {
         let registry = model.pluginHost.registry
         let fake = FakeYouTube()
         fake.feeds[alpha] = feedXML(alpha, title: "Alpha", videos: [("a1", "A one", "2026-09-01T10:00:00+00:00")])
-        registry.register(provider: YouTubeProvider(broker: registry.broker, fetch: { try fake.fetch($0) }))
+        registry.register(provider: YouTubeProvider(broker: registry.broker, innerTube: .offline,
+                                                    fetch: { try fake.fetch($0) }))
         model.start()
         registry.hostBroker.install(registry.providers)
 
@@ -265,7 +266,8 @@ private final class Clock: @unchecked Sendable {
         let registry = model.pluginHost.registry
         let fake = FakeYouTube()
         fake.feeds[alpha] = feedXML(alpha, title: "Alpha", videos: [("a1", "A one", "2026-09-01T10:00:00+00:00")])
-        registry.register(provider: YouTubeProvider(broker: registry.broker, fetch: { try fake.fetch($0) }))
+        registry.register(provider: YouTubeProvider(broker: registry.broker, innerTube: .offline,
+                                                    fetch: { try fake.fetch($0) }))
         model.start()
         registry.hostBroker.install(registry.providers)
 

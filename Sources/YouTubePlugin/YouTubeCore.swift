@@ -214,18 +214,23 @@ final class YouTubeProvider: NodeProvider, MutatingNodeProvider, @unchecked Send
 
     let schemes: Set<String> = [YouTubeRef.scheme]
     private let broker: NodeBroker
+    private let innerTube: InnerTube
     private let fetch: Fetch
     private let freshFor: TimeInterval
     private let now: @Sendable () -> Date
 
     private let lock = NSLock()
     private var feeds: [String: (feed: ChannelFeed, fetched: Date)] = [:]
-    private var videos: [String: (video: ChannelFeed.Video, channel: String)] = [:]
+    /// The row last drawn for a video, so one placed in a collection still has
+    /// a title when nothing has listed it this run.
+    private var known: [String: Node] = [:]
 
-    init(broker: NodeBroker, freshFor: TimeInterval = 10 * 60,
+    init(broker: NodeBroker, innerTube: InnerTube = InnerTube(), freshFor: TimeInterval = 10 * 60,
          now: @escaping @Sendable () -> Date = Date.init,
-         fetch: @escaping Fetch = { try await URLSession.shared.data(from: $0).0 }) {
+         fetch: @escaping Fetch = { try await AnonymousSession.shared.data(
+             for: AnonymousSession.request(to: $0)).0 }) {
         self.broker = broker
+        self.innerTube = innerTube
         self.freshFor = freshFor
         self.now = now
         self.fetch = fetch
@@ -242,11 +247,9 @@ final class YouTubeProvider: NodeProvider, MutatingNodeProvider, @unchecked Send
             let title = await feed(of: channelID)?.title
             return Self.channelNode(channelID, title: title)
         case .video(let videoID):
-            guard let known = lock.withLock({ videos[videoID] }) else {
-                return Node(id: id, type: TypeID("youtube.video"), label: videoID,
-                            icon: NodeIcon("play.rectangle", tint: .red))
-            }
-            return Self.videoNode(known.video)
+            return lock.withLock { known[videoID] }
+                ?? Node(id: id, type: TypeID("youtube.video"), label: videoID,
+                        icon: NodeIcon("play.rectangle", tint: .red))
         case .aggregator(let uuid, let name):
             return Node(id: id, type: TypeID("youtube.aggregator"),
                         label: name.isEmpty ? "YouTube Feed" : name,
@@ -264,7 +267,18 @@ final class YouTubeProvider: NodeProvider, MutatingNodeProvider, @unchecked Send
     func children(of id: NodeID, page cursor: Cursor?) async -> Page<Node> {
         switch YouTubeRef(uri: id.uri) {
         case .channel(let channelID)?:
-            return Page(items: (await feed(of: channelID)?.videos ?? []).map(Self.videoNode))
+            // Everything the channel has, a page at a time. Its public feed is
+            // the fallback: only the latest fifteen, but it answers whatever
+            // YouTube has done to the shape of its replies this month.
+            if let listing = try? await innerTube.channelVideos(channelID, after: cursor?.token),
+               !listing.videos.isEmpty {
+                let items = listing.videos.map(Self.videoNode)
+                remember(items)
+                return Page(items: items, next: listing.continuation.map(Cursor.init))
+            }
+            let items = (await feed(of: channelID)?.videos ?? []).map(Self.videoNode)
+            remember(items)
+            return Page(items: items)
         case .feed(let uuid, let name)?:
             // The channels are the aggregator's, placed by the reader and kept
             // by the host.
@@ -304,6 +318,23 @@ final class YouTubeProvider: NodeProvider, MutatingNodeProvider, @unchecked Send
         return .distantPast
     }
 
+    /// A video as a listing drew it: what it is called, and the line YouTube
+    /// itself puts under it.
+    static func videoNode(_ video: VideoItem) -> Node {
+        let line = [video.views, video.age, video.duration].compactMap { $0 }
+        return Node(id: YouTubeRef.video(video.id).nodeID, type: TypeID("youtube.video"),
+                    label: video.title, icon: NodeIcon("play.rectangle", tint: .red),
+                    subtitle: line.isEmpty ? nil : line.joined(separator: " · "))
+    }
+
+    private func remember(_ nodes: [Node]) {
+        lock.withLock {
+            for node in nodes {
+                if case .video(let id)? = YouTubeRef(uri: node.id.uri) { known[id] = node }
+            }
+        }
+    }
+
     static func videoNode(_ video: ChannelFeed.Video) -> Node {
         var attributes = Attributes()
         attributes["published"] = .date(video.published)
@@ -326,10 +357,8 @@ final class YouTubeProvider: NodeProvider, MutatingNodeProvider, @unchecked Send
               let data = try? await fetch(url), let feed = ChannelFeed.parse(data) else {
             return lock.withLock { feeds[channelID]?.feed }
         }
-        lock.withLock {
-            feeds[channelID] = (feed, now())
-            for video in feed.videos { videos[video.id] = (video, channelID) }
-        }
+        lock.withLock { feeds[channelID] = (feed, now()) }
+        remember(feed.videos.map(Self.videoNode))
         return feed
     }
 

@@ -389,6 +389,7 @@ targets:
       - Sources/WebPlugin
       - Sources/TerminalPlugin
       - path: Sources/YouTubePlugin/YouTubeCore.swift
+      - path: Sources/YouTubePlugin/InnerTube.swift
     dependencies:
       - target: MaximalTree          # hosts the tests; wires TEST_HOST/BUNDLE_LOADER
       - target: MaximalEditorKit

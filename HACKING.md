@@ -123,6 +123,7 @@ Sources/
     WebViews.swift              #   page/bookmarks canvases + address-bar inspector
   YouTubePlugin/                # reference placing adopter (loadable bundle)
     YouTubeCore.swift           #   youtube:// URIs, channel RSS, provider + feeds (tested)
+    InnerTube.swift             #   YouTube's private JSON API, read anonymously (tested)
     YouTube.swift               #   add channel / new feed actions, video canvas
 Vendor/typst-ffi/               # Rust staticlib: typst compiler/parser/renderers (C ABI)
 Vendor/highlight-js/            # highlight.min.js (BSD-3) — ~190 grammars, run in-process
