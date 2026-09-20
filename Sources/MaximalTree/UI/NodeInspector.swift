@@ -1,5 +1,5 @@
 import SwiftUI
-import MaximalTreeKit
+@_spi(Host) import MaximalTreeKit
 
 /// What the host knows about any node, whoever provides it.
 ///

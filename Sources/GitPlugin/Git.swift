@@ -464,7 +464,7 @@ final class GitPlugin: NSObject, Plugin {
             },
             handler: { ctx in
                 guard let dir = ctx.selection.first, let path = GitPlugin.repoPath(for: dir) else { return }
-                ctx.host.mount(GitRef(repo: path, kind: .repo).uri)
+                ctx.mount(GitRef(repo: path, kind: .repo).uri)
             }
         ))
 

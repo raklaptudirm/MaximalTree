@@ -1,6 +1,6 @@
 import Testing
 import AppKit
-@testable import MaximalTreeKit
+@_spi(Host) @testable import MaximalTreeKit
 @testable import MaximalTree
 
 /// A surface declares its keys and the core runs the actions.

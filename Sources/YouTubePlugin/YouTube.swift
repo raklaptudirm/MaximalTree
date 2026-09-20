@@ -62,7 +62,7 @@ final class YouTubePlugin: NSObject, Plugin {
                 // A search is a place, so it joins the sidebar and can be kept,
                 // put in a collection, or come back to tomorrow.
                 let uri = YouTubeRef.search(query).uri
-                ctx.host.mount(uri)
+                ctx.mount(uri)
                 ctx.host.openURI(uri)
             }
         ))
@@ -73,7 +73,7 @@ final class YouTubePlugin: NSObject, Plugin {
             systemImage: "rectangle.stack.badge.play",
             scope: .workspace,
             handler: { ctx in
-                ctx.host.mount(YouTubeRef.aggregator(UUID()).uri)
+                ctx.mount(YouTubeRef.aggregator(UUID()).uri)
             }
         ))
 
@@ -93,7 +93,7 @@ final class YouTubePlugin: NSObject, Plugin {
                                               ? "A channel link, its @handle, or its id."
                                               : "A channel link, its @handle, or its id, to add to this feed."),
                       let input = ChannelInput(text) else { return }
-                Task { @MainActor in await Self.add(input, into: aggregator, host: ctx.host) }
+                Task { @MainActor in await Self.add(input, into: aggregator, in: ctx) }
             }
         ))
 
@@ -115,7 +115,8 @@ final class YouTubePlugin: NSObject, Plugin {
 
     /// Find the channel, and put it where it was asked for.
     @MainActor
-    private static func add(_ input: ChannelInput, into aggregator: NodeID?, host: HostContext) async {
+    private static func add(_ input: ChannelInput, into aggregator: NodeID?,
+                            in ctx: ActionContext) async {
         guard let provider,
               let channelID = await provider.channelID(for: input),
               let feed = await provider.feed(of: channelID) else {
@@ -125,13 +126,13 @@ final class YouTubePlugin: NSObject, Plugin {
         }
         let channel = YouTubeProvider.channelNode(feed.channelID, title: feed.title)
         guard let aggregator else {
-            host.mount(channel.id.uri)
+            ctx.mount(channel.id.uri)
             return
         }
         // The host checks what the feed accepts against the channel's record,
         // so it has to have one before it is placed.
-        host._ingest(channel)
-        host.apply(.adopt([channel.id], into: aggregator, at: nil))
+        ctx.ingest(channel)
+        ctx.apply(.adopt([channel.id], into: aggregator, at: nil))
     }
 
     @MainActor

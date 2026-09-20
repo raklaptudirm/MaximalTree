@@ -28,6 +28,41 @@ public struct ActionContext {
 
     /// The nodes being acted on. Alias of `targets`, which reads naturally in handlers.
     public var selection: [NodeID] { targets }
+
+    // MARK: Changing things
+    //
+    // Writing is something an action does. A canvas reads, navigates, and
+    // reports what it has seen; it does not reach into the graph, because an
+    // operation that only exists inside one canvas is invisible to the palette,
+    // to a key, to a script, and to anything that would put it back. These are
+    // here rather than on `HostContext` so that stays true by the compiler
+    // rather than by agreement — see `@_spi(Host)` there.
+
+    /// Perform a write. Fire-and-forget: the host runs it and updates its
+    /// caches and navigation from what the provider reports.
+    public func apply(_ mutation: GraphMutation) { host.apply(mutation) }
+
+    /// Whether the owning provider can perform `mutation` right now — for
+    /// deciding whether to offer it at all.
+    public func canApply(_ mutation: GraphMutation) -> Bool { host.canApply(mutation) }
+
+    /// Add a root to the workspace.
+    public func mount(_ uri: String) { host.mount(uri) }
+
+    /// Start the host's inline-rename on a node — one rename affordance, any
+    /// renamable node, whoever owns it.
+    public func beginRename(_ id: NodeID) { host.beginRename(id) }
+
+    /// Put a node's record into the host's cache before anything is asked
+    /// about it — for a node the app has just learned of and nothing has
+    /// listed yet, so a check against its record has something to read.
+    public func ingest(_ node: Node) { host._ingest(node) }
+
+    /// Report changes made outside the mutation path, so the host updates
+    /// exactly as it does for its own writes. Also available to a canvas: a
+    /// report carries no authority, since the host answers it by re-reading
+    /// from whoever owns the node.
+    public func notify(_ changes: [NodeChange]) { host.notify(changes) }
     public var focused: NodeID? { host.focusedNode }
     public var selectedNodes: [Node] { targets.compactMap { host.node($0) } }
 }

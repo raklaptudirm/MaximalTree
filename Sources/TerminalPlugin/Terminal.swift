@@ -154,7 +154,7 @@ final class TerminalPlugin: NSObject, Plugin {
             scope: .workspace,
             handler: { ctx in
                 TerminalSessions.shared.host = ctx.host
-                ctx.host.mount(TerminalRef.sessionsURI)
+                ctx.mount(TerminalRef.sessionsURI)
             }
         ))
     }
@@ -164,10 +164,10 @@ final class TerminalPlugin: NSObject, Plugin {
     /// Mounted as a root as well as opened: a shell is a place you come back
     /// to, and one that lives only in a tab is gone the moment the tab is.
     @MainActor
-    private static func open(_ session: TerminalSession, with host: HostContext) {
-        TerminalSessions.shared.host = host
-        host.mount(session.id.uri)
-        host.openURI(session.id.uri)
+    private static func open(_ session: TerminalSession, in ctx: ActionContext) {
+        TerminalSessions.shared.host = ctx.host
+        ctx.mount(session.id.uri)
+        ctx.host.openURI(session.id.uri)
     }
 
     /// Spawn a terminal where the reader already is — see `TerminalSpawn`.
@@ -181,6 +181,6 @@ final class TerminalPlugin: NSObject, Plugin {
             targets: targets,
             sessions: TerminalSessions.shared,
             isDirectory: { ctx.host.node($0)?.type == TypeID("file.directory") })
-        open(TerminalSessions.shared.create(directory: directory), with: ctx.host)
+        open(TerminalSessions.shared.create(directory: directory), in: ctx)
     }
 }

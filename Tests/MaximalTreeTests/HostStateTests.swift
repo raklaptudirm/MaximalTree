@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import MaximalTreeKit
+@_spi(Host) @testable import MaximalTreeKit
 @testable import MaximalTree
 
 @MainActor

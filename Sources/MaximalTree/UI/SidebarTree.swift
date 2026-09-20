@@ -1,6 +1,6 @@
 import SwiftUI
 import AppKit
-import MaximalTreeKit
+@_spi(Host) import MaximalTreeKit
 
 // The sidebar's pixels. Deliberately NOT a List: the old implementation fought
 // List for density (plain style + inset surgery), painted its own material over

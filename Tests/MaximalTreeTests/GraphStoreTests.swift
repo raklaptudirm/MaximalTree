@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import MaximalTreeKit
+@_spi(Host) @testable import MaximalTreeKit
 @testable import MaximalTree
 
 /// Vends 4 children in pages of 2, and marks nodes it re-serves so `.modified`

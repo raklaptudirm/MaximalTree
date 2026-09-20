@@ -1,7 +1,7 @@
 import Testing
 import AppKit
 import Foundation
-@testable import MaximalTreeKit
+@_spi(Host) @testable import MaximalTreeKit
 @testable import MaximalTree
 
 /// Which nodes an action is handed when the thing it was invoked on is

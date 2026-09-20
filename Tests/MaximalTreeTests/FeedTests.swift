@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import MaximalTreeKit
+@_spi(Host) @testable import MaximalTreeKit
 @testable import MaximalTree
 
 /// A source already in order, paged `size` at a time, counting how often it

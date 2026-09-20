@@ -102,7 +102,7 @@ public final class HostContext {
     public private(set) var keyMode: KeyMode = .normal
 
     /// Host-only: the modal layer reporting where it got to.
-    public func _setKeyMode(_ mode: KeyMode) { keyMode = mode }
+    @_spi(Host) public func _setKeyMode(_ mode: KeyMode) { keyMode = mode }
 
     /// Ask the app to change mode.
     public func setKeyMode(_ mode: KeyMode) { backend?.setKeyMode(mode) }
@@ -195,7 +195,7 @@ public final class HostContext {
 
     public func open(_ id: NodeID) { backend?.open(id) }
     public func select(_ ids: [NodeID]) { backend?.select(ids) }
-    public func mount(_ uri: String) { backend?.mount(uri) }
+    @_spi(Host) public func mount(_ uri: String) { backend?.mount(uri) }
     /// Resolve a raw URI (e.g. a `Related.target`) and focus it, without mounting
     /// it as a root. This is how the inspector follows a reference.
     public func openURI(_ uri: String) { backend?.openURI(uri) }
@@ -210,7 +210,7 @@ public final class HostContext {
 
     /// Perform a write. Fire-and-forget: the host runs it and updates caches/nav from
     /// the reported changes; failures are logged. Check `canApply` first for UI state.
-    public func apply(_ mutation: GraphMutation) { backend?.apply(mutation) }
+    @_spi(Host) public func apply(_ mutation: GraphMutation) { backend?.apply(mutation) }
 
     /// Whether the owning provider can perform `mutation` right now (for enabling UI).
     public func canApply(_ mutation: GraphMutation) -> Bool { backend?.canApply(mutation) ?? false }
@@ -219,7 +219,7 @@ public final class HostContext {
     /// field). No-op when the owning provider doesn't support `.rename` for the
     /// node. This is the plugin-facing trigger for the *host's* rename
     /// affordance — one UI, any renamable node, whoever owns it.
-    public func beginRename(_ id: NodeID) { backend?.beginRename(id) }
+    @_spi(Host) public func beginRename(_ id: NodeID) { backend?.beginRename(id) }
 
     /// Keep the tab showing this node.
     ///
@@ -240,25 +240,25 @@ public final class HostContext {
 
     // MARK: Backend-facing mutation (host only)
 
-    public func _ingest(_ node: Node) { nodes[node.id] = node }
-    public func _setChildren(_ ids: [NodeID], of parent: NodeID) {
+    @_spi(Host) public func _ingest(_ node: Node) { nodes[node.id] = node }
+    @_spi(Host) public func _setChildren(_ ids: [NodeID], of parent: NodeID) {
         childrenByParent[parent] = ids
         staleChildren.remove(parent)
     }
-    public func _setRelated(_ r: [Related], of id: NodeID) { relatedByNode[id] = r }
-    public func _setRoots(_ ids: [NodeID]) { roots = ids }
-    public func _setFocus(_ id: NodeID?) { focusedNode = id }
-    public func _setSelection(_ ids: [NodeID]) { selection = ids }
-    public func _postFragment(_ fragment: NodeFragment?) { activeFragment = fragment }
-    public func _setZenMode(_ zen: Bool) { isZenMode = zen }
-    public func _setPendingRename(_ id: NodeID?) { pendingRename = id }
-    public func _postExternalEdit(_ notice: ExternalEdit.Notice?) { externalEdit = notice }
+    @_spi(Host) public func _setRelated(_ r: [Related], of id: NodeID) { relatedByNode[id] = r }
+    @_spi(Host) public func _setRoots(_ ids: [NodeID]) { roots = ids }
+    @_spi(Host) public func _setFocus(_ id: NodeID?) { focusedNode = id }
+    @_spi(Host) public func _setSelection(_ ids: [NodeID]) { selection = ids }
+    @_spi(Host) public func _postFragment(_ fragment: NodeFragment?) { activeFragment = fragment }
+    @_spi(Host) public func _setZenMode(_ zen: Bool) { isZenMode = zen }
+    @_spi(Host) public func _setPendingRename(_ id: NodeID?) { pendingRename = id }
+    @_spi(Host) public func _postExternalEdit(_ notice: ExternalEdit.Notice?) { externalEdit = notice }
 
     /// Rewrite every cached reference to `old` as `new` after a rename. Note this is
     /// shallow: for a directory rename, descendant URIs also change, so the caller
     /// should also invalidate the renamed node's children (they refetch under the new
     /// path). Files (the common case) have no descendants and remap exactly.
-    public func _remap(from old: NodeID, to new: NodeID) {
+    @_spi(Host) public func _remap(from old: NodeID, to new: NodeID) {
         if let node = nodes.removeValue(forKey: old) { nodes[new] = node }
         if let kids = childrenByParent.removeValue(forKey: old) { childrenByParent[new] = kids }
         if staleChildren.remove(old) != nil { staleChildren.insert(new) }
@@ -275,7 +275,7 @@ public final class HostContext {
     }
 
     /// Drop a node that no longer exists from every cache and from open state.
-    public func _remove(_ id: NodeID) {
+    @_spi(Host) public func _remove(_ id: NodeID) {
         nodes[id] = nil
         childrenByParent[id] = nil
         relatedByNode[id] = nil
@@ -296,15 +296,15 @@ public final class HostContext {
     /// — never drop what's on screen. Clears the pagination cursor; the
     /// refetch restarts from the first page. (A never-fetched parent has
     /// nothing to keep; it simply fetches on next access.)
-    public func _invalidateChildren(of id: NodeID) {
+    @_spi(Host) public func _invalidateChildren(of id: NodeID) {
         if childrenByParent[id] != nil { staleChildren.insert(id) }
         childCursors[id] = nil
     }
 
     /// Whether a cached listing is awaiting its refetch (backend-facing).
-    public func _isChildrenStale(_ id: NodeID) -> Bool { staleChildren.contains(id) }
+    @_spi(Host) public func _isChildrenStale(_ id: NodeID) -> Bool { staleChildren.contains(id) }
 
-    public func _setChildCursor(_ cursor: Cursor?, of id: NodeID) {
+    @_spi(Host) public func _setChildCursor(_ cursor: Cursor?, of id: NodeID) {
         childCursors[id] = cursor
         // Only ever set. A page that reports no successor is the end of the
         // listing, not evidence that it never paged.

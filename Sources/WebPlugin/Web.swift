@@ -272,7 +272,7 @@ final class WebPlugin: NSObject, Plugin {
             shortcut: KeyboardShortcut("n", modifiers: [.command, .shift]),
             scope: .workspace,
             handler: { ctx in
-                ctx.host.mount(WebProvider.homepage)
+                ctx.mount(WebProvider.homepage)
                 ctx.host.openURI(WebProvider.homepage)
             }
         ))
@@ -304,7 +304,7 @@ final class WebPlugin: NSObject, Plugin {
                 let title = session.title.isEmpty
                     ? WebProvider.label(for: url) : session.title
                 BookmarkStore.shared.add(url: url.absoluteString, title: title)
-                ctx.host.notify([.modified(WebProvider.bookmarksID),
+                ctx.notify([.modified(WebProvider.bookmarksID),
                                  .childrenChanged(WebProvider.bookmarksID)])
             }
         ))
@@ -319,7 +319,7 @@ final class WebPlugin: NSObject, Plugin {
             scope: .document,
             handler: { ctx in
                 for id in ctx.targets { BookmarkStore.shared.remove(url: id.uri) }
-                ctx.host.notify([.modified(WebProvider.bookmarksID),
+                ctx.notify([.modified(WebProvider.bookmarksID),
                                  .childrenChanged(WebProvider.bookmarksID)])
             }
         ))
@@ -329,7 +329,7 @@ final class WebPlugin: NSObject, Plugin {
             systemImage: "star.fill",
             scope: .workspace,
             handler: { ctx in
-                ctx.host.mount(WebProvider.bookmarksURI)
+                ctx.mount(WebProvider.bookmarksURI)
                 ctx.host.openURI(WebProvider.bookmarksURI)
             }
         ))

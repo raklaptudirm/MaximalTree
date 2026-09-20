@@ -166,7 +166,7 @@ extension TerminalPlugin {
             let directory = session.directory
             TerminalSessions.shared.close(session.id)
             let fresh = TerminalSessions.shared.create(directory: directory)
-            ctx.host.notify([.childrenChanged(TerminalRef.sessionsID)])
+            ctx.notify([.childrenChanged(TerminalRef.sessionsID)])
             ctx.host.openURI(fresh.id.uri)
         })
     }

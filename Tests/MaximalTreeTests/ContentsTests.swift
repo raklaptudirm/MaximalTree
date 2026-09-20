@@ -1,7 +1,7 @@
 import Testing
 import AppKit
 import Foundation
-@testable import MaximalTreeKit
+@_spi(Host) @testable import MaximalTreeKit
 @testable import MaximalTree
 
 /// The contents column: what is inside the thing the sidebar has selected.

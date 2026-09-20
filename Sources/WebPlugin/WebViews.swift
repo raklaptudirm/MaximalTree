@@ -65,25 +65,24 @@ struct WebCanvas: View {
     /// Reflect the live page into the node record — label from the title, icon
     /// from the site's favicon — so the sidebar, tab, and subtitle track it.
     private func syncNodeRecord() {
-        guard var node = host.node(nodeID) else { return }
+        // Say that the record changed, not what it changed to. The provider
+        // reads the live session when it is asked, so the sidebar, the tab and
+        // the subtitle all get the page's own title from the one place that
+        // knows it — and they get it whether or not this canvas is on screen.
+        guard let node = host.node(nodeID) else { return }
         let live = session.title.isEmpty
             ? session.url.map(WebProvider.label(for:)) ?? node.label
             : session.title
-        if live != node.label {
-            node.label = live
-            host._ingest(node)
-        }
+        if live != node.label { host.notify([.modified(nodeID)]) }
+
         guard let webHost = session.url?.host else { return }
         Task { @MainActor in
             guard let favicon = await WebSessionStore.shared.favicon(for: webHost),
-                  var node = host.node(nodeID),
-                  node.icon?.imageData != favicon else { return }
-            node.icon = NodeIcon("globe", tint: .blue, imageData: favicon)
-            host._ingest(node)
+                  host.node(nodeID)?.icon?.imageData != favicon else { return }
             // The icon belongs to the site, so anything else listing it gains
             // one too — a bookmark to this host is drawn from the provider,
             // which now has the icon on disk. Runs once per node per icon.
-            host.notify([.childrenChanged(WebProvider.bookmarksID)])
+            host.notify([.modified(nodeID), .childrenChanged(WebProvider.bookmarksID)])
         }
     }
 }

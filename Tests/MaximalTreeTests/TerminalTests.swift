@@ -2,7 +2,7 @@ import Testing
 import AppKit
 import GhosttyKit
 import Foundation
-@testable import MaximalTreeKit
+@_spi(Host) @testable import MaximalTreeKit
 @testable import MaximalTree
 
 /// Terminals as nodes: each surface is its own, and it lives exactly as long

@@ -1,5 +1,5 @@
 import Foundation
-import MaximalTreeKit
+@_spi(Host) import MaximalTreeKit
 
 /// Concrete registry the host hands to each plugin's `register(with:)`. Collects
 /// contributions into lookup tables the shell and store consume.

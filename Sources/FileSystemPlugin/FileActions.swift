@@ -36,7 +36,7 @@ extension FileSystemPlugin {
                 guard let dir = targetDirectory(ctx) else { return }
                 // .txt rather than extensionless: gives the file a real content
                 // type, so the editor claims it the moment it's opened.
-                ctx.host.apply(.create(in: dir, name: "untitled.txt", asContainer: false))
+                ctx.apply(.create(in: dir, name: "untitled.txt", asContainer: false))
             }
         ))
 
@@ -48,7 +48,7 @@ extension FileSystemPlugin {
             scope: .container,
             handler: { ctx in
                 guard let dir = targetDirectory(ctx) else { return }
-                ctx.host.apply(.create(in: dir, name: "untitled folder", asContainer: true))
+                ctx.apply(.create(in: dir, name: "untitled folder", asContainer: true))
             }
         ))
 
@@ -80,7 +80,7 @@ extension FileSystemPlugin {
             title: "Move to Trash",
             systemImage: "trash",
             appliesTo: .custom(allFileNodes),
-            handler: { ctx in ctx.host.apply(.delete(ctx.selection)) }
+            handler: { ctx in ctx.apply(.delete(ctx.selection)) }
         ))
 
         registry.register(action: Action(

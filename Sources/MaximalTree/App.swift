@@ -1,6 +1,6 @@
 import SwiftUI
 import AppKit
-import MaximalTreeKit
+@_spi(Host) import MaximalTreeKit
 import MaximalEditorKit
 
 /// Takes files the system hands the app — a double-click in the Finder, a drop

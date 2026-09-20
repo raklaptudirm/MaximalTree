@@ -2,7 +2,7 @@ import Testing
 import AppKit
 import WebKit
 import Foundation
-@testable import MaximalTreeKit
+@_spi(Host) @testable import MaximalTreeKit
 @testable import MaximalTree
 
 /// Reading a page: what you do to it that isn't going somewhere else.
@@ -100,5 +100,64 @@ import Foundation
         }
         #expect(WebSessionStore.shared.existingSession(for: page) == nil,
                 "asking about an action opened a web view")
+    }
+}
+
+/// What a page *is* while it is open.
+///
+/// The live session holds the title, so the provider is where that is read —
+/// a canvas showing the page reports that the record changed, and everything
+/// listing the node gets the answer from one place, whether or not the canvas
+/// is on screen.
+@MainActor
+@Suite struct WebRecordTests {
+    private func page(_ uri: String) throws -> NodeID { try #require(NodeID(uri)) }
+
+    @Test func aPageWithNoSessionIsNamedAfterItsURL() async throws {
+        let id = try page("https://example.com/things")
+        let node = try #require(await WebProvider().node(for: id))
+        #expect(node.label == WebProvider.label(for: try #require(URL(string: id.uri))))
+    }
+
+    @Test func anOpenPageIsCalledWhateverItCallsItself() async throws {
+        let id = try page("https://example.com/things")
+        WebSessionStore.shared.session(for: id).title = "Things — Example"
+
+        let node = try #require(await WebProvider().node(for: id))
+        #expect(node.label == "Things — Example")
+    }
+
+    /// A page that hasn't said what it is called yet falls back rather than
+    /// showing an empty row.
+    @Test func aPageThatHasNotSaidItsNameKeepsTheURLOne() async throws {
+        let id = try page("https://example.com/quiet")
+        WebSessionStore.shared.session(for: id).title = ""
+
+        let node = try #require(await WebProvider().node(for: id))
+        #expect(node.label == WebProvider.label(for: try #require(URL(string: id.uri))))
+    }
+
+    /// Asking what a page is must not start a browser session for it — the
+    /// same rule the action predicates follow.
+    @Test func askingWhatAPageIsDoesNotStartASession() async throws {
+        let id = try page("https://example.com/untouched")
+        _ = await WebProvider().node(for: id)
+        #expect(WebSessionStore.shared.existingSession(for: id) == nil)
+    }
+
+    @Test func theSitesIconIsOnTheRecord() async throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("favicons-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let previous = FaviconStore.shared
+        FaviconStore.shared = FaviconStore(directory: directory)
+        defer { FaviconStore.shared = previous }
+
+        let png = try #require(NSImage(systemSymbolName: "star", accessibilityDescription: nil)?
+            .tiffRepresentation)
+        FaviconStore.shared.store(png, for: "example.com")
+
+        let node = try #require(await WebProvider().node(for: try page("https://example.com/a")))
+        #expect(node.icon?.imageData == png)
     }
 }

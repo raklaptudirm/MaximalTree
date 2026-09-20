@@ -1,6 +1,6 @@
 import AppKit
 import SwiftUI
-import MaximalTreeKit
+@_spi(Host) import MaximalTreeKit
 
 /// Everything the app can do.
 ///
@@ -264,12 +264,12 @@ extension AppModel {
             appliesTo: .custom { ctx in
                 guard ctx.targets.count == 1, let target = ctx.targets.first else { return false }
                 let label = ctx.host.node(target)?.label ?? target.uri
-                return ctx.host.canApply(.rename(target, to: label))
+                return ctx.canApply(.rename(target, to: label))
             },
             shortcut: KeyboardShortcut("r", modifiers: [.command, .shift]),
             handler: { ctx in
                 guard let target = ctx.targets.first else { return }
-                ctx.host.beginRename(target)
+                ctx.beginRename(target)
             }
         ))
 

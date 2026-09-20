@@ -2,7 +2,7 @@ import Testing
 import AppKit
 import WebKit
 @testable import MaximalEditorKit
-@testable import MaximalTreeKit
+@_spi(Host) @testable import MaximalTreeKit
 @testable import MaximalTree
 
 /// What a surface claims, and whether the actions behind it exist.

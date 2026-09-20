@@ -134,8 +134,15 @@ struct WebProvider: NodeProvider {
                         childStyle: .contents)
         }
         guard let url = URL(string: id.uri) else { return nil }
-        return Node(id: id, type: TypeID("web.page"),
-                    label: WebProvider.label(for: url),
+        // What the page says it is, while it is open. The live session is the
+        // truth about a page's title, and this is where that truth is read —
+        // a canvas showing the page reports that the record changed, rather
+        // than telling the graph what to store. So the sidebar, the tab and
+        // the subtitle all get the same answer, whether or not the canvas
+        // that noticed is on screen.
+        let live = await MainActor.run { WebSessionStore.shared.existingSession(for: id)?.title }
+        let label = live.flatMap { $0.isEmpty ? nil : $0 } ?? WebProvider.label(for: url)
+        return Node(id: id, type: TypeID("web.page"), label: label,
                     icon: WebProvider.icon(for: url))
     }
 

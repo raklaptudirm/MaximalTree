@@ -107,7 +107,7 @@ final class TypstPlugin: NSObject, Plugin {
                 guard let dir = ctx.selection.first, dir.scheme == "file",
                       let url = URL(string: dir.uri) else { return }
                 // Mounts the agenda as a workspace root — the folder *is* the config.
-                ctx.host.mount(TypstRef.agenda(dir: url.path).uri)
+                ctx.mount(TypstRef.agenda(dir: url.path).uri)
             }
         ))
 
@@ -210,7 +210,7 @@ final class TypstPlugin: NSObject, Plugin {
             scope: .workspace,
             handler: { ctx in
                 TypstUIState.shared.agendaRefresh += 1
-                for id in ctx.targets { ctx.host.notify([.childrenChanged(id)]) }
+                for id in ctx.targets { ctx.notify([.childrenChanged(id)]) }
             }
         ))
 
@@ -310,7 +310,7 @@ final class TypstPlugin: NSObject, Plugin {
                 NSLog("[TypstPlugin] note creation failed: \(error.localizedDescription)")
                 return
             }
-            ctx.host.notify([.childrenChanged(dir)])
+            ctx.notify([.childrenChanged(dir)])
         }
         ctx.host.openURI(noteURL.absoluteString)
     }
