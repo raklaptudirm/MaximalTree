@@ -26,6 +26,14 @@ final class YouTubePlugin: NSObject, Plugin {
             AnyView(YouTubeVideoCanvas(url: YouTubeRef(uri: id.uri)?.webURL))
         }
 
+        // What people said about it, beside it rather than under it — the
+        // canvas is the video, and comments are something you glance at.
+        registry.registerInspector(forType: TypeID("youtube.video")) { id, _ in
+            AnyView(CommentsSection(video: id, comments: { video, after in
+                await Self.provider?.comments(of: video, after: after) ?? CommentPage()
+            }))
+        }
+
         // What you searched for before, so the one you keep coming back to is
         // a few keystrokes rather than a retyped query. The finder gathers a
         // list when it opens, so this is the list it can offer — a live
@@ -147,6 +155,71 @@ final class YouTubePlugin: NSObject, Plugin {
         alert.messageText = title
         alert.informativeText = detail
         alert.runModal()
+    }
+}
+
+// MARK: - What people said
+
+/// A video's comments, fetched when the inspector shows them and not before.
+private struct CommentsSection: View {
+    let video: NodeID
+    let comments: @Sendable (String, String?) async -> CommentPage
+
+    @State private var loaded: [CommentItem] = []
+    @State private var continuation: String?
+    @State private var loading = true
+
+    var body: some View {
+        Section("Comments") {
+            if loading && loaded.isEmpty {
+                ProgressView().controlSize(.small).frame(maxWidth: .infinity)
+            } else if loaded.isEmpty {
+                Text("None to show.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(loaded) { comment in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(comment.author).font(.caption.weight(.medium))
+                        Text(comment.text).font(.callout).textSelection(.enabled)
+                        if let line = Self.line(of: comment) {
+                            Text(line).font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 2)
+                }
+                if continuation != nil {
+                    Button("Show More") { Task { await load() } }
+                        .buttonStyle(.link)
+                        .disabled(loading)
+                }
+            }
+        }
+        .task(id: video) {
+            loaded = []
+            continuation = nil
+            await load()
+        }
+    }
+
+    private static func line(of comment: CommentItem) -> String? {
+        let parts = [comment.published,
+                     comment.likes.map { "\($0) likes" },
+                     comment.replies.map { "\($0) replies" }].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private func load() async {
+        guard let id = YouTubeRef(uri: video.uri), case .video(let videoID) = id else {
+            loading = false
+            return
+        }
+        loading = true
+        let page = await comments(videoID, continuation)
+        loaded += page.comments
+        continuation = page.continuation
+        loading = false
     }
 }
 

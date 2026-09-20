@@ -146,13 +146,18 @@ private final class Clock: @unchecked Sendable {
                                freshFor: 60, now: { clock.now }, fetch: { try fake.fetch($0) })
     }
 
-    @Test func aChannelIsItsNameAndItsVideosAsContents() async throws {
+    /// A channel is its name and its tabs; its videos are the tab it is also,
+    /// which is what the column shows when it is selected.
+    @Test func aChannelIsItsNameAndItsTabs() async throws {
         let provider = provider()
         let channel = YouTubeRef.channel(alpha).nodeID
         let node = try #require(await provider.node(for: channel))
         #expect(node.label == "Alpha")
-        #expect(node.childStyle == .contents)
-        #expect(await provider.children(of: channel, page: nil).items.map(\.label) == ["A two", "A one"])
+        #expect(node.identities == [YouTubeRef.tab(alpha, .videos).nodeID])
+
+        let videos = YouTubeRef.tab(alpha, .videos).nodeID
+        #expect(await provider.node(for: videos)?.childStyle == .contents)
+        #expect(await provider.children(of: videos, page: nil).items.map(\.label) == ["A two", "A one"])
         // And a video listed there knows what it is afterwards.
         #expect(await provider.node(for: YouTubeRef.video("a1").nodeID)?.label == "A one")
     }

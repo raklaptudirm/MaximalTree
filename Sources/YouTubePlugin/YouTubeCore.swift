@@ -23,6 +23,9 @@ import MaximalTreeKit
 /// plugin's store, where renaming it is not a change of identity at all.
 enum YouTubeRef: Equatable {
     case channel(String)
+    /// One of a channel's tabs: `youtube://channel/<id>?tab=shorts`. A tab of
+    /// a channel rather than a thing of its own, which is what it is.
+    case tab(String, ChannelTab)
     case video(String)
     case playlist(String)
     /// A search, named by what was searched for — so it can be mounted, kept,
@@ -42,7 +45,13 @@ enum YouTubeRef: Equatable {
         if kind == "search" { self = .search(id); return }
         guard !id.contains("/") else { return nil }
         switch kind {
-        case "channel": self = .channel(id)
+        case "channel":
+            if let tab = components.queryItems?.first(where: { $0.name == "tab" })?.value {
+                guard let tab = ChannelTab(rawValue: tab) else { return nil }
+                self = .tab(id, tab)
+            } else {
+                self = .channel(id)
+            }
         case "video": self = .video(id)
         case "playlist": self = .playlist(id)
         // A `?name=` an older build wrote is dropped, which is what makes
@@ -56,6 +65,7 @@ enum YouTubeRef: Equatable {
     var uri: String {
         switch self {
         case .channel(let id): return "youtube://channel/\(id)"
+        case .tab(let id, let tab): return "youtube://channel/\(id)?tab=\(tab.rawValue)"
         case .video(let id): return "youtube://video/\(id)"
         case .playlist(let id): return "youtube://playlist/\(id)"
         case .search(let query): return "youtube://search/" + Self.encoded(query)
@@ -79,7 +89,8 @@ enum YouTubeRef: Equatable {
     /// Where it is on YouTube, for what has a page there.
     var webURL: URL? {
         switch self {
-        case .channel(let id): return URL(string: "https://www.youtube.com/channel/\(id)")
+        case .channel(let id), .tab(let id, _):
+            return URL(string: "https://www.youtube.com/channel/\(id)")
         case .video(let id): return URL(string: "https://www.youtube.com/watch?v=\(id)")
         case .playlist(let id): return URL(string: "https://www.youtube.com/playlist?list=\(id)")
         case .search(let query):
@@ -243,6 +254,7 @@ final class YouTubeProvider: NodeProvider, MutatingNodeProvider, @unchecked Send
 
     private let lock = NSLock()
     private var feeds: [String: (feed: ChannelFeed, fetched: Date)] = [:]
+    private var channelTabs: [String: [ChannelTab]] = [:]
     /// What listings have said about videos and playlists, kept across runs so
     /// one put in a collection is still a title and a thumbnail offline.
     private let store: YouTubeStore
@@ -270,6 +282,11 @@ final class YouTubeProvider: NodeProvider, MutatingNodeProvider, @unchecked Send
         case .channel(let channelID):
             let title = await feed(of: channelID)?.title
             return Self.channelNode(channelID, title: title)
+        case .tab(let channelID, let tab):
+            return Node(id: id, type: TypeID("youtube.channel.tab"), label: tab.title,
+                        icon: NodeIcon(Self.icon(of: tab), tint: .red),
+                        hasChildren: true, childStyle: .contents,
+                        identities: [YouTubeRef.channel(channelID).nodeID])
         case .video(let videoID):
             guard let record = store.video(videoID) else {
                 return Node(id: id, type: TypeID("youtube.video"), label: videoID,
@@ -303,13 +320,26 @@ final class YouTubeProvider: NodeProvider, MutatingNodeProvider, @unchecked Send
     func children(of id: NodeID, page cursor: Cursor?) async -> Page<Node> {
         switch YouTubeRef(uri: id.uri) {
         case .channel(let channelID)?:
-            // Everything the channel has, a page at a time. Its public feed is
-            // the fallback: only the latest fifteen, but it answers whatever
-            // YouTube has done to the shape of its replies this month.
-            if let listing = try? await innerTube.channelVideos(channelID, after: cursor?.token),
-               !listing.videos.isEmpty {
+            // A channel is what it has: its tabs. Its videos are in the column
+            // beside them, because the channel is also that tab — see
+            // `node(for:)`.
+            return Page(items: await tabs(of: channelID).map { tab in
+                Node(id: YouTubeRef.tab(channelID, tab).nodeID,
+                     type: TypeID("youtube.channel.tab"), label: tab.title,
+                     icon: NodeIcon(Self.icon(of: tab), tint: .red),
+                     hasChildren: true, childStyle: .contents)
+            })
+
+        case .tab(let channelID, let tab)?:
+            // Everything on the tab, a page at a time. For its videos the
+            // public feed is the fallback: only the latest fifteen, but it
+            // answers whatever YouTube has done to its replies this month.
+            if let listing = try? await innerTube.channelTab(channelID, tab, after: cursor?.token),
+               !listing.entries.isEmpty {
+                remember(tabs: listing.tabs, of: channelID)
                 return await page(of: listing)
             }
+            guard tab == .videos else { return Page(items: []) }
             return Page(items: await rows(for: (await feed(of: channelID)?.videos ?? [])
                 .map(VideoItem.init(rss:))))
 
@@ -399,12 +429,48 @@ final class YouTubeProvider: NodeProvider, MutatingNodeProvider, @unchecked Send
         NodeIcon("play.rectangle", tint: .red, imageData: store.icon(for: id))
     }
 
+    /// Which tabs a channel has, asked once and remembered for the run.
+    ///
+    /// Its reply names them, so listing its videos is also how we learn what
+    /// else it has. Unreachable, we still offer Videos, which the public feed
+    /// can answer.
+    private func tabs(of channelID: String) async -> [ChannelTab] {
+        if let known = lock.withLock({ channelTabs[channelID] }) { return known }
+        guard let listing = try? await innerTube.channelTab(channelID), !listing.tabs.isEmpty else {
+            return [.videos]
+        }
+        remember(tabs: listing.tabs, of: channelID)
+        return listing.tabs
+    }
+
+    private func remember(tabs: [ChannelTab], of channelID: String) {
+        guard !tabs.isEmpty else { return }
+        lock.withLock { channelTabs[channelID] = tabs }
+    }
+
+    static func icon(of tab: ChannelTab) -> String {
+        switch tab {
+        case .videos: return "play.rectangle"
+        case .shorts: return "rectangle.portrait"
+        case .live: return "dot.radiowaves.left.and.right"
+        case .playlists: return "list.bullet.rectangle"
+        }
+    }
+
+    /// A video's comments, as the inspector shows them.
+    func comments(of videoID: String, after cursor: String? = nil) async -> CommentPage {
+        (try? await innerTube.comments(of: videoID, after: cursor)) ?? CommentPage()
+    }
+
     // MARK: Nodes
 
+    /// A channel: its tabs where it sits, and its videos in the column beside
+    /// them — one thing, seen as what it holds and as what it publishes.
     static func channelNode(_ channelID: String, title: String?) -> Node {
         Node(id: YouTubeRef.channel(channelID).nodeID, type: TypeID("youtube.channel"),
              label: title ?? channelID, icon: NodeIcon("person.crop.square", tint: .red),
-             hasChildren: true, childStyle: .contents)
+             hasChildren: true,
+             identities: [YouTubeRef.tab(channelID, .videos).nodeID])
     }
 
     static func published(_ node: Node) -> Date {

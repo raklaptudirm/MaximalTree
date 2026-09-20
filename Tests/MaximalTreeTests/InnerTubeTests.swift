@@ -93,7 +93,7 @@ private let channelReply = """
     @Test func aChannelsVideosAreReadFromTheNewerShape() async throws {
         let recorder = Recorder(channelReply)
         let listing = try await InnerTube(transport: recorder.transport)
-            .channelVideos("UCaaaaaaaaaaaaaaaaaaaaaa")
+            .channelTab("UCaaaaaaaaaaaaaaaaaaaaaa")
 
         #expect(listing.videos.map(\.id) == ["lock1"], "a playlist was listed as a video")
         let video = try #require(listing.videos.first)
@@ -140,6 +140,21 @@ private let channelReply = """
         """
         let listing = try await InnerTube(transport: Recorder(both).transport).search("anything")
         #expect(listing.videos.map(\.title) == ["Once"])
+    }
+
+    /// Nothing in a reply is a flag unless YouTube wrote one. A count of one,
+    /// an index of zero, a reply level: all numbers, which bridge to Bool
+    /// eagerly enough to read every one of them as true.
+    @Test func zeroAndOneAreNumbers() async throws {
+        let reply = """
+        {"contents":{"itemSectionRenderer":{"contents":[
+          {"videoRenderer":{"videoId":"v","title":{"runs":[{"text":"T"}]},
+            "thumbnail":{"thumbnails":[{"url":"https://i.ytimg.com/vi/v/a.jpg","width":1},
+                                       {"url":"https://i.ytimg.com/vi/v/b.jpg","width":0}]}}}]}}}
+        """
+        let listing = try await InnerTube(transport: Recorder(reply).transport).search("x")
+        #expect(listing.videos.first?.thumbnail?.absoluteString == "https://i.ytimg.com/vi/v/a.jpg",
+                "widths of 0 and 1 were read as flags, so neither was bigger")
     }
 
     // MARK: Anonymity
@@ -218,7 +233,7 @@ private let channelReply = """
             .replacingOccurrences(of: #""token":"MORE""#, with: #""token":"YET_MORE""#)
         let replies = Replies(first: channelReply, then: ["MORE": second])
         let provider = provider(replies)
-        let id = YouTubeRef.channel(channel).nodeID
+        let id = YouTubeRef.tab(channel, .videos).nodeID
 
         let first = await provider.children(of: id, page: nil)
         #expect(first.items.map(\.label) == ["Something new", "A playlist"],
@@ -240,7 +255,7 @@ private let channelReply = """
         replies.failing = true
         let feed = feedXML(channel, title: "Alpha", videos: [("a1", "A one", "2026-09-01T10:00:00+00:00")])
         let listing = await provider(replies, feed: feed)
-            .children(of: YouTubeRef.channel(channel).nodeID, page: nil)
+            .children(of: YouTubeRef.tab(channel, .videos).nodeID, page: nil)
         #expect(listing.items.map(\.label) == ["A one"])
         #expect(listing.next == nil, "the feed is one page and says so")
     }
@@ -249,7 +264,7 @@ private let channelReply = """
     /// collection is not drawn as its id.
     @Test func aVideoSeenInAListingKeepsItsTitle() async throws {
         let provider = provider(Replies(first: channelReply))
-        _ = await provider.children(of: YouTubeRef.channel(channel).nodeID, page: nil)
+        _ = await provider.children(of: YouTubeRef.tab(channel, .videos).nodeID, page: nil)
         let node = await provider.node(for: YouTubeRef.video("lock1").nodeID)
         #expect(node?.label == "Something new")
         #expect(node?.subtitle == "40K views · 4 days ago · 7:17")

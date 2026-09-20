@@ -83,14 +83,29 @@ struct InnerTube: Sendable {
         return Listing(try await post("search", body))
     }
 
-    /// A channel's videos, newest first — or the next page of them.
-    ///
-    /// `params` is YouTube's own spelling of "the videos tab"; opaque, and the
-    /// same for every channel.
-    func channelVideos(_ channelID: String, after continuation: String? = nil) async throws -> Listing {
+    /// One of a channel's tabs — or the next page of it.
+    func channelTab(_ channelID: String, _ tab: ChannelTab = .videos,
+                    after continuation: String? = nil) async throws -> Listing {
         let body: [String: Any] = continuation.map { ["continuation": $0] }
-            ?? ["browseId": channelID, "params": "EgZ2aWRlb3PyBgQKAjoA"]
+            ?? ["browseId": channelID, "params": tab.params]
         return Listing(try await post("browse", body))
+    }
+
+    /// A video's comments, newest-ish first as YouTube sorts them.
+    ///
+    /// Two requests for the first page: a video's page says where its comments
+    /// are rather than carrying them, so the token it gives is what actually
+    /// asks for them. Later pages are one request, like everything else.
+    func comments(of videoID: String, after continuation: String? = nil) async throws -> CommentPage {
+        var token = continuation
+        if token == nil {
+            let page = try await post("next", ["videoId": videoID])
+            token = page.all("itemSectionRenderer")
+                .first { $0["sectionIdentifier"].string == "comment-item-section" }?
+                .all("continuationCommand").first?["token"].string
+        }
+        guard let token else { return CommentPage() }
+        return CommentPage(try await post("next", ["continuation": token]))
     }
 
     /// What a playlist holds, in its own order — or the next page of it.
@@ -119,6 +134,37 @@ struct InnerTube: Sendable {
     }
 }
 
+/// The tabs a channel can have that hold things worth listing.
+///
+/// `params` is YouTube's own spelling of each; opaque, and the same for every
+/// channel.
+enum ChannelTab: String, CaseIterable, Sendable {
+    case videos, shorts, live, playlists
+
+    var title: String {
+        switch self {
+        case .videos: return "Videos"
+        case .shorts: return "Shorts"
+        case .live: return "Live"
+        case .playlists: return "Playlists"
+        }
+    }
+
+    var params: String {
+        switch self {
+        case .videos: return "EgZ2aWRlb3PyBgQKAjoA"
+        case .shorts: return "EgZzaG9ydHPyBgUKA5oBAA"
+        case .live: return "EgdzdHJlYW1z8gYECgJ6AA"
+        case .playlists: return "EglwbGF5bGlzdHPyBgQKAkIA"
+        }
+    }
+
+    /// What the reply calls it, which is how a channel says which it has.
+    static func named(_ title: String) -> ChannelTab? {
+        allCases.first { $0.title.caseInsensitiveCompare(title) == .orderedSame }
+    }
+}
+
 // MARK: - What comes back
 
 /// A page of what a listing holds.
@@ -130,6 +176,8 @@ struct Listing: Equatable, Sendable {
     }
 
     var entries: [Entry] = []
+    /// The tabs the channel this came from has, when the reply names them.
+    var tabs: [ChannelTab] = []
     var videos: [VideoItem] { entries.compactMap { if case .video(let v) = $0 { return v } else { return nil } } }
     var playlists: [PlaylistItem] { entries.compactMap { if case .playlist(let p) = $0 { return p } else { return nil } } }
     /// What the thing being listed is called, when the reply says.
@@ -151,7 +199,13 @@ struct Listing: Equatable, Sendable {
         // puts a playlist between two videos, and rearranging that would be
         // answering a different search.
         var seen: Set<String> = []
-        for (kind, item) in json.all(["videoRenderer", "lockupViewModel"]) {
+        for (kind, item) in json.all(["videoRenderer", "lockupViewModel", "shortsLockupViewModel"]) {
+            if kind == "shortsLockupViewModel" {
+                if let short = VideoItem(shorts: item), seen.insert(short.id).inserted {
+                    entries.append(.video(short))
+                }
+                continue
+            }
             if kind == "videoRenderer", let video = VideoItem(renderer: item),
                seen.insert(video.id).inserted {
                 entries.append(.video(video))
@@ -166,6 +220,8 @@ struct Listing: Equatable, Sendable {
         }
         title = json["metadata"]["playlistMetadataRenderer"]["title"].string
             ?? json["metadata"]["channelMetadataRenderer"]["title"].string
+        tabs = json.all("tabRenderer").compactMap { $0["title"].string }
+            .compactMap(ChannelTab.named)
         // The "load more" token, which is the one attached to a continuation
         // item — not the several a reply carries for its filter chips.
         continuation = json.all("continuationItemRenderer")
@@ -218,6 +274,18 @@ struct VideoItem: Equatable, Sendable {
         age = renderer["publishedTimeText"].text
         duration = renderer["lengthText"].text
         thumbnail = renderer["thumbnail"].thumbnail
+    }
+
+    /// A short, which is a video listed a third way again.
+    init?(shorts lockup: JSONValue) {
+        let reel = lockup.all("reelWatchEndpoint").first?["videoId"].string
+        let entity = lockup["entityId"].string?
+            .replacingOccurrences(of: "shorts-shelf-item-", with: "")
+        guard let id = reel ?? entity, !id.isEmpty else { return nil }
+        self.id = id
+        title = lockup["overlayMetadata"]["primaryText"].text ?? id
+        views = lockup["overlayMetadata"]["secondaryText"].text
+        thumbnail = lockup["thumbnailViewModel"].thumbnail
     }
 
     /// The newer shape, which a channel's videos tab has moved to.
@@ -279,6 +347,50 @@ struct PlaylistItem: Equatable, Sendable {
     }
 }
 
+/// A page of a video's comments.
+struct CommentPage: Equatable, Sendable {
+    var comments: [CommentItem] = []
+    var continuation: String?
+
+    init() {}
+
+    init(_ json: JSONValue) {
+        // The comments arrive as entities in a batch of updates, away from the
+        // renderers that refer to them — so they are taken from where they
+        // are, not walked to.
+        var seen: Set<String> = []
+        comments = json.all("commentEntityPayload").compactMap(CommentItem.init(payload:))
+            .filter { seen.insert($0.id).inserted }
+        continuation = json.all("continuationItemRenderer")
+            .compactMap { $0.all("continuationCommand").first?["token"].string }
+            .last
+    }
+}
+
+/// One comment, as it is drawn.
+struct CommentItem: Equatable, Sendable, Identifiable {
+    var id: String
+    var author: String
+    var text: String
+    var published: String?
+    var likes: String?
+    var replies: String?
+
+    init?(payload: JSONValue) {
+        let properties = payload["properties"]
+        guard let id = properties["commentId"].string, !id.isEmpty,
+              // Replies belong under the comment they answer, which is not
+              // something a list of comments shows.
+              (properties["replyLevel"].number ?? 0) == 0 else { return nil }
+        self.id = id
+        author = payload["author"]["displayName"].string ?? ""
+        text = properties["content"]["content"].string ?? ""
+        published = properties["publishedTime"].string
+        likes = payload["toolbar"]["likeCountNotliked"].string.flatMap { $0 == "0" ? nil : $0 }
+        replies = payload["toolbar"]["replyCount"].string.flatMap { $0 == "0" ? nil : $0 }
+    }
+}
+
 // MARK: - Reading the reply
 
 /// A JSON reply, read rather than decoded.
@@ -307,10 +419,12 @@ enum JSONValue: Equatable, Sendable {
             self = .array(array.map { JSONValue(any: $0) })
         case let string as String:
             self = .string(string)
-        case let bool as Bool:
-            self = .bool(bool)
         case let number as NSNumber:
-            self = .number(number.doubleValue)
+            // Before `Bool`, and asking the number itself what it is: 0 and 1
+            // bridge to Bool happily, so matching that first read every reply
+            // level, index and count of one as true or false.
+            self = CFGetTypeID(number) == CFBooleanGetTypeID()
+                ? .bool(number.boolValue) : .number(number.doubleValue)
         default:
             self = .null
         }
