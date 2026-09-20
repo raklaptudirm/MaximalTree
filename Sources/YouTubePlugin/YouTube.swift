@@ -26,6 +26,39 @@ final class YouTubePlugin: NSObject, Plugin {
             AnyView(YouTubeVideoCanvas(url: YouTubeRef(uri: id.uri)?.webURL))
         }
 
+        // What you searched for before, so the one you keep coming back to is
+        // a few keystrokes rather than a retyped query. The finder gathers a
+        // list when it opens, so this is the list it can offer — a live
+        // YouTube search is the action below.
+        registry.register(finder: FinderSource(
+            id: "youtube.searches", title: "YouTube", prompt: "A search you made before…",
+            systemImage: "magnifyingglass", weight: 12
+        ) {
+            YouTubeStore.shared.recentSearches().map { query in
+                FinderItem(id: "youtube:\(query)", title: query, subtitle: "YouTube",
+                           systemImage: "magnifyingglass",
+                           effect: .open(YouTubeRef.search(query).uri))
+            }
+        })
+
+        registry.register(action: Action(
+            id: "youtube.search",
+            title: "Search YouTube…",
+            systemImage: "magnifyingglass",
+            scope: .workspace,
+            handler: { ctx in
+                guard let query = Self.ask("Search YouTube", detail: "What to look for.",
+                                           confirm: "Search", placeholder: "swift concurrency"),
+                      !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                YouTubeStore.shared.remember(search: query)
+                // A search is a place, so it joins the sidebar and can be kept,
+                // put in a collection, or come back to tomorrow.
+                let uri = YouTubeRef.search(query).uri
+                ctx.host.mount(uri)
+                ctx.host.openURI(uri)
+            }
+        ))
+
         registry.register(action: Action(
             id: "youtube.newFeed",
             title: "New YouTube Feed",
@@ -94,14 +127,15 @@ final class YouTubePlugin: NSObject, Plugin {
     }
 
     @MainActor
-    private static func ask(_ title: String, detail: String) -> String? {
+    private static func ask(_ title: String, detail: String, confirm: String = "Add",
+                            placeholder: String = "https://www.youtube.com/@handle") -> String? {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = detail
-        alert.addButton(withTitle: "Add")
+        alert.addButton(withTitle: confirm)
         alert.addButton(withTitle: "Cancel")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
-        field.placeholderString = "https://www.youtube.com/@handle"
+        field.placeholderString = placeholder
         alert.accessoryView = field
         alert.window.initialFirstResponder = field
         return alert.runModal() == .alertFirstButtonReturn ? field.stringValue : nil

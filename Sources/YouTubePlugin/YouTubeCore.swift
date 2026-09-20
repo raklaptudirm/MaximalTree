@@ -17,6 +17,10 @@ import MaximalTreeKit
 enum YouTubeRef: Equatable {
     case channel(String)
     case video(String)
+    case playlist(String)
+    /// A search, named by what was searched for — so it can be mounted, kept,
+    /// and opened again tomorrow.
+    case search(String)
     case aggregator(UUID, name: String)
     case feed(UUID, name: String)
 
@@ -25,12 +29,16 @@ enum YouTubeRef: Equatable {
     init?(uri: String) {
         guard let components = URLComponents(string: uri), components.scheme == Self.scheme,
               let kind = components.host else { return nil }
-        let id = String(components.path.drop { $0 == "/" })
-        guard !id.isEmpty, !id.contains("/") else { return nil }
+        let raw = String(components.percentEncodedPath.drop { $0 == "/" })
+        guard !raw.isEmpty else { return nil }
+        let id = raw.removingPercentEncoding ?? raw
         let name = components.queryItems?.first { $0.name == "name" }?.value ?? ""
+        if kind == "search" { self = .search(id); return }
+        guard !id.contains("/") else { return nil }
         switch kind {
         case "channel": self = .channel(id)
         case "video": self = .video(id)
+        case "playlist": self = .playlist(id)
         case "aggregator": guard let uuid = UUID(uuidString: id) else { return nil }; self = .aggregator(uuid, name: name)
         case "feed": guard let uuid = UUID(uuidString: id) else { return nil }; self = .feed(uuid, name: name)
         default: return nil
@@ -41,6 +49,8 @@ enum YouTubeRef: Equatable {
         switch self {
         case .channel(let id): return "youtube://channel/\(id)"
         case .video(let id): return "youtube://video/\(id)"
+        case .playlist(let id): return "youtube://playlist/\(id)"
+        case .search(let query): return "youtube://search/" + Self.encoded(query)
         case .aggregator(let id, let name): return Self.named("aggregator", id, name)
         case .feed(let id, let name): return Self.named("feed", id, name)
         }
@@ -51,10 +61,15 @@ enum YouTubeRef: Equatable {
     /// Encoded strictly, so any name reads back exactly and the URI is already
     /// canonical.
     private static func named(_ kind: String, _ id: UUID, _ name: String) -> String {
+        "youtube://\(kind)/\(id.uuidString.lowercased())?name=" + encoded(name)
+    }
+
+    /// Strictly enough that anything — a query with a slash, an ampersand, a
+    /// question mark — reads back exactly as it was typed.
+    private static func encoded(_ text: String) -> String {
         var allowed = CharacterSet.urlQueryAllowed
         allowed.remove(charactersIn: "&=+#?/")
-        return "youtube://\(kind)/\(id.uuidString.lowercased())?name="
-            + (name.addingPercentEncoding(withAllowedCharacters: allowed) ?? "")
+        return text.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
     }
 
     /// Where it is on YouTube, for what has a page there.
@@ -62,6 +77,9 @@ enum YouTubeRef: Equatable {
         switch self {
         case .channel(let id): return URL(string: "https://www.youtube.com/channel/\(id)")
         case .video(let id): return URL(string: "https://www.youtube.com/watch?v=\(id)")
+        case .playlist(let id): return URL(string: "https://www.youtube.com/playlist?list=\(id)")
+        case .search(let query):
+            return URL(string: "https://www.youtube.com/results?search_query=" + Self.encoded(query))
         case .aggregator, .feed: return nil
         }
     }
@@ -221,16 +239,18 @@ final class YouTubeProvider: NodeProvider, MutatingNodeProvider, @unchecked Send
 
     private let lock = NSLock()
     private var feeds: [String: (feed: ChannelFeed, fetched: Date)] = [:]
-    /// The row last drawn for a video, so one placed in a collection still has
-    /// a title when nothing has listed it this run.
-    private var known: [String: Node] = [:]
+    /// What listings have said about videos and playlists, kept across runs so
+    /// one put in a collection is still a title and a thumbnail offline.
+    private let store: YouTubeStore
 
-    init(broker: NodeBroker, innerTube: InnerTube = InnerTube(), freshFor: TimeInterval = 10 * 60,
+    init(broker: NodeBroker, innerTube: InnerTube = InnerTube(),
+         store: YouTubeStore = .shared, freshFor: TimeInterval = 10 * 60,
          now: @escaping @Sendable () -> Date = Date.init,
          fetch: @escaping Fetch = { try await AnonymousSession.shared.data(
              for: AnonymousSession.request(to: $0)).0 }) {
         self.broker = broker
         self.innerTube = innerTube
+        self.store = store
         self.freshFor = freshFor
         self.now = now
         self.fetch = fetch
@@ -247,9 +267,22 @@ final class YouTubeProvider: NodeProvider, MutatingNodeProvider, @unchecked Send
             let title = await feed(of: channelID)?.title
             return Self.channelNode(channelID, title: title)
         case .video(let videoID):
-            return lock.withLock { known[videoID] }
-                ?? Node(id: id, type: TypeID("youtube.video"), label: videoID,
-                        icon: NodeIcon("play.rectangle", tint: .red))
+            guard let record = store.video(videoID) else {
+                return Node(id: id, type: TypeID("youtube.video"), label: videoID,
+                            icon: videoIcon(videoID))
+            }
+            return Node(id: id, type: TypeID("youtube.video"), label: record.title,
+                        icon: videoIcon(videoID), subtitle: record.line)
+        case .playlist(let playlistID):
+            let record = store.playlist(playlistID)
+            return Node(id: id, type: TypeID("youtube.playlist"),
+                        label: record?.title ?? playlistID,
+                        icon: NodeIcon("list.bullet.rectangle", tint: .red),
+                        subtitle: record?.line, hasChildren: true, childStyle: .contents)
+        case .search(let query):
+            return Node(id: id, type: TypeID("youtube.search"), label: query,
+                        icon: NodeIcon("magnifyingglass", tint: .red),
+                        subtitle: "YouTube", hasChildren: true, childStyle: .contents)
         case .aggregator(let uuid, let name):
             return Node(id: id, type: TypeID("youtube.aggregator"),
                         label: name.isEmpty ? "YouTube Feed" : name,
@@ -272,13 +305,23 @@ final class YouTubeProvider: NodeProvider, MutatingNodeProvider, @unchecked Send
             // YouTube has done to the shape of its replies this month.
             if let listing = try? await innerTube.channelVideos(channelID, after: cursor?.token),
                !listing.videos.isEmpty {
-                let items = listing.videos.map(Self.videoNode)
-                remember(items)
-                return Page(items: items, next: listing.continuation.map(Cursor.init))
+                return await page(of: listing)
             }
-            let items = (await feed(of: channelID)?.videos ?? []).map(Self.videoNode)
-            remember(items)
-            return Page(items: items)
+            return Page(items: await rows(for: (await feed(of: channelID)?.videos ?? [])
+                .map(VideoItem.init(rss:))))
+
+        case .playlist(let playlistID)?:
+            guard let listing = try? await innerTube.playlist(playlistID, after: cursor?.token)
+            else { return Page(items: []) }
+            if let title = listing.title {
+                store.remember(playlists: [PlaylistItem(id: playlistID, title: title)])
+            }
+            return await page(of: listing)
+
+        case .search(let query)?:
+            guard let listing = try? await innerTube.search(query, after: cursor?.token)
+            else { return Page(items: []) }
+            return await page(of: listing)
         case .feed(let uuid, let name)?:
             // The channels are the aggregator's, placed by the reader and kept
             // by the host.
@@ -298,11 +341,59 @@ final class YouTubeProvider: NodeProvider, MutatingNodeProvider, @unchecked Send
                 sources: channels, after: cursor, size: 500,
                 isBefore: { Self.published($0) > Self.published($1) },
                 fetch: { channelID, _ in
-                    Page(items: (await self.feed(of: channelID)?.videos ?? []).map(Self.videoNode))
+                    Page(items: await self.rows(for: (await self.feed(of: channelID)?.videos ?? [])
+                        .map(VideoItem.init(rss:))))
                 })
         default:
             return Page(items: [])
         }
+    }
+
+    /// A page as the tree shows it: what the listing held, in its order, with
+    /// what it said kept and its thumbnails fetched.
+    private func page(of listing: Listing) async -> Page<Node> {
+        store.remember(videos: listing.videos, line: Self.line(of:))
+        store.remember(playlists: listing.playlists)
+        await fetchThumbnails(for: listing.videos.map(\.id))
+        let items = listing.entries.map { entry -> Node in
+            switch entry {
+            case .video(let video): return videoNode(video)
+            case .playlist(let playlist): return Self.playlistNode(playlist)
+            }
+        }
+        return Page(items: items, next: listing.continuation.map(Cursor.init))
+    }
+
+    private func rows(for videos: [VideoItem]) async -> [Node] {
+        store.remember(videos: videos, line: Self.line(of:))
+        await fetchThumbnails(for: videos.map(\.id))
+        return videos.map(videoNode)
+    }
+
+    /// The thumbnails a page needs and does not have, a few at a time.
+    ///
+    /// Before the page is handed over, so rows arrive with their pictures
+    /// rather than acquiring them a beat later — they are a few kilobytes
+    /// each, and only ever fetched once.
+    private func fetchThumbnails(for ids: [String], atOnce: Int = 6) async {
+        let missing = ids.filter { store.icon(for: $0) == nil && YouTubeStore.isVideoID($0) }
+        guard !missing.isEmpty else { return }
+        await withTaskGroup(of: Void.self) { group in
+            var running = 0
+            for id in missing {
+                if running == atOnce { await group.next(); running -= 1 }
+                group.addTask {
+                    guard let url = URL(string: "https://i.ytimg.com/vi/\(id)/default.jpg"),
+                          let data = try? await self.fetch(url) else { return }
+                    self.store.store(icon: data, for: id)
+                }
+                running += 1
+            }
+        }
+    }
+
+    private func videoIcon(_ id: String) -> NodeIcon {
+        NodeIcon("play.rectangle", tint: .red, imageData: store.icon(for: id))
     }
 
     // MARK: Nodes
@@ -318,30 +409,26 @@ final class YouTubeProvider: NodeProvider, MutatingNodeProvider, @unchecked Send
         return .distantPast
     }
 
-    /// A video as a listing drew it: what it is called, and the line YouTube
-    /// itself puts under it.
-    static func videoNode(_ video: VideoItem) -> Node {
-        let line = [video.views, video.age, video.duration].compactMap { $0 }
-        return Node(id: YouTubeRef.video(video.id).nodeID, type: TypeID("youtube.video"),
-                    label: video.title, icon: NodeIcon("play.rectangle", tint: .red),
-                    subtitle: line.isEmpty ? nil : line.joined(separator: " · "))
+    /// What YouTube draws under a video: its counts, as strings.
+    static func line(of video: VideoItem) -> String? {
+        let parts = [video.views, video.age, video.duration].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    private func remember(_ nodes: [Node]) {
-        lock.withLock {
-            for node in nodes {
-                if case .video(let id)? = YouTubeRef(uri: node.id.uri) { known[id] = node }
-            }
-        }
-    }
-
-    static func videoNode(_ video: ChannelFeed.Video) -> Node {
+    /// A video as a listing drew it: what it is called, the line under it, and
+    /// its thumbnail if one has been fetched.
+    func videoNode(_ video: VideoItem) -> Node {
         var attributes = Attributes()
-        attributes["published"] = .date(video.published)
+        if let published = video.published { attributes["published"] = .date(published) }
         return Node(id: YouTubeRef.video(video.id).nodeID, type: TypeID("youtube.video"),
-                    label: video.title, icon: NodeIcon("play.rectangle", tint: .red),
-                    attributes: attributes,
-                    subtitle: video.published.formatted(date: .abbreviated, time: .omitted))
+                    label: video.title, icon: videoIcon(video.id),
+                    attributes: attributes, subtitle: Self.line(of: video))
+    }
+
+    static func playlistNode(_ playlist: PlaylistItem) -> Node {
+        Node(id: YouTubeRef.playlist(playlist.id).nodeID, type: TypeID("youtube.playlist"),
+             label: playlist.title, icon: NodeIcon("list.bullet.rectangle", tint: .red),
+             subtitle: playlist.line, hasChildren: true, childStyle: .contents)
     }
 
     // MARK: Feeds
@@ -358,7 +445,7 @@ final class YouTubeProvider: NodeProvider, MutatingNodeProvider, @unchecked Send
             return lock.withLock { feeds[channelID]?.feed }
         }
         lock.withLock { feeds[channelID] = (feed, now()) }
-        remember(feed.videos.map(Self.videoNode))
+        store.remember(videos: feed.videos.map(VideoItem.init(rss:)), line: Self.line(of:))
         return feed
     }
 

@@ -84,7 +84,7 @@ private let alpha = "UCaaaaaaaaaaaaaaaaaaaaaa", beta = "UCbbbbbbbbbbbbbbbbbbbbbb
             #expect(NodeID(ref.uri)?.uri == ref.uri, "not canonical")
         }
         #expect(YouTubeRef(uri: "youtube://aggregator/not-a-uuid?name=x") == nil)
-        #expect(YouTubeRef(uri: "youtube://playlist/x") == nil)
+        #expect(YouTubeRef(uri: "youtube://shorts/x") == nil, "a kind it does not know")
     }
 }
 

@@ -93,6 +93,15 @@ struct InnerTube: Sendable {
         return Listing(try await post("browse", body))
     }
 
+    /// What a playlist holds, in its own order — or the next page of it.
+    ///
+    /// `VL` is YouTube's prefix for browsing a playlist rather than playing it.
+    func playlist(_ playlistID: String, after continuation: String? = nil) async throws -> Listing {
+        let body: [String: Any] = continuation.map { ["continuation": $0] }
+            ?? ["browseId": playlistID.hasPrefix("VL") ? playlistID : "VL" + playlistID]
+        return Listing(try await post("browse", body))
+    }
+
     private func post(_ endpoint: String, _ body: [String: Any]) async throws -> JSONValue {
         guard let url = URL(string: "https://www.youtube.com/youtubei/v1/\(endpoint)") else {
             throw URLError(.badURL)
@@ -114,7 +123,17 @@ struct InnerTube: Sendable {
 
 /// A page of what a listing holds.
 struct Listing: Equatable, Sendable {
-    var videos: [VideoItem] = []
+    /// What a listing holds, in the order it was given.
+    enum Entry: Equatable, Sendable {
+        case video(VideoItem)
+        case playlist(PlaylistItem)
+    }
+
+    var entries: [Entry] = []
+    var videos: [VideoItem] { entries.compactMap { if case .video(let v) = $0 { return v } else { return nil } } }
+    var playlists: [PlaylistItem] { entries.compactMap { if case .playlist(let p) = $0 { return p } else { return nil } } }
+    /// What the thing being listed is called, when the reply says.
+    var title: String?
     /// YouTube's word for "the rest of it", which becomes our `Cursor`.
     var continuation: String?
 
@@ -128,17 +147,25 @@ struct Listing: Equatable, Sendable {
     /// channel's videos tab has already moved to the newer view models, and
     /// both arrived nested differently again under a continuation.
     init(_ json: JSONValue) {
+        // One walk, so what YouTube interleaved stays interleaved: a search
+        // puts a playlist between two videos, and rearranging that would be
+        // answering a different search.
         var seen: Set<String> = []
-        for renderer in json.all("videoRenderer") {
-            if let video = VideoItem(renderer: renderer), seen.insert(video.id).inserted {
-                videos.append(video)
+        for (kind, item) in json.all(["videoRenderer", "lockupViewModel"]) {
+            if kind == "videoRenderer", let video = VideoItem(renderer: item),
+               seen.insert(video.id).inserted {
+                entries.append(.video(video))
+            } else if kind == "lockupViewModel" {
+                if let video = VideoItem(lockup: item), seen.insert(video.id).inserted {
+                    entries.append(.video(video))
+                } else if let playlist = PlaylistItem(lockup: item),
+                          seen.insert(playlist.id).inserted {
+                    entries.append(.playlist(playlist))
+                }
             }
         }
-        for lockup in json.all("lockupViewModel") {
-            if let video = VideoItem(lockup: lockup), seen.insert(video.id).inserted {
-                videos.append(video)
-            }
-        }
+        title = json["metadata"]["playlistMetadataRenderer"]["title"].string
+            ?? json["metadata"]["channelMetadataRenderer"]["title"].string
         // The "load more" token, which is the one attached to a continuation
         // item — not the several a reply carries for its filter chips.
         continuation = json.all("continuationItemRenderer")
@@ -162,6 +189,23 @@ struct VideoItem: Equatable, Sendable {
     var age: String?
     var duration: String?
     var thumbnail: URL?
+    /// Exactly when, which only the public feed knows — the private API draws
+    /// "4 days ago". What the merged feed orders by.
+    var published: Date?
+
+    init(id: String, title: String, channel: String? = nil, channelID: String? = nil,
+         views: String? = nil, age: String? = nil, duration: String? = nil,
+         thumbnail: URL? = nil, published: Date? = nil) {
+        self.id = id
+        self.title = title
+        self.channel = channel
+        self.channelID = channelID
+        self.views = views
+        self.age = age
+        self.duration = duration
+        self.thumbnail = thumbnail
+        self.published = published
+    }
 
     /// The older shape, which search still answers in.
     init?(renderer: JSONValue) {
@@ -190,6 +234,47 @@ struct VideoItem: Equatable, Sendable {
         age = parts.first { $0.contains("ago") }
         duration = lockup["contentImage"].all("thumbnailBadgeViewModel")
             .compactMap { $0["text"].string }.first
+        thumbnail = lockup["contentImage"].thumbnail
+    }
+}
+
+extension VideoItem {
+    /// From the public feed, which knows exactly when but not how many views.
+    init(rss video: ChannelFeed.Video) {
+        self.init(id: video.id, title: video.title,
+                  age: video.published.formatted(date: .abbreviated, time: .omitted),
+                  thumbnail: video.thumbnail, published: video.published)
+    }
+}
+
+extension PlaylistItem {
+    init(id: String, title: String, line: String? = nil) {
+        self.id = id
+        self.title = title
+        self.line = line
+        self.thumbnail = nil
+    }
+}
+
+/// A playlist as a listing describes it.
+struct PlaylistItem: Equatable, Sendable {
+    var id: String
+    var title: String
+    /// Who made it and how much is in it, as drawn: "Some Channel · 19 lessons".
+    var line: String?
+    var thumbnail: URL?
+
+    init?(lockup: JSONValue) {
+        guard lockup["contentType"].string == "LOCKUP_CONTENT_TYPE_PLAYLIST",
+              let id = lockup["contentId"].string, !id.isEmpty else { return nil }
+        self.id = id
+        let metadata = lockup["metadata"]["lockupMetadataViewModel"]
+        title = metadata["title"].text ?? id
+        let owner = metadata["metadata"]["contentMetadataViewModel"]["metadataRows"]
+            .array.flatMap { $0["metadataParts"].array.compactMap { $0["text"].text } }.first
+        let count = lockup.all("thumbnailBadgeViewModel").compactMap { $0["text"].string }.first
+        let parts = [owner, count].compactMap { $0 }
+        line = parts.isEmpty ? nil : parts.joined(separator: " · ")
         thumbnail = lockup["contentImage"].thumbnail
     }
 }
@@ -253,13 +338,23 @@ enum JSONValue: Equatable, Sendable {
 
     /// Every value under this one filed against `key`, however deep.
     func all(_ key: String, limit: Int = 500) -> [JSONValue] {
-        var found: [JSONValue] = []
+        all([key], limit: limit).map(\.value)
+    }
+
+    /// Every value filed against any of `keys`, in the order they appear.
+    ///
+    /// One walk rather than one per key, because the order a reply puts things
+    /// in is part of the answer. Array order is the reply's; a field order
+    /// within an object is not preserved by any JSON reader, so the names are
+    /// taken in a fixed order rather than whichever the hash gives today.
+    func all(_ keys: Set<String>, limit: Int = 500) -> [(key: String, value: JSONValue)] {
+        var found: [(key: String, value: JSONValue)] = []
         func descend(_ value: JSONValue, _ depth: Int) {
             guard found.count < limit, depth < 24 else { return }
             switch value {
             case .object(let fields):
-                for (name, field) in fields {
-                    if name == key { found.append(field) }
+                for (name, field) in fields.sorted(by: { $0.key < $1.key }) {
+                    if keys.contains(name) { found.append((name, field)) }
                     descend(field, depth + 1)
                 }
             case .array(let items):

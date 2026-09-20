@@ -390,6 +390,10 @@ targets:
       - Sources/TerminalPlugin
       - path: Sources/YouTubePlugin/YouTubeCore.swift
       - path: Sources/YouTubePlugin/InnerTube.swift
+      - path: Sources/YouTubePlugin/YouTubeStore.swift
+      # The plugin itself too, as WebPlugin does: the host does not dlopen the
+      # bundle under XCTest, so its principal class cannot collide.
+      - path: Sources/YouTubePlugin/YouTube.swift
     dependencies:
       - target: MaximalTree          # hosts the tests; wires TEST_HOST/BUNDLE_LOADER
       - target: MaximalEditorKit

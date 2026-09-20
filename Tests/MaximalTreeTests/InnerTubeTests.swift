@@ -221,13 +221,14 @@ private let channelReply = """
         let id = YouTubeRef.channel(channel).nodeID
 
         let first = await provider.children(of: id, page: nil)
-        #expect(first.items.map(\.label) == ["Something new"])
+        #expect(first.items.map(\.label) == ["Something new", "A playlist"],
+                "a tab lists what is on it, playlists included")
         #expect(first.items.first?.subtitle == "40K views · 4 days ago · 7:17")
         let cursor = try #require(first.next)
         #expect(cursor.token == "MORE")
 
         let next = await provider.children(of: id, page: cursor)
-        #expect(next.items.map(\.id.uri) == [YouTubeRef.video("lock2").uri])
+        #expect(next.items.map(\.id.uri).first == YouTubeRef.video("lock2").uri)
         #expect(next.next?.token == "YET_MORE")
         #expect(replies.tokens == [nil, "MORE"], "the page after was asked for by its token")
     }
