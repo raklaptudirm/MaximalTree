@@ -322,6 +322,25 @@ extension AppModel {
             model.contents.filtering = true
         }
 
+        // MARK: Putting things back
+
+        // Only the sidebar's own arrangement — see `UndoHistory`. Greyed out
+        // when there is nothing to put back, which is the honest answer and
+        // also the only one available: an Undo that appears to work on a
+        // deleted file and doesn't would be worse than no Undo at all.
+        act("edit.undo", "Undo", image: "arrow.uturn.backward",
+            shortcut: KeyboardShortcut("z", modifiers: .command),
+            enabled: { $0.workspaceStore.canUndo },
+            surfaces: [.palette, .menuBar]) { model, _ in
+            model.undo()
+        }
+        act("edit.redo", "Redo", image: "arrow.uturn.forward",
+            shortcut: KeyboardShortcut("z", modifiers: [.command, .shift]),
+            enabled: { $0.workspaceStore.canRedo },
+            surfaces: [.palette, .menuBar]) { model, _ in
+            model.redo()
+        }
+
         // MARK: The finder
 
         act("finder.all", "Find Anything…", image: "magnifyingglass",

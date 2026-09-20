@@ -376,7 +376,7 @@ final class WorkspaceStore: PlacementHost {
     /// will not resolve is dropped.
     @discardableResult
     func restoreRoots(using providers: [NodeProvider]) -> [NodeID] {
-        changeActive { placements, root in
+        changeActive(undoAs: nil) { placements, root in
             for parent in [root] + placements.collections(from: root).map(\.uri) {
                 var members: [String] = []
                 for member in placements.children(of: parent) {
@@ -432,7 +432,7 @@ final class WorkspaceStore: PlacementHost {
         let gone = liveRoots.subtracting(desired)
         liveRoots = Set(desired)
         let destination = uri(of: group)
-        changeActive { placements, root in
+        changeActive(undoAs: nil) { placements, root in
             if !gone.isEmpty {
                 for parent in [root] + placements.collections(from: root).map(\.uri) {
                     placements.release(Array(gone), from: parent)
@@ -462,7 +462,7 @@ final class WorkspaceStore: PlacementHost {
     func createGroup(named name: String, in parent: UUID? = nil) -> UUID {
         let destination = uri(of: parent) ?? active.root
         var made = ""
-        changeActive { placements, _ in
+        changeActive(undoAs: "New Group") { placements, _ in
             made = placements.createCollection(named: name, in: destination)
         }
         return CollectionRef.id(from: made) ?? active.id
@@ -474,7 +474,7 @@ final class WorkspaceStore: PlacementHost {
     func renameGroup(_ id: UUID, to name: String) -> (from: String, to: String)? {
         guard id != active.id, let old = uri(of: id) else { return nil }
         var new: String?
-        changeActive { placements, _ in new = placements.rename(old, to: name) }
+        changeActive(undoAs: "Rename") { placements, _ in new = placements.rename(old, to: name) }
         guard let new, new != old else { return nil }
         mutateActive { $0.revealedNodes = $0.revealedNodes.map { $0 == old ? new : $0 }.sorted() }
         return (old, new)
@@ -487,7 +487,7 @@ final class WorkspaceStore: PlacementHost {
     /// the item leaves — so dropping on the strip above C lands before C.
     func move(_ uris: [String], from source: UUID?, to destination: UUID?, at index: Int?) {
         guard let from = uri(of: source), let to = uri(of: destination), !uris.isEmpty else { return }
-        changeActive { placements, _ in
+        changeActive(undoAs: "Move") { placements, _ in
             guard !placements.formsCycle(adopting: uris, into: to) else { return }
             if from != to { placements.release(uris, from: from) }
             placements.adopt(uris, into: to, at: index)
@@ -506,7 +506,7 @@ final class WorkspaceStore: PlacementHost {
     /// in a group is lost with the group.
     func deleteGroup(_ id: UUID) {
         guard id != active.id, let group = uri(of: id) else { return }
-        changeActive { placements, _ in placements.delete(group) }
+        changeActive(undoAs: "Delete Group") { placements, _ in placements.delete(group) }
     }
 
     /// Take things out of one place in the sidebar — `group`, or the top level.
@@ -531,14 +531,14 @@ final class WorkspaceStore: PlacementHost {
     @discardableResult
     func place(_ uris: [String], into parent: String, at index: Int?) -> Bool {
         var placed = false
-        changeActive { placements, _ in placed = placements.adopt(uris, into: parent, at: index) }
+        changeActive(undoAs: "Place") { placements, _ in placed = placements.adopt(uris, into: parent, at: index) }
         return placed
     }
 
     /// Take these out of `parent`. A collection that is now shown nowhere goes
     /// with them.
     func unplace(_ uris: [String], from parent: String) {
-        changeActive { placements, root in
+        changeActive(undoAs: "Remove") { placements, root in
             placements.release(uris, from: parent)
             placements.collectGarbage(root: root)
         }
@@ -629,6 +629,8 @@ final class WorkspaceStore: PlacementHost {
               let i = library.workspaces.firstIndex(where: { $0.id == id }) else { return }
         library.workspaces.remove(at: i)
         library.recentIDs.removeAll { $0 == id }
+        // A workspace that is gone takes what you could have undone in it.
+        history.forget(id)
         // The most recently used one, which is where you were before here.
         if library.activeID == id { library.activeID = byRecency[0].id }
         persist()
@@ -674,18 +676,76 @@ final class WorkspaceStore: PlacementHost {
         if let active = library.activeID { promote(active) }
     }
 
+    // MARK: Putting things back
+
+    /// What the reader can undo — see `UndoHistory` for what that covers and
+    /// why it stops where it does.
+    let history = UndoHistory()
+
+    var canUndo: Bool { history.canUndo(in: active.id) }
+    var canRedo: Bool { history.canRedo(in: active.id) }
+
+    /// What Undo and Redo would put back, for naming the menu item.
+    var undoLabel: String? { history.nextUndo(in: active.id) }
+    var redoLabel: String? { history.nextRedo(in: active.id) }
+
+    @discardableResult
+    func undo() -> String? {
+        step { [history] entry, workspace, current in
+            history.rememberRedo(entry.label, current, in: workspace)
+        } taking: { [history] workspace in
+            history.takeUndo(in: workspace)
+        }
+    }
+
+    @discardableResult
+    func redo() -> String? {
+        step { [history] entry, workspace, current in
+            history.rememberUndo(entry.label, current, in: workspace)
+        } taking: { [history] workspace in
+            history.takeRedo(in: workspace)
+        }
+    }
+
+    /// One direction or the other: take the last entry, put what is there now
+    /// on the opposite side, and write the entry back.
+    private func step(keeping keep: (UndoHistory.Entry, UUID, Placements) -> Void,
+                      taking take: (UUID) -> UndoHistory.Entry?) -> String? {
+        guard let i = library.workspaces.firstIndex(where: { $0.id == active.id }),
+              let entry = take(active.id) else { return nil }
+        let current = library.workspaces[i].placements
+        keep(entry, active.id, current)
+        write(entry.placements, at: i, replacing: current)
+        return entry.label
+    }
+
     // MARK: Persistence
 
     /// Change the active workspace's placements, writing and telling the owner
     /// only if anything actually changed.
-    private func changeActive(_ change: (inout Placements, String) -> Void) {
+    ///
+    /// `undoAs` is what the change is called where it was made, and nil says
+    /// this is not a change the reader asked for — the table being healed on
+    /// load, or following what the graph mounted. Those are the app keeping up
+    /// with the world, and offering to undo them would be offering to undo
+    /// something they never did.
+    private func changeActive(undoAs label: String?,
+                              _ change: (inout Placements, String) -> Void) {
         guard let i = library.workspaces.firstIndex(where: { $0.id == library.activeID })
         else { return }
         let before = library.workspaces[i].placements
         var placements = before
         change(&placements, library.workspaces[i].root)
         guard placements != before else { return }
-        library.workspaces[i].placements = placements
+        if let label { history.record(label, before: before, in: active.id) }
+        write(placements, at: i, replacing: before)
+    }
+
+    /// The write itself, without any question of who asked for it — which is
+    /// what undo and redo need, since putting something back is not a new
+    /// change to be undone.
+    private func write(_ placements: Placements, at index: Int, replacing before: Placements) {
+        library.workspaces[index].placements = placements
         persist()
         onActiveTreeChanged?(Self.changedParents(from: before, to: placements))
     }

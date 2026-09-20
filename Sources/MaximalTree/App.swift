@@ -792,6 +792,15 @@ final class AppModel {
     /// The sidebar's tree changed, however it changed: bring along what the
     /// rest of the app sees — the mounted roots the graph loads and watches,
     /// and the records the group rows are drawn from.
+    /// Put back the last change to the sidebar's arrangement, or put back the
+    /// putting back.
+    ///
+    /// Both write through the same path any other change does, so the roots are
+    /// recomputed and the tree relists exactly as if the change had been made
+    /// by hand — which, going the other way, it has.
+    func undo() { workspaceStore.undo() }
+    func redo() { workspaceStore.redo() }
+
     private func sidebarTreeChanged(_ parents: Set<String>) {
         guard let store else { return }
         let roots = workspaceStore.resolvedRoots(using: pluginHost.registry.providers)
