@@ -3,22 +3,33 @@ import MaximalTreeKit
 
 // The plugin's action vocabulary — everything you can *do* to a file from the
 // context menu, the menu bar, the palette, and the inspector. Mutations that fit
-// the generic vocabulary go through `host.apply` (create, trash); side effects
+// the generic vocabulary go through `ctx.apply` (create, trash); side effects
 // that don't (duplicate's IO, the pasteboard, Finder) happen here and report
 // through `notify`. Rename is deliberately absent: the host's `core.rename`
 // covers any provider supporting `.rename`, including this one.
 
-/// True when every target is filesystem-backed (file or directory).
+/// True when every target is somewhere on this disk — which is what copying a
+/// path, revealing in Finder, duplicating and handing a file to another app
+/// all actually need.
+///
+/// Asked of where a node is rather than of its type. A type says what a thing
+/// is; whether there is a path to give Finder is a different question, and
+/// answering the first when the body needs the second is how a menu offers
+/// something it then quietly fails to do. A node that only *is* a file by
+/// another name — a repository, an iCloud item — is offered here as the file
+/// it also is, so it still gets all of these.
 @MainActor
-private func allFileNodes(_ ctx: ActionContext) -> Bool {
-    !ctx.selectedNodes.isEmpty && ctx.selectedNodes.allSatisfy { $0.type.raw.hasPrefix("file.") }
+private func allOnDisk(_ ctx: ActionContext) -> Bool {
+    !ctx.targets.isEmpty && ctx.targets.allSatisfy { $0.fileURL != nil }
 }
 
 /// The directory a creation action targets: the selected directory itself, or
-/// nil when the selection isn't exactly one directory.
+/// nil when the selection isn't exactly one directory — or is one whose owner
+/// can't make anything in it.
 @MainActor
 private func targetDirectory(_ ctx: ActionContext) -> NodeID? {
-    guard ctx.selectedNodes.count == 1, ctx.selectedNodes[0].type == directoryType
+    guard ctx.selectedNodes.count == 1, ctx.selectedNodes[0].type == directoryType,
+          ctx.canApply(.create(in: ctx.selectedNodes[0].id, name: "untitled", asContainer: false))
     else { return nil }
     return ctx.selectedNodes[0].id
 }
@@ -56,22 +67,16 @@ extension FileSystemPlugin {
             id: "file.duplicate",
             title: "Duplicate",
             systemImage: "plus.square.on.square",
-            appliesTo: .custom(allFileNodes),
+            appliesTo: .custom(allOnDisk),
             run: { ctx in
                 let ids = ctx.selection
-                let host = ctx.host
-                // Copying can be big IO — off the main actor, then report what
-                // changed through the same funnel every mutation uses.
-                Task {
-                    do {
-                        let changes = try await Task.detached(priority: .userInitiated) {
-                            try FileSystemProvider.duplicate(ids)
-                        }.value
-                        host.notify(changes)
-                    } catch {
-                        NSLog("[FileSystemPlugin] duplicate failed: \(error.localizedDescription)")
-                    }
-                }
+                // Copying can be big IO, so it happens off the main actor. Waiting
+                // for it here is what puts it on the queue, and what lets a copy
+                // that fails say so to the reader rather than to the log.
+                let changes = try await Task.detached(priority: .userInitiated) {
+                    try FileSystemProvider.duplicate(ids)
+                }.value
+                ctx.notify(changes)
             }
         ))
 
@@ -79,7 +84,9 @@ extension FileSystemPlugin {
             id: "file.trash",
             title: "Move to Trash",
             systemImage: "trash",
-            appliesTo: .custom(allFileNodes),
+            // Whether it can be put in the Trash is its owner's call, asked
+            // rather than assumed from what kind of thing it is.
+            appliesTo: .custom { ctx in !ctx.targets.isEmpty && ctx.canApply(.delete(ctx.targets)) },
             run: { ctx in ctx.apply(.delete(ctx.selection)) }
         ))
 
@@ -87,7 +94,7 @@ extension FileSystemPlugin {
             id: "file.copyPath",
             title: "Copy Path",
             systemImage: "document.on.clipboard",
-            appliesTo: .custom(allFileNodes),
+            appliesTo: .custom(allOnDisk),
             run: { ctx in
                 let paths = ctx.selection.compactMap { $0.fileURL?.path }
                 guard !paths.isEmpty else { return }
@@ -100,7 +107,7 @@ extension FileSystemPlugin {
             id: "file.reveal",
             title: "Reveal in Finder",
             systemImage: "folder",
-            appliesTo: .custom(allFileNodes),
+            appliesTo: .custom(allOnDisk),
             run: { ctx in
                 let urls = ctx.selection.compactMap(\.fileURL)
                 if !urls.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(urls) }
@@ -111,7 +118,10 @@ extension FileSystemPlugin {
             id: "file.openDefault",
             title: "Open with Default App",
             systemImage: "arrow.up.forward.app",
-            appliesTo: .type(fileType),
+            appliesTo: .custom { ctx in
+                allOnDisk(ctx) && ctx.selectedNodes.count == ctx.targets.count
+                    && ctx.selectedNodes.allSatisfy { $0.type == fileType }
+            },
             run: { ctx in
                 for url in ctx.selection.compactMap(\.fileURL) {
                     NSWorkspace.shared.open(url)

@@ -152,6 +152,8 @@ enum DefaultKeymap {
         map.bind("SPC n f", to: "file.newFile")
         map.bind("SPC n F", to: "file.newFolder")
         map.bind("SPC n r", to: "workspace.addFolder")
+        map.bind("SPC n i", to: "icloud.show")
+        map.bind("SPC n I", to: "icloud.mountFolder")
         map.bind("SPC n t", to: "terminal.new")
         map.bind("SPC n n", to: "typst.newNote")
         map.bind("SPC n d", to: "typst.dailyNote")

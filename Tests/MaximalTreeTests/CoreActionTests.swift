@@ -30,6 +30,7 @@ import SwiftUI
         GitPlugin().register(with: registry)
         TerminalPlugin().register(with: registry)
         WebPlugin().register(with: registry)
+        ICloudPlugin().register(with: registry)
         return Set(registry.actions.map(\.id))
     }
 

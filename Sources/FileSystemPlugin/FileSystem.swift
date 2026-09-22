@@ -14,8 +14,8 @@ extension NodeID {
     }
 }
 
-let directoryType = TypeID("file.directory")
-let fileType = TypeID("file.file")
+let directoryType = TypeID.directory
+let fileType = TypeID.file
 
 /// A `NodeProvider` backed by the local filesystem. Sendable and stateless; all IO
 /// runs off the main actor via detached tasks so directory reads never block the UI.

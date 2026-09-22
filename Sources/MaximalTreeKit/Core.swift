@@ -152,6 +152,21 @@ public enum NodeTint: Hashable, Sendable {
     case rgb(red: Double, green: Double, blue: Double)
 }
 
+// MARK: - Well-known types
+
+public extension TypeID {
+    /// A file on disk, and a directory — the two types every plugin that shows
+    /// files has to agree on.
+    ///
+    /// In the kit rather than in whichever plugin serves `file://`, because
+    /// they are vocabulary, not an implementation. A terminal opens in a
+    /// directory, a typst agenda reads one, an editor claims a file, and none
+    /// of them should have to spell the name out by hand and hope it still
+    /// matches the provider's.
+    static let file = TypeID("file.file")
+    static let directory = TypeID("file.directory")
+}
+
 // MARK: - Node
 
 /// A single entry in the forest. Identity + type + cheap metadata. No payload.

@@ -40,7 +40,7 @@ final class TextEditorPlugin: NSObject, Plugin {
     static func handlesAsText(_ node: Node) -> Bool {
         // Directories are containers, never documents — and a directory named
         // `foo.d` would otherwise look like a D source file.
-        guard node.id.scheme == "file", node.type != TypeID("file.directory")
+        guard node.id.scheme == "file", node.type != .directory
         else { return false }
         if let uti = node.uti, let type = UTType(uti), type.conforms(to: .text) {
             return true

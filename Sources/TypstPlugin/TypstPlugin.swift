@@ -101,7 +101,7 @@ final class TypstPlugin: NSObject, Plugin {
             id: "typst.notesFolder",
             title: "Use as Typst Notes Folder",
             systemImage: "calendar.badge.plus",
-            appliesTo: .type(TypeID("file.directory")),
+            appliesTo: .type(.directory),
             scope: .container,
             run: { ctx in
                 guard let dir = ctx.selection.first, dir.scheme == "file",
@@ -218,7 +218,7 @@ final class TypstPlugin: NSObject, Plugin {
             id: "typst.newNote",
             title: "New Typst Note",
             systemImage: "square.and.pencil",
-            appliesTo: .type(TypeID("file.directory")),
+            appliesTo: .type(.directory),
             scope: .container,
             run: { ctx in Self.createNote(in: ctx, daily: false) }
         ))
@@ -226,7 +226,7 @@ final class TypstPlugin: NSObject, Plugin {
             id: "typst.dailyNote",
             title: "Today's Daily Note",
             systemImage: "calendar",
-            appliesTo: .type(TypeID("file.directory")),
+            appliesTo: .type(.directory),
             scope: .container,
             run: { ctx in Self.createNote(in: ctx, daily: true) }
         ))

@@ -102,7 +102,7 @@ final class TerminalPlugin: NSObject, Plugin {
             id: "terminal.openHere",
             title: "Open Terminal Here",
             systemImage: "apple.terminal",
-            appliesTo: .type(TypeID("file.directory")),
+            appliesTo: .type(.directory),
             scope: .container,
             run: { ctx in
                 TerminalPlugin.spawn(from: ctx)
@@ -180,7 +180,7 @@ final class TerminalPlugin: NSObject, Plugin {
         let directory = TerminalSpawn.directory(
             targets: targets,
             sessions: TerminalSessions.shared,
-            isDirectory: { ctx.host.node($0)?.type == TypeID("file.directory") })
+            isDirectory: { ctx.host.node($0)?.type == .directory })
         open(TerminalSessions.shared.create(directory: directory), in: ctx)
     }
 }

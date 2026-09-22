@@ -267,6 +267,22 @@ targets:
         LD_RUNPATH_SEARCH_PATHS:
           - "@loader_path/../../../../Frameworks"
 
+  ICloudPlugin:
+    type: bundle
+    platform: macOS
+    sources: [Sources/ICloudPlugin]
+    dependencies:
+      - target: MaximalTreeKit
+        embed: false
+    settings:
+      base:
+        PRODUCT_NAME: ICloud
+        PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.plugin.icloud
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSPrincipalClass: ICloudPlugin
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@loader_path/../../../../Frameworks"
+
   MaximalTree:
     type: application
     platform: macOS
@@ -299,6 +315,12 @@ targets:
           destination: plugins
           codeSign: true
       - target: YouTubePlugin
+        embed: true
+        link: false
+        copy:
+          destination: plugins
+          codeSign: true
+      - target: ICloudPlugin
         embed: true
         link: false
         copy:
@@ -394,6 +416,7 @@ targets:
       # The plugin itself too, as WebPlugin does: the host does not dlopen the
       # bundle under XCTest, so its principal class cannot collide.
       - path: Sources/YouTubePlugin/YouTube.swift
+      - Sources/ICloudPlugin
     dependencies:
       - target: MaximalTree          # hosts the tests; wires TEST_HOST/BUNDLE_LOADER
       - target: MaximalEditorKit
