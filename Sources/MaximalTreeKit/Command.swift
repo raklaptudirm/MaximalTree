@@ -276,21 +276,53 @@ public extension Command {
     }
 }
 
-extension AnyCommand {
-    /// The body of an action written as a closure over the whole context.
+public extension AnyCommand {
+    /// A command written as a closure over the context, for the many
+    /// operations whose whole argument is "the nodes you are pointing at".
     ///
-    /// Every action had this shape before commands existed, and this is what
-    /// keeps all of them compiling while they are converted one at a time. It
-    /// ignores its argument and reads the context instead, exactly as those
-    /// closures always have — which is precisely why it can't survive: an
-    /// argument that is discarded is not a typed action. It goes when the last
-    /// caller of `Action.init(handler:)` does.
-    static func handler(id: String,
-                        _ body: @escaping @MainActor (ActionContext) -> Void) -> AnyCommand {
+    /// That argument is not discarded, which is the difference between this
+    /// and the shim below: an invocation that names its own nodes gets a
+    /// context saying so, so `file.delete` with two ids deletes those two
+    /// whatever happens to be selected. That is what makes these reachable
+    /// from a script and a keymap rather than only from a click.
+    ///
+    /// Synchronous, so it runs where it was invoked — a key that runs one has
+    /// always finished before the next keystroke is read. The overload below
+    /// is for a body that has to wait, and that one takes its turn.
+    static func running(id: String,
+                        _ body: @escaping @MainActor (ActionContext) throws -> Void) -> AnyCommand {
         AnyCommand(
             id: id,
-            typed: { _, context in body(context); return NoAnswer() },
-            valued: { _, context in body(context); return .fields([:]) },
-            now: { _, context in body(context); return NoAnswer() })
+            typed: { input, context in
+                try body(context.acting(on: Self.targets(input, id))); return NoAnswer()
+            },
+            valued: { value, context in
+                let input = try CommandCoding.decode(NodeTargets.self, from: value, command: id)
+                try body(context.acting(on: input)); return .fields([:])
+            },
+            now: { input, context in
+                try body(context.acting(on: Self.targets(input, id))); return NoAnswer()
+            })
+    }
+
+    /// The same, for a body that has to wait for something.
+    static func running(id: String,
+                        _ body: @escaping @MainActor (ActionContext) async throws -> Void) -> AnyCommand {
+        AnyCommand(
+            id: id,
+            typed: { input, context in
+                try await body(context.acting(on: Self.targets(input, id))); return NoAnswer()
+            },
+            valued: { value, context in
+                let input = try CommandCoding.decode(NodeTargets.self, from: value, command: id)
+                try await body(context.acting(on: input)); return .fields([:])
+            })
+    }
+
+    private static func targets(_ input: Any, _ id: String) throws -> NodeTargets {
+        guard let input = input as? NodeTargets else {
+            throw CommandError.wrongArgument(command: id)
+        }
+        return input
     }
 }

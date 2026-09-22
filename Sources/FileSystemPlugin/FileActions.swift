@@ -32,7 +32,7 @@ extension FileSystemPlugin {
             systemImage: "doc.badge.plus",
             appliesTo: .custom { targetDirectory($0) != nil },
             scope: .container,
-            handler: { ctx in
+            run: { ctx in
                 guard let dir = targetDirectory(ctx) else { return }
                 // .txt rather than extensionless: gives the file a real content
                 // type, so the editor claims it the moment it's opened.
@@ -46,7 +46,7 @@ extension FileSystemPlugin {
             systemImage: "folder.badge.plus",
             appliesTo: .custom { targetDirectory($0) != nil },
             scope: .container,
-            handler: { ctx in
+            run: { ctx in
                 guard let dir = targetDirectory(ctx) else { return }
                 ctx.apply(.create(in: dir, name: "untitled folder", asContainer: true))
             }
@@ -57,7 +57,7 @@ extension FileSystemPlugin {
             title: "Duplicate",
             systemImage: "plus.square.on.square",
             appliesTo: .custom(allFileNodes),
-            handler: { ctx in
+            run: { ctx in
                 let ids = ctx.selection
                 let host = ctx.host
                 // Copying can be big IO — off the main actor, then report what
@@ -80,7 +80,7 @@ extension FileSystemPlugin {
             title: "Move to Trash",
             systemImage: "trash",
             appliesTo: .custom(allFileNodes),
-            handler: { ctx in ctx.apply(.delete(ctx.selection)) }
+            run: { ctx in ctx.apply(.delete(ctx.selection)) }
         ))
 
         registry.register(action: Action(
@@ -88,7 +88,7 @@ extension FileSystemPlugin {
             title: "Copy Path",
             systemImage: "document.on.clipboard",
             appliesTo: .custom(allFileNodes),
-            handler: { ctx in
+            run: { ctx in
                 let paths = ctx.selection.compactMap { $0.fileURL?.path }
                 guard !paths.isEmpty else { return }
                 NSPasteboard.general.clearContents()
@@ -101,7 +101,7 @@ extension FileSystemPlugin {
             title: "Reveal in Finder",
             systemImage: "folder",
             appliesTo: .custom(allFileNodes),
-            handler: { ctx in
+            run: { ctx in
                 let urls = ctx.selection.compactMap(\.fileURL)
                 if !urls.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(urls) }
             }
@@ -112,7 +112,7 @@ extension FileSystemPlugin {
             title: "Open with Default App",
             systemImage: "arrow.up.forward.app",
             appliesTo: .type(fileType),
-            handler: { ctx in
+            run: { ctx in
                 for url in ctx.selection.compactMap(\.fileURL) {
                     NSWorkspace.shared.open(url)
                 }

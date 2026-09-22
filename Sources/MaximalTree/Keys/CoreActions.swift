@@ -240,7 +240,7 @@ extension AppModel {
             registry.register(action: Action(
                 id: id, title: title, systemImage: image, appliesTo: applies,
                 shortcut: shortcut, scope: scope, surfaces: surfaces,
-                handler: { [weak self] ctx in
+                run: { [weak self] ctx in
                     guard let self else { return }
                     body(self, ctx)
                 }))
@@ -267,7 +267,7 @@ extension AppModel {
                 return ctx.canApply(.rename(target, to: label))
             },
             shortcut: KeyboardShortcut("r", modifiers: [.command, .shift]),
-            handler: { ctx in
+            run: { ctx in
                 guard let target = ctx.targets.first else { return }
                 ctx.beginRename(target)
             }

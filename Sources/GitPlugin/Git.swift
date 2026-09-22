@@ -462,7 +462,7 @@ final class GitPlugin: NSObject, Plugin {
                 guard ctx.selection.count == 1, let path = GitPlugin.repoPath(for: ctx.selection[0]) else { return false }
                 return Git.looksLikeRepo(path)
             },
-            handler: { ctx in
+            run: { ctx in
                 guard let dir = ctx.selection.first, let path = GitPlugin.repoPath(for: dir) else { return }
                 ctx.mount(GitRef(repo: path, kind: .repo).uri)
             }

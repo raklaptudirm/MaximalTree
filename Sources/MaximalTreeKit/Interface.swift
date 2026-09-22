@@ -29,6 +29,15 @@ public struct ActionContext {
     /// The nodes being acted on. Alias of `targets`, which reads naturally in handlers.
     public var selection: [NodeID] { targets }
 
+    /// The same context, acting on the nodes an invocation actually named.
+    ///
+    /// A menu hands over what is selected and this changes nothing. A script,
+    /// a keymap, or one plugin calling another names its own, and this is what
+    /// makes that argument count rather than be quietly ignored.
+    public func acting(on nodes: NodeTargets) -> ActionContext {
+        ActionContext(host: host, targets: nodes.nodes, count: nodes.count)
+    }
+
     // MARK: Changing things
     //
     // Writing is something an action does. A canvas reads, navigates, and
@@ -163,6 +172,12 @@ public struct Action: Identifiable {
     /// another plugin reaches when it invokes this by id.
     public let command: AnyCommand
 
+    /// An action whose body takes the nodes it was invoked on and may fail.
+    ///
+    /// A body that waits for something picks the asynchronous overload on its
+    /// own, and the host puts it on the queue; one that doesn't runs where it
+    /// was invoked, as a key's action always has. Either way a failure reaches
+    /// the reader instead of being swallowed at the end of a closure.
     public init(
         id: String,
         title: String,
@@ -171,8 +186,48 @@ public struct Action: Identifiable {
         shortcut: KeyboardShortcut? = nil,
         scope: ActionScope = .node,
         surfaces: ActionSurfaces? = nil,
-        handler: @escaping @MainActor (ActionContext) -> Void
+        run: @escaping @MainActor (ActionContext) throws -> Void
     ) {
+        self.init(id: id, title: title, systemImage: systemImage, appliesTo: appliesTo,
+                  shortcut: shortcut, scope: scope, surfaces: surfaces,
+                  command: AnyCommand.running(id: id, run))
+    }
+
+    public init(
+        id: String,
+        title: String,
+        systemImage: String? = nil,
+        appliesTo: ActionPredicate = .always,
+        shortcut: KeyboardShortcut? = nil,
+        scope: ActionScope = .node,
+        surfaces: ActionSurfaces? = nil,
+        run: @escaping @MainActor (ActionContext) async throws -> Void
+    ) {
+        self.init(id: id, title: title, systemImage: systemImage, appliesTo: appliesTo,
+                  shortcut: shortcut, scope: scope, surfaces: surfaces,
+                  command: AnyCommand.running(id: id, run))
+    }
+
+    /// An action over a command written as a type — the form for anything
+    /// whose argument is more than the nodes it was invoked on.
+    @MainActor
+    public init(
+        _ command: some Command,
+        title: String,
+        systemImage: String? = nil,
+        appliesTo: ActionPredicate = .always,
+        shortcut: KeyboardShortcut? = nil,
+        scope: ActionScope = .node,
+        surfaces: ActionSurfaces? = nil
+    ) {
+        self.init(id: type(of: command).id, title: title, systemImage: systemImage,
+                  appliesTo: appliesTo, shortcut: shortcut, scope: scope,
+                  surfaces: surfaces, command: command.erased())
+    }
+
+    private init(id: String, title: String, systemImage: String?,
+                 appliesTo: ActionPredicate, shortcut: KeyboardShortcut?,
+                 scope: ActionScope, surfaces: ActionSurfaces?, command: AnyCommand) {
         self.id = id
         self.title = title
         self.systemImage = systemImage
@@ -180,7 +235,7 @@ public struct Action: Identifiable {
         self.shortcut = shortcut
         self.scope = scope
         self.surfaces = surfaces ?? scope.defaultSurfaces
-        self.command = AnyCommand.handler(id: id, handler)
+        self.command = command
     }
 }
 

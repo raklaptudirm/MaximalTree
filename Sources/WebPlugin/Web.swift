@@ -271,7 +271,7 @@ final class WebPlugin: NSObject, Plugin {
             systemImage: "globe",
             shortcut: KeyboardShortcut("n", modifiers: [.command, .shift]),
             scope: .workspace,
-            handler: { ctx in
+            run: { ctx in
                 ctx.mount(WebProvider.homepage)
                 ctx.host.openURI(WebProvider.homepage)
             }
@@ -284,7 +284,7 @@ final class WebPlugin: NSObject, Plugin {
             appliesTo: .type(TypeID("web.page")),
             shortcut: KeyboardShortcut("l", modifiers: .command),
             scope: .workspace,
-            handler: { ctx in
+            run: { ctx in
                 guard let id = ctx.selection.first ?? ctx.focused else { return }
                 WebUIState.shared.locationPromptTarget = id
             }
@@ -298,7 +298,7 @@ final class WebPlugin: NSObject, Plugin {
             appliesTo: .type(TypeID("web.page")),
             shortcut: KeyboardShortcut("d", modifiers: .command),
             scope: .document,
-            handler: { ctx in
+            run: { ctx in
                 guard let session = Self.session(in: ctx),
                       let url = session.url else { return }
                 let title = session.title.isEmpty
@@ -317,7 +317,7 @@ final class WebPlugin: NSObject, Plugin {
                 return BookmarkStore.shared.contains(id.uri)
             },
             scope: .document,
-            handler: { ctx in
+            run: { ctx in
                 for id in ctx.targets { BookmarkStore.shared.remove(url: id.uri) }
                 ctx.notify([.modified(WebProvider.bookmarksID),
                                  .childrenChanged(WebProvider.bookmarksID)])
@@ -328,7 +328,7 @@ final class WebPlugin: NSObject, Plugin {
             title: "Show Bookmarks",
             systemImage: "star.fill",
             scope: .workspace,
-            handler: { ctx in
+            run: { ctx in
                 ctx.mount(WebProvider.bookmarksURI)
                 ctx.host.openURI(WebProvider.bookmarksURI)
             }
@@ -343,7 +343,7 @@ final class WebPlugin: NSObject, Plugin {
             systemImage: "chevron.left",
             appliesTo: .custom { Self.session(in: $0)?.canGoBack ?? false },
             scope: .document,
-            handler: { ctx in Self.session(in: ctx)?.goBack() }
+            run: { ctx in Self.session(in: ctx)?.goBack() }
         ))
         registry.register(action: Action(
             id: "web.forward",
@@ -351,7 +351,7 @@ final class WebPlugin: NSObject, Plugin {
             systemImage: "chevron.right",
             appliesTo: .custom { Self.session(in: $0)?.canGoForward ?? false },
             scope: .document,
-            handler: { ctx in Self.session(in: ctx)?.goForward() }
+            run: { ctx in Self.session(in: ctx)?.goForward() }
         ))
         registry.register(action: Action(
             id: "web.reload",
@@ -360,7 +360,7 @@ final class WebPlugin: NSObject, Plugin {
             appliesTo: .type(TypeID("web.page")),
             shortcut: KeyboardShortcut("r", modifiers: .command),
             scope: .document,
-            handler: { ctx in Self.session(in: ctx)?.reload() }
+            run: { ctx in Self.session(in: ctx)?.reload() }
         ))
         registry.register(action: Action(
             id: "web.openExternal",
@@ -368,7 +368,7 @@ final class WebPlugin: NSObject, Plugin {
             systemImage: "arrow.up.forward.app",
             appliesTo: .type(TypeID("web.page")),
             scope: .document,
-            handler: { ctx in
+            run: { ctx in
                 guard let url = Self.session(in: ctx)?.url
                         ?? ctx.selection.first.flatMap({ URL(string: $0.uri) }) else { return }
                 NSWorkspace.shared.open(url)

@@ -104,7 +104,7 @@ final class TerminalPlugin: NSObject, Plugin {
             systemImage: "apple.terminal",
             appliesTo: .type(TypeID("file.directory")),
             scope: .container,
-            handler: { ctx in
+            run: { ctx in
                 TerminalPlugin.spawn(from: ctx)
             }
         ))
@@ -117,7 +117,7 @@ final class TerminalPlugin: NSObject, Plugin {
             systemImage: "apple.terminal",
             shortcut: KeyboardShortcut("t", modifiers: [.command, .control]),
             scope: .workspace,
-            handler: { ctx in
+            run: { ctx in
                 TerminalPlugin.spawn(from: ctx)
             }
         ))
@@ -130,7 +130,7 @@ final class TerminalPlugin: NSObject, Plugin {
             systemImage: "apple.terminal",
             appliesTo: .type(TypeID("terminal.session")),
             scope: .node,
-            handler: { ctx in
+            run: { ctx in
                 TerminalPlugin.spawn(from: ctx)
             }
         ))
@@ -141,7 +141,7 @@ final class TerminalPlugin: NSObject, Plugin {
             systemImage: "xmark.circle",
             appliesTo: .type(TypeID("terminal.session")),
             scope: .node,
-            handler: { ctx in
+            run: { ctx in
                 TerminalSessions.shared.host = ctx.host
                 for id in ctx.selection { TerminalSessions.shared.close(id) }
             }
@@ -152,7 +152,7 @@ final class TerminalPlugin: NSObject, Plugin {
             title: "Show Terminals",
             systemImage: "apple.terminal",
             scope: .workspace,
-            handler: { ctx in
+            run: { ctx in
                 TerminalSessions.shared.host = ctx.host
                 ctx.mount(TerminalRef.sessionsURI)
             }

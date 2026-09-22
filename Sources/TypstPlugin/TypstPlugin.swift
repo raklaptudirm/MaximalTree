@@ -103,7 +103,7 @@ final class TypstPlugin: NSObject, Plugin {
             systemImage: "calendar.badge.plus",
             appliesTo: .type(TypeID("file.directory")),
             scope: .container,
-            handler: { ctx in
+            run: { ctx in
                 guard let dir = ctx.selection.first, dir.scheme == "file",
                       let url = URL(string: dir.uri) else { return }
                 // Mounts the agenda as a workspace root — the folder *is* the config.
@@ -122,7 +122,7 @@ final class TypstPlugin: NSObject, Plugin {
             appliesTo: .custom { Self.typFileURL(in: $0) != nil },
             shortcut: KeyboardShortcut("1", modifiers: [.command, .option]),
             scope: .document,
-            handler: { ctx in
+            run: { ctx in
                 TypstUIState.shared.setSourceStyle(.prose, for: Self.typFileURL(in: ctx))
             }
         ))
@@ -134,7 +134,7 @@ final class TypstPlugin: NSObject, Plugin {
             appliesTo: .custom { Self.typFileURL(in: $0) != nil },
             shortcut: KeyboardShortcut("2", modifiers: [.command, .option]),
             scope: .document,
-            handler: { ctx in
+            run: { ctx in
                 guard let url = Self.typFileURL(in: ctx) else { return }
                 TypstUIState.shared.setSourceStyle(.source, for: url)
                 // Typesetting means seeing what you are typesetting: the pages
@@ -154,7 +154,7 @@ final class TypstPlugin: NSObject, Plugin {
             registry.register(action: Action(
                 id: id, title: title, systemImage: image,
                 appliesTo: .custom(Self.isWriting), scope: .document,
-                handler: { _ in TypstUIState.shared.cycleProseFont(by: step) }
+                run: { _ in TypstUIState.shared.cycleProseFont(by: step) }
             ))
         }
 
@@ -165,14 +165,14 @@ final class TypstPlugin: NSObject, Plugin {
             registry.register(action: Action(
                 id: id, title: title, systemImage: image,
                 appliesTo: .custom(Self.isWriting), scope: .document,
-                handler: { _ in TypstUIState.shared.stepProseSize(by: step) }
+                run: { _ in TypstUIState.shared.stepProseSize(by: step) }
             ))
         }
         registry.register(action: Action(
             id: "typst.proseSize.reset", title: "Reset Prose Text Size",
             systemImage: "textformat.size",
             appliesTo: .custom(Self.isWriting), scope: .document,
-            handler: { _ in TypstUIState.shared.proseSize = ProseSize.standard }
+            run: { _ in TypstUIState.shared.proseSize = ProseSize.standard }
         ))
 
         for format in TypstEngine.ExportFormat.allCases {
@@ -182,7 +182,7 @@ final class TypstPlugin: NSObject, Plugin {
                 systemImage: "square.and.arrow.up",
                 appliesTo: .custom { Self.typFileURL(in: $0) != nil },
                 scope: .document,
-                handler: { ctx in Self.export(format, in: ctx) }
+                run: { ctx in Self.export(format, in: ctx) }
             ))
         }
 
@@ -195,7 +195,7 @@ final class TypstPlugin: NSObject, Plugin {
             // which is what reading it was.
             shortcut: KeyboardShortcut("3", modifiers: [.command, .option]),
             scope: .document,
-            handler: { ctx in
+            run: { ctx in
                 guard let url = Self.typFileURL(in: ctx) else { return }
                 ctx.host.openURI(TypstRef.preview(file: url.path).uri)
             }
@@ -208,7 +208,7 @@ final class TypstPlugin: NSObject, Plugin {
             appliesTo: .type(TypeID("typst.agenda")),
             shortcut: KeyboardShortcut("r", modifiers: .command),
             scope: .workspace,
-            handler: { ctx in
+            run: { ctx in
                 TypstUIState.shared.agendaRefresh += 1
                 for id in ctx.targets { ctx.notify([.childrenChanged(id)]) }
             }
@@ -220,7 +220,7 @@ final class TypstPlugin: NSObject, Plugin {
             systemImage: "square.and.pencil",
             appliesTo: .type(TypeID("file.directory")),
             scope: .container,
-            handler: { ctx in Self.createNote(in: ctx, daily: false) }
+            run: { ctx in Self.createNote(in: ctx, daily: false) }
         ))
         registry.register(action: Action(
             id: "typst.dailyNote",
@@ -228,7 +228,7 @@ final class TypstPlugin: NSObject, Plugin {
             systemImage: "calendar",
             appliesTo: .type(TypeID("file.directory")),
             scope: .container,
-            handler: { ctx in Self.createNote(in: ctx, daily: true) }
+            run: { ctx in Self.createNote(in: ctx, daily: true) }
         ))
     }
 

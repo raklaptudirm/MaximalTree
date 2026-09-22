@@ -104,7 +104,8 @@ import SwiftUI
     }
 
     /// A repeat has to survive the trip from the key to the body; `5 j` moves
-    /// five rows because the count reaches the action.
+    /// five rows because the count reaches the action — as part of its
+    /// argument, so a keymap can carry it as data.
     @Test func theRepeatCountReachesTheHandler() async throws {
         final class Seen: @unchecked Sendable {
             var counts: [Int] = []
@@ -115,8 +116,8 @@ import SwiftUI
         }
         let host = HostContext()
 
-        _ = try await action.command.run(NodeTargets(nodes: []),
-                                         in: ActionContext(host: host, count: 5))
+        _ = try await action.command.run(NodeTargets(nodes: [], count: 5),
+                                         in: ActionContext(host: host))
         _ = try await action.command.run(NodeTargets(nodes: []),
                                          in: ActionContext(host: host))
         #expect(seen.counts == [5, 1])

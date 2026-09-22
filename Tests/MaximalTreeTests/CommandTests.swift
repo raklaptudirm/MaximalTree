@@ -157,18 +157,19 @@ private final class Seen: @unchecked Sendable {
         #expect(loose == [node("youtube://channel/x")])
     }
 
-    // MARK: What every action carries today
+    // MARK: What every action carries
 
-    /// An action written as a closure is already a command — it ignores the
-    /// argument and reads the context, which is what its closure always did.
-    @Test func anActionCarriesItsHandlerAsACommand() async throws {
+    /// An action written as a closure is a command, and it acts on what it is
+    /// handed rather than on whatever was selected when it was invoked.
+    @Test func anActionActsOnWhatItIsHanded() async throws {
         let seen = Seen()
-        let action = Action(id: "test.handler", title: "Handler") { ctx in
+        let action = Action(id: "test.closure", title: "Closure") { ctx in
             seen.record(context: ctx)
         }
-        #expect(action.command.id == "test.handler")
-        _ = try await action.command.run(NodeTargets(nodes: []),
-                                         in: context([node("file:///tmp/a.txt")]))
+        #expect(action.command.id == "test.closure")
+
+        _ = try await action.command.run(NodeTargets(nodes: [node("file:///tmp/a.txt")]),
+                                         in: context([node("file:///tmp/selected.txt")]))
         #expect(seen.contexts == [[node("file:///tmp/a.txt")]])
     }
 }

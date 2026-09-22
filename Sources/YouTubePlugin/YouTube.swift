@@ -54,7 +54,7 @@ final class YouTubePlugin: NSObject, Plugin {
             title: "Search YouTube…",
             systemImage: "magnifyingglass",
             scope: .workspace,
-            handler: { ctx in
+            run: { ctx in
                 guard let query = Self.ask("Search YouTube", detail: "What to look for.",
                                            confirm: "Search", placeholder: "swift concurrency"),
                       !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
@@ -72,7 +72,7 @@ final class YouTubePlugin: NSObject, Plugin {
             title: "New YouTube Feed",
             systemImage: "rectangle.stack.badge.play",
             scope: .workspace,
-            handler: { ctx in
+            run: { ctx in
                 ctx.mount(YouTubeRef.aggregator(UUID()).uri)
             }
         ))
@@ -82,7 +82,7 @@ final class YouTubePlugin: NSObject, Plugin {
             title: "Add YouTube Channel…",
             systemImage: "person.crop.square.badge.plus",
             scope: .workspace,
-            handler: { ctx in
+            run: { ctx in
                 // Into the feed you are on, if you are on one; else the sidebar.
                 let aggregator = ctx.targets.first {
                     if case .aggregator? = YouTubeRef(uri: $0.uri) { return true }
@@ -105,7 +105,7 @@ final class YouTubePlugin: NSObject, Plugin {
                 !ctx.targets.isEmpty && ctx.targets.allSatisfy { YouTubeRef(uri: $0.uri)?.webURL != nil }
             },
             scope: .node,
-            handler: { ctx in
+            run: { ctx in
                 for url in ctx.targets.compactMap({ YouTubeRef(uri: $0.uri)?.webURL }) {
                     NSWorkspace.shared.open(url)
                 }

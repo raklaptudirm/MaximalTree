@@ -10,6 +10,14 @@ private final class Log: @unchecked Sendable {
     var count: Int { entries.count }
 }
 
+/// What a body was handed, kept where a test can read it.
+private final class Seen: @unchecked Sendable {
+    private(set) var contexts: [[NodeID]] = []
+    private(set) var entries: [String] = []
+    @MainActor func record(context: ActionContext) { contexts.append(context.targets) }
+    func append(_ entry: String) { entries.append(entry) }
+}
+
 /// A command that suspends in the middle, so two of them running at once would
 /// be visible in the log as an interleaving.
 private struct Slow: Command {
@@ -78,6 +86,8 @@ private struct Explains: Command {
     private func context(_ model: AppModel) -> ActionContext {
         ActionContext(host: model.host, targets: [])
     }
+
+    private func node(_ uri: String) -> NodeID { NodeID(uri)! }
 
     // MARK: Where a command runs
 
@@ -155,6 +165,59 @@ private struct Explains: Command {
         model.runCommand("test.nothing")
         await settle()
         #expect(model.commandFailure == nil, "it complained about a key that is simply unbound")
+    }
+
+    // MARK: What the argument is for
+
+    /// An action written as a closure still takes the nodes it was invoked on.
+    /// Handing over a different set is what makes these reachable from a
+    /// script or a keymap rather than only from whatever happens to be
+    /// selected.
+    @Test func anInvocationThatNamesItsNodesActsOnThose() async throws {
+        let model = try makeModel()
+        let seen = Seen()
+        model.pluginHost.registry.register(action: Action(id: "test.targets", title: "Targets") { ctx in
+            seen.record(context: ctx)
+        })
+        let command = try #require(model.store?.registry.command("test.targets"))
+        let selected = ActionContext(host: model.host, targets: [node("file:///selected")])
+
+        _ = try await command.run(NodeTargets(nodes: [node("file:///named")]), in: selected)
+
+        #expect(seen.contexts == [[node("file:///named")]], "it acted on the selection instead")
+    }
+
+    /// The same from data, which is the form a keymap or a script writes.
+    @Test func nodesNamedAsDataAlsoCount() async throws {
+        let model = try makeModel()
+        let seen = Seen()
+        model.pluginHost.registry.register(action: Action(id: "test.targets", title: "Targets") { ctx in
+            seen.record(context: ctx)
+            seen.append("count \(ctx.count)")
+        })
+        let command = try #require(model.store?.registry.command("test.targets"))
+        let selected = ActionContext(host: model.host, targets: [node("file:///selected")])
+
+        _ = try await command.run(
+            value: .fields(["nodes": .list([.string("file:///named")]), "count": .number(4)]),
+            in: selected)
+
+        #expect(seen.contexts == [[node("file:///named")]])
+        #expect(seen.entries == ["count 4"], "the repeat did not reach it")
+    }
+
+    /// And a body that fails now says so. A closure returning Void had nowhere
+    /// to put an error, so it swallowed one or logged it where nobody looked.
+    @Test func anActionThatFailsReachesTheReader() async throws {
+        let model = try makeModel()
+        model.pluginHost.registry.register(action: Action(id: "test.breaks", title: "Breaks") { _ in
+            throw Fails.Broke()
+        })
+
+        model.runCommand("test.breaks")
+        await settle()
+
+        #expect(model.commandFailure?.command == "test.breaks")
     }
 
     // MARK: The door a caller uses
