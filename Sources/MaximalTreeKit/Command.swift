@@ -222,9 +222,6 @@ public struct AnyCommand {
         self.now = now
     }
 
-    /// Whether it finishes without suspending.
-    public var isImmediate: Bool { now != nil }
-
     /// Run it here, without suspending. `nil` means it can't — it has to take
     /// its turn like anything else that might take time.
     @MainActor

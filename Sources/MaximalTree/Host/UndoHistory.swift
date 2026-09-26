@@ -17,6 +17,8 @@ import Foundation
 final class UndoHistory {
     struct Entry: Equatable {
         /// What the change was called where it was made — "Move", "Rename".
+        /// `undo()` and `redo()` hand it back, which is where a menu wanting to
+        /// say "Undo Move" would read it.
         let label: String
         let placements: Placements
     }
@@ -34,10 +36,6 @@ final class UndoHistory {
 
     func canUndo(in workspace: UUID) -> Bool { !(undoable[workspace] ?? []).isEmpty }
     func canRedo(in workspace: UUID) -> Bool { !(redoable[workspace] ?? []).isEmpty }
-
-    /// What Undo would put back, for whoever has to name the menu item.
-    func nextUndo(in workspace: UUID) -> String? { undoable[workspace]?.last?.label }
-    func nextRedo(in workspace: UUID) -> String? { redoable[workspace]?.last?.label }
 
     /// Remember the state before a change the reader asked for. Anything else
     /// the app does to the table — healing it on load, following what the

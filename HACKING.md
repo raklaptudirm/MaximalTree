@@ -528,6 +528,12 @@ keymap against itself.
 An action's key equivalent is a `KeyChord`, the same notation a keymap is written in;
 the menu bar turns one into a `KeyboardShortcut` where it draws it.
 
+**Register it bare when its argument is the point.** `workspace.select` takes which
+workspace to go to, so a menu or the palette has nothing useful to show for it: it is
+registered as a command with no presentation, and the workspace switcher names it and
+hands over the id (`FinderItem.Effect.run(_:with:)`). That is what a `FinderSource` in a
+plugin does too — list what you have, and say which command to run with what.
+
 ### Keys: modes, sequences, and who gets first refusal
 
 `Keys/` is a modal layer, Doom-flavoured: `SPC` is the leader, groups are mnemonic,
@@ -910,9 +916,6 @@ Known gaps, roughly in order:
   dependencies, cross-platform editor engine). What remains is the core extraction and
   the platform work; see [Other shells](#other-shells).
 - **Smaller**: richer inspector composition, multi-select in the directory grid.
-- **The last string-encoded id** — commands take arguments now, but `FinderItem.Effect`
-  does not carry one, so "switch to workspace X" is still `workspace.select:<uuid>`
-  unpacked by prefix in `FinderSources`. The one place the single id space still leaks.
 - **The host's own views write directly** — `NodeInspector` and `SidebarTree` call
   `host.apply` for rename and drag-to-move, which [Who may write](#who-may-write)
   forbids a plugin canvas. They should be commands: it would make them scriptable, and

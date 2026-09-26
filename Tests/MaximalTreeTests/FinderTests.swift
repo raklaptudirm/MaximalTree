@@ -578,3 +578,30 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
         #expect(listed.map(\.id) == [a, b])
     }
 }
+
+/// What a picked item says to do.
+@MainActor
+@Suite struct FinderEffectTests {
+    /// The usual spelling still means "against whatever is in front of me".
+    @Test func anItemWithNoArgumentCarriesNone() throws {
+        guard case .run(let id, let argument) = FinderItem.Effect.run("finder.all") else {
+            Issue.record("not a run effect"); return
+        }
+        #expect(id == "finder.all")
+        #expect(argument == .fields([:]))
+    }
+
+    /// And the switcher carries which workspace, as data rather than as part
+    /// of the name.
+    @Test func theSwitcherCarriesTheWorkspace() throws {
+        let workspace = UUID()
+        let effect = FinderItem.Effect.run(SelectWorkspace.id,
+                                          with: .fields(["workspace": .string(workspace.uuidString)]))
+        guard case .run(let id, let argument) = effect else {
+            Issue.record("not a run effect"); return
+        }
+        #expect(id == "workspace.select")
+        #expect(argument == .fields(["workspace": .string(workspace.uuidString)]))
+        #expect(!id.contains(":"), "the id encodes the argument again")
+    }
+}

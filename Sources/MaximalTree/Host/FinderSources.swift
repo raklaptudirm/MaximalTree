@@ -157,7 +157,8 @@ extension AppModel {
         workspacesByRecency.map { workspace in
             FinderItem(id: "workspace:\(workspace.id)", title: workspace.name,
                        systemImage: "square.stack.3d.up",
-                       effect: .run("workspace.select:\(workspace.id)"))
+                       effect: .run(SelectWorkspace.id,
+                                    with: .fields(["workspace": .string(workspace.id.uuidString)])))
         }
     }
 
@@ -175,23 +176,17 @@ extension AppModel {
     // MARK: Running what was picked
 
     /// Do what the picked item says. Both effects are named the way the rest
-    /// of the app names things, so this is a lookup rather than a special
-    /// case per source.
+    /// of the app names things, so this is a lookup rather than a special case
+    /// per source — including the switcher, which names a command and hands it
+    /// the workspace to go to.
     func perform(_ item: FinderItem) {
         switch item.effect {
         case .open(let uri):
             guard let id = NodeID(uri) else { return }
             host.select([id])
             store?.open(id)
-        case .run(let command):
-            // Workspaces are the one thing with no action of its own, since
-            // which workspace is part of the id rather than the command.
-            if command.hasPrefix("workspace.select:") {
-                let raw = String(command.dropFirst("workspace.select:".count))
-                if let id = UUID(uuidString: raw) { switchWorkspace(to: id) }
-                return
-            }
-            runCommand(command)
+        case .run(let command, let argument):
+            runCommand(command, with: argument)
         @unknown default:
             // A newer SDK's effect this build doesn't know how to do.
             return

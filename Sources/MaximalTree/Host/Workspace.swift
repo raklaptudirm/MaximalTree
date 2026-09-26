@@ -685,10 +685,6 @@ final class WorkspaceStore: PlacementHost {
     var canUndo: Bool { history.canUndo(in: active.id) }
     var canRedo: Bool { history.canRedo(in: active.id) }
 
-    /// What Undo and Redo would put back, for naming the menu item.
-    var undoLabel: String? { history.nextUndo(in: active.id) }
-    var redoLabel: String? { history.nextRedo(in: active.id) }
-
     @discardableResult
     func undo() -> String? {
         step { [history] entry, workspace, current in

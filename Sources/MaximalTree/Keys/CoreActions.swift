@@ -123,6 +123,27 @@ extension AppModel {
         }
     }
 
+    /// Run an operation by id with an argument that arrived as data — what a
+    /// finder item carries, and what a keymap or a script will carry.
+    ///
+    /// Applicability is not asked here: a command reached this way names what
+    /// it acts on rather than taking whatever is in front of the reader, so
+    /// there is no selection for a predicate to have an opinion about.
+    func runCommand(_ id: String, with argument: CommandValue) {
+        guard let command = store?.registry.command(id) else { return }
+        let context = ActionContext(host: host, targets: keyTargets())
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await commandQueue.serialized {
+                    try await command.run(value: argument, in: context)
+                }
+            } catch {
+                report(error, from: id)
+            }
+        }
+    }
+
     /// Run an operation by id, from a key or from a plugin.
     ///
     /// Applicable ones only, so a key bound to something that doesn't apply
@@ -501,6 +522,11 @@ extension AppModel {
             // is gone when you click rather than a moment after.
             model.deleteGroups(ctx.targets)
         }
+        // Not an action: which workspace is its argument, so there is nothing
+        // useful for a menu or the palette to show. The switcher names it and
+        // hands over the one to go to.
+        registry.register(SelectWorkspace(model: self))
+
         act("workspace.addFolder", "Mount Root…",
             image: "externaldrive.badge.plus") { model, _ in model.addFolder() }
 
@@ -729,5 +755,36 @@ extension NSView {
             if let found = subview.firstTextResponder { return found }
         }
         return nil
+    }
+}
+
+// MARK: - Going to a workspace
+
+/// Go to a workspace, named by id.
+///
+/// The one operation whose argument is not "the nodes you are pointing at",
+/// and the reason the finder used to encode the id into the command's name and
+/// unpack it again by prefix. A command takes an argument now, so it doesn't.
+struct SelectWorkspace: Command {
+    struct Input: Codable, Sendable {
+        var workspace: UUID
+    }
+
+    static let id = "workspace.select"
+    weak var model: AppModel?
+
+    struct NoSuchWorkspace: LocalizedError {
+        var errorDescription: String? { "That workspace isn't there any more." }
+    }
+
+    @MainActor
+    func run(_ input: Input, in context: ActionContext) async throws -> NoAnswer {
+        guard let model else { return NoAnswer() }
+        // A switcher list can outlive what it lists — a workspace deleted in
+        // another window, or an ephemeral one that went when the app did.
+        guard model.workspaceStore.library.workspaces.contains(where: { $0.id == input.workspace })
+        else { throw NoSuchWorkspace() }
+        model.switchWorkspace(to: input.workspace)
+        return NoAnswer()
     }
 }

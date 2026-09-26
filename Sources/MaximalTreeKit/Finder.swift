@@ -3,16 +3,18 @@ import Foundation
 /// One thing a finder can offer.
 ///
 /// An item says what it *is*, not what to do about it: opening a node or
-/// running an action, both named the way the rest of the app names them — a
-/// uri and an action id. A plugin can therefore list its notes or its
+/// running a command, both named the way the rest of the app names them — a
+/// uri and a command id, with the command's own argument when it takes one. A plugin can therefore list its notes or its
 /// bookmarks without reaching into the host, and the finder needs to know
 /// nothing about what it is listing.
 public struct FinderItem: Identifiable, Sendable {
     public enum Effect: Sendable {
         /// Open this node, as clicking it in the sidebar would.
         case open(String)
-        /// Run this action id, as a key bound to it would.
-        case run(String)
+        /// Run this command id with the argument it takes — what a switcher
+        /// item carries when *which* one is part of the argument rather than
+        /// part of the name.
+        case run(String, with: CommandValue)
     }
 
     public let id: String
@@ -77,3 +79,10 @@ public struct FinderSource: Identifiable, Sendable {
         self.items = items
     }
 }
+
+public extension FinderItem.Effect {
+    /// Run this command id against whatever is in front of the reader — the
+    /// usual case, where the command's name is the whole of what to do.
+    static func run(_ id: String) -> Self { .run(id, with: .fields([:])) }
+}
+

@@ -220,6 +220,52 @@ private struct Explains: Command {
         #expect(model.commandFailure?.command == "test.breaks")
     }
 
+    // MARK: An argument that isn't the selection
+
+    /// The finder's switcher names a command and hands over which workspace —
+    /// which used to be an id encoded into the command's own name and unpacked
+    /// again by prefix.
+    @Test func aWorkspaceIsGoneToByName() async throws {
+        let model = try makeModel()
+        model.registerCoreActions(with: model.pluginHost.registry)
+        let other = model.workspaceStore.create(named: "Other")
+        let first = model.activeWorkspaceID
+
+        model.runCommand(SelectWorkspace.id,
+                         with: .fields(["workspace": .string(other.id.uuidString)]))
+        await settle()
+
+        #expect(model.activeWorkspaceID == other.id, "it did not go to the named workspace")
+        #expect(model.activeWorkspaceID != first)
+        #expect(model.commandFailure == nil)
+    }
+
+    /// A switcher list can outlive what it lists, and saying so is better than
+    /// going nowhere in silence.
+    @Test func aWorkspaceThatIsGoneSaysSo() async throws {
+        let model = try makeModel()
+        model.registerCoreActions(with: model.pluginHost.registry)
+        let before = model.activeWorkspaceID
+
+        model.runCommand(SelectWorkspace.id,
+                         with: .fields(["workspace": .string(UUID().uuidString)]))
+        await settle()
+
+        #expect(model.activeWorkspaceID == before, "it went somewhere")
+        #expect(model.commandFailure?.command == SelectWorkspace.id)
+    }
+
+    /// An argument that isn't what the command takes is refused, and named.
+    @Test func anArgumentTheCommandCannotReadIsReported() async throws {
+        let model = try makeModel()
+        model.registerCoreActions(with: model.pluginHost.registry)
+
+        model.runCommand(SelectWorkspace.id, with: .fields(["workspace": .number(3)]))
+        await settle()
+
+        #expect(model.commandFailure?.command == SelectWorkspace.id)
+    }
+
     // MARK: The door a caller uses
 
     @Test func aCallerGetsTheAnswerBack() async throws {
