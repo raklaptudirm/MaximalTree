@@ -32,9 +32,9 @@ The three panes are all generic and registry-driven:
 └───────────────┴────────────────────────────┴─────────────────┘
 ```
 
-The host resolves the focused node's type to a `TypeRenderer` and asks the owning
-plugin to fill the canvas and inspector. It never special-cases `file.directory` or
-any other type.
+The host resolves the focused node to whichever plugin registered a matching canvas and
+inspector, and asks it to fill them. It never special-cases `file.directory` or any
+other type.
 
 Three more ideas sit above that, and together they are the whole of how the app is
 driven:
@@ -42,9 +42,11 @@ driven:
 - **Surfaces** — the areas the window is divided into (sidebar, each pane, inspector).
   One of them holds the keyboard, and they are all alike: commands act on whichever
   one does. A surface is found *geometrically*, not by view ancestry (see below).
-- **Actions** — everything the app can do, host and plugin alike, in one registry
+- **Commands** — everything the app can do, host and plugin alike, in one registry
   under one id space. Splitting a pane and a plugin's "Export as PDF" are the same
-  kind of thing.
+  kind of thing. A command takes a typed argument, may answer, and may fail; an
+  **action** is a command plus the title, icon and predicate a surface needs to
+  offer it.
 - **Modes and keys** — a modal keyboard layer over that registry. In a commanding
   mode a key names an action; in insert mode keys are text. The focused canvas gets
   first refusal on every key before the app's own keymap sees it.
@@ -69,19 +71,33 @@ Sources/
     EditorCompletion.swift      #   completion seam onto the engine's window
     EditorMath.swift            #   rendered-math seam (baseline-annotated images)
   MaximalTreeKit/               # the plugin SDK (dynamic framework)
-    Core.swift                  #   NodeID, TypeID, Node + NodeAnchor (phony nodes),
-                                #   NodeIcon/Tint, Attributes, Related
+    Core.swift                  #   NodeID, TypeID (+ .file/.directory), Node +
+                                #   NodeAnchor (phony nodes), NodeIcon/Tint,
+                                #   Attributes, Related
     Provider.swift              #   NodeProvider + NodeBroker protocols
     IconView.swift              #   NodeIconView + tint→Color (shared by host + plugins)
     Mutation.swift              #   GraphMutation, NodeChange, MutatingNodeProvider
+    Command.swift               #   Command (typed argument + answer), NodeTargets,
+                                #   CommandValue (the data form), AnyCommand, errors
     HostContext.swift           #   @Observable HostContext + GraphBackend seam
+    KeyChord.swift              #   one press, in Emacs notation — a keymap's
+                                #   vocabulary and an action's key equivalent alike
     KeyMode.swift               #   the app's one mode (normal/insert/visual)
-    Interface.swift             #   Action (+shortcut), SurfaceKey/SurfaceKeys,
-                                #   Canvas/Inspector/Child contributions,
-                                #   Plugin, Registry
+    Finder.swift                #   FinderSource/FinderItem (a searchable list)
+    FeedMerge.swift             #   k-way merge over paged sources (aggregator feeds)
+    ChangeStream.swift          #   ChangeStreamingProvider + FileTreeWatcher (FSEvents)
+    ExternalEdit.swift          #   what a canvas is told when its bytes changed
+    Interface.swift             #   Action (command + presentation), ActionContext,
+                                #   SurfaceKey/SurfaceKeys, Canvas/Inspector/Child
+                                #   contributions, Plugin, Registry
   MaximalTree/                  # the host app
     App.swift                   #   @main, AppModel wiring
-    Host/                       #   Registry, GraphStore, HostBroker, NavigationModel, Workspace, PluginHost
+    Host/                       #   Registry, GraphStore, HostBroker, NavigationModel,
+                                #   PluginHost; Placements (the parent→children table),
+                                #   Workspace (the library + placements per workspace),
+                                #   UndoHistory, CommandQueue, ActionTargets (a node as
+                                #   each identity it is), ActionOrganizer (menus),
+                                #   Collections, FinderSources/FinderFiles, FileOpening
     UI/                         #   Shell (window, columns, zen, prompts),
                                 #   PaneTree (tabs/splits/panes — the arrangement
                                 #   layer; see its header), SidebarModel (pure row
@@ -91,7 +107,8 @@ Sources/
                                 #   Surfaces (who has the keyboard, geometrically),
                                 #   Finder + Fuzzy (the picker and its matcher)
     Keys/                       #   the modal layer: Keymap (trie), KeyEngine (modes,
-                                #   sequences, counts), KeyChord (Emacs notation),
+                                #   sequences, counts), KeyChord (this shell's half:
+                                #   a chord from an NSEvent, and as a menu shortcut),
                                 #   KeyRouting/KeyDispatch (who gets a key),
                                 #   KeyCapture (the event monitor + which-key),
                                 #   CoreActions (every operation the host owns,
@@ -126,9 +143,13 @@ Sources/
     InnerTube.swift             #   YouTube's private JSON API, read anonymously (tested)
     YouTubeStore.swift          #   titles, thumbnails and recent searches, bounded (tested)
     YouTube.swift               #   add channel / new feed actions, video canvas
+  ICloudPlugin/                 # reference identity adopter (loadable bundle)
+    ICloudCore.swift            #   icloud:// addresses, app containers, download
+                                #   state, provider (each item *is* its file)
+    ICloud.swift                #   show/mount actions, download + evict
 Vendor/typst-ffi/               # Rust staticlib: typst compiler/parser/renderers (C ABI)
 Vendor/highlight-js/            # highlight.min.js (BSD-3) — ~190 grammars, run in-process
-Tests/MaximalTreeTests/         # swift-testing suite (510 tests)
+Tests/MaximalTreeTests/         # swift-testing suite (922 tests)
 ```
 
 The generated `MaximalTree.xcodeproj` is **not** committed — regenerate it (below).
@@ -208,8 +229,13 @@ never needs to know.
 `HostContext` (`HostContext.swift`) is a concrete `@Observable` class in the SDK — not
 a protocol — so plugin SwiftUI can hold it via `@Environment(HostContext.self)` and
 observe it by reference. It exposes reads (`node(_:)`, `children(of:)`, `related(of:)`)
-and commands (`open`, `select`, `mount`, `openURI`). Its cache dictionaries are the
-observable source of truth for the UI.
+and what a canvas may do: navigate (`open`, `select`, `openURI`), run any operation by
+id (`perform`), report what changed (`notify`), and keep a tab (`pin`). Its cache
+dictionaries are the observable source of truth for the UI.
+
+**Changing the graph is not on it** — see [Who may write](#who-may-write). `apply`,
+`mount`, `beginRename` and the whole `_`-prefixed tier are behind `@_spi(Host)`, so
+the host can reach them and a plugin cannot without asking by name.
 
 The host's `GraphStore` implements the `GraphBackend` protocol that `HostContext`
 delegates to. **Everything a plugin can trigger funnels through `GraphBackend`.** That
@@ -287,7 +313,8 @@ Action. The sidebar's drag-and-drop drives `.move` — rows drag their selection
 container rows accept drops, `canApply` validates. `apply(_:)` **returns the `NodeChange`s it caused**
 (`.renamed(from:to:)`, `.removed`, `.childrenChanged`), and the host applies those to
 its caches and remaps navigation history/selection — crucial because a rename changes a
-node's `NodeID`. Call `HostContext.apply(_:)` to trigger one, `canApply(_:)` to gate UI.
+node's `NodeID`. An action triggers one with `ctx.apply(_:)` and asks `ctx.canApply(_:)`
+before offering it.
 
 `.adopt` and `.release` are the other kind of child: *placed* rather than contained.
 A node that declares `accepts` takes drops, and the host — not its provider — keeps
@@ -322,6 +349,50 @@ from external events — event APIs can't pair renames, and a wrong removal tear
 down open tabs. References: the FileSystem provider (event→change mapping, hidden
 dot-directory churn filtered) and the typst agenda (any `.typ` change re-scans).
 
+### Who may write
+
+A canvas **reads, navigates, and reports**. It does not change the graph. An operation
+that exists only inside one canvas is invisible to the palette, to a key, to a script,
+and to anything that would put it back — so writing is something an *action* does, and
+the write vocabulary lives on `ActionContext`: `apply`, `canApply`, `mount`,
+`beginRename`, `ingest`, `notify`.
+
+`notify` is on both, deliberately. A report carries no authority: the host answers it
+by re-reading from whoever owns the node, which is the same path an edit made outside
+the app takes. So a canvas may say "this changed" and may not say what it changed to.
+The iCloud plugin is the reference — its provider reads the live page's title from the
+session, and the web canvas only reports that the record changed.
+
+This is enforced by the compiler rather than by agreement: reaching for `host.apply`
+from a canvas does not build. `@_spi` is not a wall — a plugin can write
+`@_spi(Host) import MaximalTreeKit` and get everything back — but asking is then a
+visible line at the top of a file instead of something that happens in the middle of a
+view.
+
+**Ask for what the body needs, not for what the node is.** A predicate that tests a
+node's *type* when its body needs a *path* is how a menu offers something it then
+quietly fails to do. The file actions ask whether each target has a local URL
+(Reveal, Copy Path, Duplicate) or whether its owner agrees (Trash, New File) — which is
+why they reach an iCloud item, as the file it also is, and why they would not reach a
+file served from somewhere with no path.
+
+### Undo: the sidebar's arrangement, and nothing else
+
+`UndoHistory` keeps **snapshots of the placement table**, per workspace, bounded, and
+`WorkspaceStore.changeActive(undoAs:)` records one before every change the reader
+asked for. Snapshots rather than inverses because the host owns the whole of that
+state, and because deleting a group spills its contents into every holder it had —
+which is not something one `adopt` puts back.
+
+That is also why undo stops there. An inverse can be written for anything; a snapshot
+can only be taken of state you hold. Deleting a file, renaming one on disk, writing to
+a server: none of it is undoable here, because putting it back is not ours to promise.
+A greyed-out Undo is a truthful answer; one that appears to work and doesn't is not.
+
+The two changes that record nothing are the two nobody asked for: the table being
+healed on load, and the app following what the graph has mounted. Taking a root out of
+the sidebar *is* a change you made, and goes back.
+
 ### Pagination
 
 `children(of:page:)` may return `Page(items:, next: Cursor(...))`. The cursor is your
@@ -332,9 +403,10 @@ Providers that vend everything at once just return `next: nil`.
 
 ### Workspaces
 
-A **workspace** is a named set of root URIs — host-owned, persisted as an app-managed
-library (`workspaces.json` in Application Support; the pre-workspaces single
-`workspace.json` migrates automatically). At least one workspace always exists, and
+A **workspace** is a named arrangement of nodes — what is mounted and what was put
+inside what (see [Placements](#placements-what-is-inside-what)) — host-owned and
+persisted as an app-managed library (`workspaces.json` in Application Support; the
+pre-workspaces single `workspace.json` migrates automatically). At least one workspace always exists, and
 exactly one is active. Switching (toolbar menu, or the Workspace menu with ⌘⌥1–9)
 saves nothing and restores everything: tabs, history, focus, and selection reset;
 node caches are kept because `NodeID`s stay valid across workspaces. Mount/unmount
@@ -362,24 +434,36 @@ Files that *are* inside a mounted root open in that root's workspace instead, ma
 by the directory a root names rather than by its scheme, so a repo mounted as
 `git://repo?repo=…` claims its own files.
 
-**Root folders** organize the sidebar within a workspace. A workspace's `RootLayout`
-— an ordered *tree* of `RootEntry`s (a root uri, or a `RootFolder` that itself holds
-entries, so folders nest) — is the source of truth for what the sidebar draws; the
-flat root set the graph core consumes (`context.roots`) is *derived* from it (a
-recursive flatten), so folders never leak below the host UI and providers stay
-unaware. `WorkspaceStore.reconcileRoots(_:placingNewInto:)` keeps the layout in step
-with the live root set on every mount/unmount: vanished roots are pruned at any depth
-(empty folders are kept — they're intentional), and newly mounted roots join the
-folder of the *current node's root* (so "New X" lands beside what you're looking at)
-or go loose. Deleting a folder spills its contents out where it sat — nothing is lost
-with its container.
+### Placements: what is inside what
 
-Reorganizing is `moveEntries(_ refs:toFolder:at:)` (roots and folders, by `EntryRef`),
-which pulls entries out of wherever they sit and reinserts them at an index, refusing
-to move a folder into its own subtree. The sidebar drives it by flattening the tree to
-a `RootSlot` list with an insertion `gap` before/after every row: gaps are the
-position-aware drop targets (insert at index), folder rows are the nesting drop
-targets (drop *onto* to move inside), and both roots and folders are draggable.
+A workspace records **where things were put**: one table of parent URI → ordered child
+URIs (`Host/Placements.swift`), kept per workspace in the library file. The sidebar's
+whole shape is a flatten of that table from the workspace's root
+(`collection://<workspace-id>`), and the flat root set the graph consumes
+(`context.roots`) is *derived* from it, so providers stay unaware.
+
+**Collections come out of it for free.** A collection is simply a key in the table
+whose URI carries its name (`collection://<uuid>?name=Reading`); it has no existence
+of its own, no file, and no provider. Deleting one spills what it held out where it
+sat. A group in the sidebar, a watch list, and an aggregator's members are all the
+same mechanism.
+
+`.adopt`/`.release` are how the table changes, and the host — never a provider —
+handles them (`GraphStore.apply` intercepts both). The workspace store is the
+`PlacementHost`, held weakly. `WorkspaceStore.reconcileRoots(_:placingNewInto:)` keeps
+the table in step with the live root set on every mount and unmount: vanished roots
+leave every collection, and a newly mounted root joins the collection holding the
+current node's root, so "New X" lands beside what you were looking at.
+
+A rename is a change of URI (the name is *in* it), so renaming a collection remaps the
+table's keys and members; `restoreRoots` also re-resolves stored parents on load,
+which is what heals a library written by an older build.
+
+The legacy `RootLayout`/`RootEntry`/`RootFolder` types survive in `Workspace.swift` for
+one reason only: migrating a library that predates the table. Nothing reads them
+otherwise. `workspaces.pre-placements.json` is the backup taken on the way, and
+`collections.json` — the global collections file that predates the table — is read once
+to migrate and then left alone.
 
 ### Commands: one registry, one id space
 
@@ -401,6 +485,48 @@ whether a key bound to it does anything. An action that can't run right now is
 uniformly absent rather than a no-op.
 
 `ActionContext` carries a repeat `count`, because a key can ask for one (`5 j`).
+
+**A command takes an argument.** `Command` has an `Input` and an `Output`, both
+`Codable`, and defaults to `NodeTargets` — the nodes it was invoked on, and the count.
+An action written as a closure gets the same argument: `ctx.acting(on:)` means invoking
+`file.delete` with two ids deletes *those two*, whatever happens to be selected, which
+is what makes an operation reachable from a keymap or a script and not only from a
+click. Registration comes in two shapes:
+
+```swift
+// A closure over the context, for anything whose whole argument is "these nodes".
+Action(id: "myscheme.doThing", title: "Do the Thing", run: { ctx in … })
+
+// A command written as a type, for anything whose argument is more than that.
+struct Rename: Command {
+    struct Input: Codable, Sendable { var target: NodeID; var name: String }
+    static let id = "myscheme.rename"
+    func run(_ input: Input, in ctx: ActionContext) async throws -> NoAnswer { … }
+}
+registry.register(Rename())                     // invocable, never listed
+registry.register(action: Action(Rename(), title: "Rename…"))   // listed too
+```
+
+**Two doors, and they differ in who takes the failure.** A key, a menu or the palette
+goes through `perform`: nothing is handed back, and a failure is the host's to put in
+front of the reader, who asked for something to happen rather than asking a question.
+A caller that wants the answer uses `host.perform(Rename.self, input)`, which returns
+`Output` and throws — and deliberately does *not* also raise an alert behind its back.
+
+**An answer, never an effect.** What a command *changed* is reported on the `NodeChange`
+funnel, because a change observed from outside the app has no invoker and so no answer;
+behaviour built on a returned effect would work for edits we made and quietly not for
+edits we noticed. `Output: Codable` is what keeps that honest — `NodeChange` is not
+`Codable`, so answering with one does not compile.
+
+**Waiting takes a turn.** A body that awaits picks the asynchronous overload and goes
+through `CommandQueue`, one at a time, because two writes that interleave leave an undo
+log whose order is not the order things happened in. A body that doesn't await runs
+where it was invoked, as a key's action always has — queueing those would reorder a
+keymap against itself.
+
+An action's key equivalent is a `KeyChord`, the same notation a keymap is written in;
+the menu bar turns one into a `KeyboardShortcut` where it draws it.
 
 ### Keys: modes, sequences, and who gets first refusal
 
@@ -578,8 +704,8 @@ canvas — no external tools involved).
 
 One registry feeds the menu bar, the finder, the context menu, and the inspector's
 Actions section; each surface filters by the action's `appliesTo` predicate
-(`.always`, `.type(_)`, or `.custom { ctx in … }`). Pass `shortcut:` and the menu bar
-registers it window-wide. The host's own operations are in the same registry, so
+(`.always`, `.type(_)`, or `.custom { ctx in … }`). Pass
+`shortcut: KeyChord("s", command: true)` and the menu bar registers it window-wide. The host's own operations are in the same registry, so
 anything you register is bindable to a key and callable by name the day it ships.
 
 `scope` decides where an action is offered by default *and* whether it is "about" a
@@ -599,9 +725,13 @@ export is actions, word count lives in the inspector.
 ```swift
 Action(id: "myscheme.doThing", title: "Do the Thing",
        systemImage: "wand.and.stars", appliesTo: .type("myscheme.thing")) { ctx in
-    // ctx.selection, ctx.selectedNodes, ctx.host
+    // ctx.selection, ctx.selectedNodes, ctx.host — and ctx.apply/notify to change things
+    // Throw to tell the reader it didn't work; await to take a turn on the queue.
 }
 ```
+
+See [Commands](#commands-one-registry-one-id-space) for arguments, answers and the two
+doors, and [Who may write](#who-may-write) for what a body may reach.
 
 ### 4. The principal class
 
@@ -613,7 +743,7 @@ final class MyPlugin: NSObject, Plugin {
     override init() { super.init() }
     func register(with registry: PluginRegistry) {
         registry.register(provider: MyProvider())
-        registry.register(renderer: /* … */)
+        registry.register(canvas: /* … */)      // and/or inspector:, children:
         registry.register(action: /* … */)
     }
 }
@@ -688,14 +818,46 @@ and everything degrades to "no completions" when the binary is absent. Install
 tinymist (`brew install tinymist` / `nix profile install nixpkgs#tinymist`) and
 completions — plus the gated live tests — light up with no configuration.
 
-### The mobile plan
+### The editor on other platforms
 
-An iOS version is intended eventually. The editor is ready for it (same engine,
-UIKit implementation, behind this seam). Remaining blockers, in order: the Typst
-compile path on iOS uses `Vendor/typst-ffi` (already built — cross-compile the
-crate for iOS targets); iOS only executes code shipped in the app, so `PluginHost`
-needs the compiled-in registration path there; and routine AppKit swaps (panels,
-pasteboard, Quick Look, sidebar material).
+The editor itself is ready for iOS: the same engine behind the same seam, with a UIKit
+implementation in place of the AppKit one. See [Other shells](#other-shells) for the
+rest of what a second platform needs.
+
+## Other shells
+
+The intended shape, agreed but not built: **one core, embeddable but optional.** A
+device either embeds the core and works offline, or runs thin against a home server
+that hosts the user's stuff so moving between machines needs no syncing. The macOS app
+embeds it and can *be* that server; the same core runs headless on Linux. Web and
+Android shells then only rewrite canvases, which have to be rewritten anyway, instead
+of rewriting every provider.
+
+What that implies here:
+
+- **Every plugin splits in two.** A *core half* (provider, commands, stores) that runs
+  wherever the core runs, and a *shell half* (canvases, inspectors, and the commands
+  that need a local UI — clipboard, Finder, file pickers). Type ids and command ids are
+  the contract between them. Several plugins are already half-split along that line:
+  `YouTubeCore`, `WebCore`, `ICloudCore`, `TypstCore` compile without any UI.
+- **Node scope is about who serves a node, not its scheme.** `youtube://`, `https://`
+  and `icloud://` mean the same thing on every device; `file://`, `git://` and a
+  terminal are local to one machine — and become global once a server shares them,
+  under a host-qualified id so one machine's `file:///x` never collides with another's.
+- **A workspace shared between machines holds only global nodes.** Per-device view
+  state (what is expanded, how the panes are split) stays per device even then.
+
+The extraction is planned in phases: make the SDK honest in place (done for keys),
+split it into a `MaximalTreeCore` package plus the SwiftUI half, move the host's model
+code out of the app target, split the plugins, and only then prove it off macOS with an
+iOS build, `swift test` on Linux, and a headless CLI host. Three constraints found
+while planning, worth knowing before starting:
+
+- the core has to stay a **dynamic** framework on Apple platforms (see Conventions);
+- `Vendor/typst-ffi` must be cross-compiled before anything typst runs on iOS, so the
+  first iOS build should leave the typst core out;
+- iOS only executes code shipped in the app, so core halves register from a static list
+  rather than through `PluginHost`'s bundle scan.
 
 ## Vendored code
 
@@ -713,13 +875,21 @@ committed and builds aren't byte-for-byte reproducible across machines.
   checking. Keep providers `Sendable` and do UI/host work on `@MainActor`.
 - **The host stays type-agnostic.** If you find yourself writing `if type == "file.…"`
   in `Sources/MaximalTree/`, that's a smell — the knowledge belongs in a plugin.
-- **Route through `HostContext`.** Plugins must never reach into host internals; the
-  context is the whole contract.
+- **Route through `HostContext` and `ActionContext`.** A canvas reads, navigates and
+  reports; an action writes. The host's internals are behind `@_spi(Host)` — if you
+  find yourself importing that from a plugin, the operation you want is missing from
+  `ActionContext` and that is the thing to fix.
 - **Don't set `navigationTitle` in a canvas.** The window title belongs to the host
   (workspace name, focused node as subtitle); a canvas that sets its own title
   hijacks it. Your node's name is already shown by the tab strip and subtitle.
-- `MaximalTreeKit` is built with library evolution on. Keep its public API additive so
-  plugins compiled against an older SDK keep loading.
+- `MaximalTreeKit` is built with library evolution on, but **nothing depends on binary
+  compatibility**: every plugin ships inside the app and is rebuilt with it, so a
+  breaking SDK change is allowed as long as it is made everywhere in the same commit.
+  (`Action.init(handler:)` was removed that way.)
+- **The SDK must stay a dynamic framework.** Plugin bundles link it "Do Not Embed" and
+  share the host's one copy. Statically linking it into the app *and* each bundle would
+  duplicate type metadata — `as?` casts across the boundary would start failing, and
+  any SDK-level singleton would exist twice.
 
 ---
 
@@ -736,14 +906,23 @@ Known gaps, roughly in order:
   external user plugin directory, enable/disable, or revocable registrations yet.
 - **Typst follow-ups** — tinymist hover/go-to-definition, snippet tab-stops, and
   a rename event doesn't yet remap a file's `typst://` section nodes in history.
-- **The iOS spike** — the hard prerequisites are done (in-process compiler, no
-  CLI dependencies, cross-platform editor engine); what remains is target setup,
-  compiled-in plugin registration, and AppKit→UIKit view swaps.
-- **Smaller**: richer inspector composition, undo for structural mutations,
-  multi-select in the directory grid.
-- **Parameterised actions** — an action takes a target node but not an argument, so
-  "switch to workspace X" is a string-encoded id (`workspace.select:<uuid>`) that the
-  finder unpacks by prefix. The one place the single id space leaks.
+- **A second shell** — the hard prerequisites are done (in-process compiler, no CLI
+  dependencies, cross-platform editor engine). What remains is the core extraction and
+  the platform work; see [Other shells](#other-shells).
+- **Smaller**: richer inspector composition, multi-select in the directory grid.
+- **The last string-encoded id** — commands take arguments now, but `FinderItem.Effect`
+  does not carry one, so "switch to workspace X" is still `workspace.select:<uuid>`
+  unpacked by prefix in `FinderSources`. The one place the single id space still leaks.
+- **The host's own views write directly** — `NodeInspector` and `SidebarTree` call
+  `host.apply` for rename and drag-to-move, which [Who may write](#who-may-write)
+  forbids a plugin canvas. They should be commands: it would make them scriptable, and
+  a second shell needs them to be.
+- **Applicability is closures** — forty `appliesTo: .custom` against sixteen `.type`.
+  Correct in-process, and the obstacle for a shell that isn't Swift: a predicate can't
+  cross a wire. The answer is that the core evaluates it and the shell asks what
+  applies, which is what `AppModel.applicableActions` already does.
+- **The terminal has no UI-free half** — sessions and the PTY are tangled with Ghostty,
+  so it is the one plugin with nothing to put in a core.
 - **The inspector has no keys** — every other surface declares some; it is the one
   place you still cannot reach from the keyboard alone.
 - **One shell window** — there is one `AppModel`, so a second window of the main

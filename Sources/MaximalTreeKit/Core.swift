@@ -84,8 +84,9 @@ extension NodeID {
 
 // MARK: - TypeID
 
-/// Identifies a node's type, e.g. `"file.directory"`. Owns which `TypeRenderer`
-/// and which actions apply. Reverse-DNS-ish by convention, opaque in practice.
+/// Identifies a node's type, e.g. `"file.directory"`. Decides which canvas and
+/// inspector draw it and which actions apply. Reverse-DNS-ish by convention,
+/// opaque in practice.
 public struct TypeID: Hashable, Sendable, Codable, ExpressibleByStringLiteral, CustomStringConvertible {
     public let raw: String
     public init(_ raw: String) { self.raw = raw }
