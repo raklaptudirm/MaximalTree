@@ -1,4 +1,5 @@
 import Testing
+import Observation
 import Foundation
 @_spi(Host) @testable import MaximalTreeKit
 @testable import MaximalTree
@@ -661,5 +662,76 @@ import Foundation
         let reloaded = WorkspaceStore(fileURL: file)
         #expect(reloaded.groupContaining("file:///a") == group)
         #expect(reloaded.uri(of: group).flatMap(CollectionRef.name(from:)) == "Work")
+    }
+}
+
+/// The façade in front of the two halves.
+///
+/// `HostContext` stores nothing now: it reads through to `graph` and `shell`. That
+/// only works because observation tracks the property actually touched, however
+/// many objects the read went through — and if it stopped working, every view in
+/// the app would quietly stop updating while every test still passed. So these
+/// watch the same way SwiftUI does.
+@MainActor
+@Suite struct HostFacadeTests {
+    private final class Fired: @unchecked Sendable {
+        var value = false
+    }
+
+    private func node(_ uri: String) -> NodeID { NodeID(uri)! }
+
+    @Test func readingShellStateThroughTheFacadeObservesIt() {
+        let host = HostContext()
+        let fired = Fired()
+        withObservationTracking {
+            _ = host.selection
+        } onChange: {
+            fired.value = true
+        }
+
+        host.shell.selection = [node("file:///a")]
+        #expect(fired.value, "a view reading host.selection would not have redrawn")
+        #expect(host.selection == [node("file:///a")], "the façade reads a stale value")
+    }
+
+    @Test func readingGraphStateThroughTheFacadeObservesIt() {
+        let host = HostContext()
+        let fired = Fired()
+        withObservationTracking {
+            _ = host.node(node("file:///a"))
+        } onChange: {
+            fired.value = true
+        }
+
+        host._ingest(Node(id: node("file:///a"), type: .file))
+        #expect(fired.value, "a view reading a node record would not have redrawn")
+        #expect(host.node(node("file:///a")) != nil)
+    }
+
+    /// And the roots, which the sidebar's whole shape depends on.
+    @Test func readingRootsThroughTheFacadeObservesThem() {
+        let host = HostContext()
+        let fired = Fired()
+        withObservationTracking {
+            _ = host.roots
+        } onChange: {
+            fired.value = true
+        }
+
+        host._setRoots([node("file:///a")])
+        #expect(fired.value, "the sidebar would not have redrawn")
+        #expect(host.roots == [node("file:///a")])
+    }
+
+    /// The halves are addressable in their own right, which is what lets them
+    /// live in different places later.
+    @Test func eachHalfStandsOnItsOwn() {
+        let graph = GraphState()
+        let shell = ShellState()
+        let host = HostContext(graph: graph, shell: shell)
+
+        host._setSelection([node("file:///a")])
+        #expect(shell.selection == [node("file:///a")])
+        #expect(graph.roots.isEmpty, "the graph half took on the shell's state")
     }
 }

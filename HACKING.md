@@ -79,7 +79,9 @@ Sources/
     Mutation.swift              #   GraphMutation, NodeChange, MutatingNodeProvider
     Command.swift               #   Command (typed argument + answer), NodeTargets,
                                 #   CommandValue (the data form), AnyCommand, errors
-    HostContext.swift           #   @Observable HostContext + GraphBackend seam
+    HostContext.swift           #   GraphState (the caches) + ShellState (selection,
+                                #   focus, mode) + the HostContext façade over both,
+                                #   and the GraphBackend seam
     KeyChord.swift              #   one press, in Emacs notation — a keymap's
                                 #   vocabulary and an action's key equivalent alike
     KeyMode.swift               #   the app's one mode (normal/insert/visual)
@@ -89,7 +91,7 @@ Sources/
     ExternalEdit.swift          #   what a canvas is told when its bytes changed
     Interface.swift             #   Action (command + presentation), ActionContext,
                                 #   SurfaceKey/SurfaceKeys, Canvas/Inspector/Child
-                                #   contributions, Plugin, Registry
+                                #   contributions, Plugin, Core/Shell/PluginRegistry
   MaximalTree/                  # the host app
     App.swift                   #   @main, AppModel wiring
     Host/                       #   Registry, GraphStore, HostBroker, NavigationModel,
@@ -228,7 +230,22 @@ never needs to know.
 
 `HostContext` (`HostContext.swift`) is a concrete `@Observable` class in the SDK — not
 a protocol — so plugin SwiftUI can hold it via `@Environment(HostContext.self)` and
-observe it by reference. It exposes reads (`node(_:)`, `children(of:)`, `related(of:)`)
+observe it by reference. It stores nothing itself: it stands in front of **two halves**,
+and reading through it is the same as reading them, because observation tracks the
+property actually touched however many objects the read went through.
+
+- `GraphState` — the node records, child lists, cursors and roots. The same wherever
+  the graph is served from.
+- `ShellState` — selection, focus, key mode, zen mode, the pending rename, fragment
+  jumps. What *this* window is doing with the graph, and never shared: two devices
+  looking at the same nodes have their own selection.
+
+That division is the one the modules will be cut along later, which is the whole reason
+to draw it now. `HostFacadeTests` watches the façade the way SwiftUI does, because if
+nested observation ever stopped working every view would quietly stop updating while
+every other test still passed.
+
+It exposes reads (`node(_:)`, `children(of:)`, `related(of:)`)
 and what a canvas may do: navigate (`open`, `select`, `openURI`), run any operation by
 id (`perform`), report what changed (`notify`), and keep a tab (`pin`). Its cache
 dictionaries are the observable source of truth for the UI.
@@ -853,10 +870,13 @@ What that implies here:
 - **A workspace shared between machines holds only global nodes.** Per-device view
   state (what is expanded, how the panes are split) stays per device even then.
 
-The extraction is planned in phases: make the SDK honest in place (done for keys),
-split it into a `MaximalTreeCore` package plus the SwiftUI half, move the host's model
-code out of the app target, split the plugins, and only then prove it off macOS with an
-iOS build, `swift test` on Linux, and a headless CLI host. Three constraints found
+The extraction is planned in phases. **Making the SDK honest in place is done**: keys
+are plain data, `PluginRegistry` is now `CoreRegistry` (providers, children, actions,
+commands, finder sources) plus `ShellRegistry` (canvases, inspectors, surface keys),
+and `HostContext` is a façade over a graph half and a shell half. What remains is
+splitting the SDK into a `MaximalTreeCore` package plus the SwiftUI half, moving the
+host's model code out of the app target, splitting the plugins, and only then proving
+it off macOS with an iOS build, `swift test` on Linux, and a headless CLI host. Three constraints found
 while planning, worth knowing before starting:
 
 - the core has to stay a **dynamic** framework on Apple platforms (see Conventions);

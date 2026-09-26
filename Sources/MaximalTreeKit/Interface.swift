@@ -374,17 +374,20 @@ public struct ChildContribution: Sendable {
 
 // MARK: - Plugin + Registry
 
-/// What a plugin registers into at load. One-shot: a plugin declares what it can
-/// handle, not what exists. (Handles/`deactivate` come later, for dynamic plugins.)
+/// What a plugin contributes that has nothing to do with drawing: where nodes
+/// come from, what can be done to them, and what can be searched.
+///
+/// Separate from `ShellRegistry` because these are the halves that will one day
+/// live in different places — this one wherever the graph is served, the other
+/// in whatever is displaying it. A plugin that serves nodes and never draws
+/// anything needs only this.
 @MainActor
-public protocol PluginRegistry: AnyObject {
+public protocol CoreRegistry: AnyObject {
     /// Ask other plugins' providers for nodes. Store it on your provider if you need
     /// to compose foreign nodes: `register(provider: MyProvider(broker: registry.broker))`.
     var broker: NodeBroker { get }
 
     func register(provider: NodeProvider)
-    func register(canvas: CanvasContribution)
-    func register(inspector: InspectorContribution)
     func register(children: ChildContribution)
     func register(action: Action)
     /// A command that isn't offered anywhere — invoked by id, by a key or by a
@@ -394,16 +397,30 @@ public protocol PluginRegistry: AnyObject {
     func register(command: AnyCommand)
     /// A list the finder can search — see `FinderSource`.
     func register(finder: FinderSource)
+}
+
+/// What a plugin contributes to *this* shell: the views, and the keys that only
+/// mean something where there is a keyboard.
+@MainActor
+public protocol ShellRegistry: AnyObject {
+    func register(canvas: CanvasContribution)
+    func register(inspector: InspectorContribution)
     /// Keys for a surface that is not a canvas. A canvas declares its own on
     /// its contribution, so the drawing canvas and the live keys cannot part.
     func register(surfaceKeys: SurfaceKeys)
 }
 
-public extension PluginRegistry {
-    /// Register a command written as a type, which is how they are written.
-    @MainActor
-    func register(_ command: some Command) { register(command: command.erased()) }
+/// What a plugin registers into at load: both halves, since a plugin in this app
+/// is one bundle that does both. One-shot — a plugin declares what it can handle,
+/// not what exists. (Handles/`deactivate` come later, for dynamic plugins.)
+public protocol PluginRegistry: CoreRegistry, ShellRegistry {}
 
+public extension CoreRegistry {
+    /// Register a command written as a type, which is how they are written.
+    func register(_ command: some Command) { register(command: command.erased()) }
+}
+
+public extension ShellRegistry {
     /// Convenience for the common "render exactly this type" case.
     func registerCanvas(
         forType typeID: TypeID, priority: Int = 0,

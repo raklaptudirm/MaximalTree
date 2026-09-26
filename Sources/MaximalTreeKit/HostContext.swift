@@ -10,34 +10,16 @@ import Observation
 /// backend fills them asynchronously; reading `children(of:)`/`related(of:)` during
 /// a SwiftUI body kicks off a load (via the backend) and returns what's cached so
 /// far, so the view re-renders when the data lands.
+/// What the graph is: every node record the app has seen, and what it knows about
+/// their children.
+///
+/// One half of what a plugin holds — the half that is the same wherever the graph
+/// is served from. Nothing here is about what this window is doing with it.
 @MainActor
 @Observable
-public final class HostContext {
+public final class GraphState {
     /// Top-level entries of the current workspace (the forest's roots).
     public internal(set) var roots: [NodeID] = []
-    /// The node whose renderer currently owns the canvas + inspector.
-    public internal(set) var focusedNode: NodeID?
-    /// Current selection in the explorer (drives action applicability).
-    public internal(set) var selection: [NodeID] = []
-    /// Posted when a *phony* node (see `NodeAnchor`) was opened: the host
-    /// navigated to `target`, and target's canvas should jump to `fragment`.
-    /// Canvases observe this (`.onChange`) and act when `target` is their node.
-    /// The nonce makes repeat jumps to the same fragment observable.
-    public internal(set) var activeFragment: NodeFragment?
-    /// Zen mode: the host is showing the canvas alone — no sidebar, inspector,
-    /// tab strip, or toolbar. Canvases should shed their own chrome too
-    /// (headers, status rows, anything that isn't the content).
-    public internal(set) var isZenMode = false
-    /// Posted when an open node's bytes changed outside the app — another
-    /// editor saving, a branch switch, a sync client. Canvases showing that
-    /// node observe this and reconcile against the file (see `ExternalEdit`);
-    /// nobody else has to care.
-    public internal(set) var externalEdit: ExternalEdit.Notice?
-    /// The node the sidebar is inline-renaming right now, nil when none. Set via
-    /// `beginRename(_:)` — the host validates support first — and cleared by the
-    /// shell when the edit commits or cancels. Plugins trigger the rename UI;
-    /// they never draw it.
-    public internal(set) var pendingRename: NodeID?
 
     // Observable caches, filled by the backend.
     internal var nodes: [NodeID: Node] = [:]
@@ -60,12 +42,73 @@ public final class HostContext {
     /// closing under the reader who scrolled there.
     internal var paginatedNodes: Set<NodeID> = []
 
+    public init() {}
+}
+
+/// What this shell is doing with the graph: where the keyboard is, what is
+/// selected, what it is showing.
+///
+/// The other half, and the one that stays behind when the graph moves. None of it
+/// is shared: two devices looking at the same nodes have their own selection,
+/// their own focus, their own idea of how much chrome to draw.
+@MainActor
+@Observable
+public final class ShellState {
+    /// The node whose renderer currently owns the canvas + inspector.
+    public internal(set) var focusedNode: NodeID?
+    /// Current selection in the explorer (drives action applicability).
+    public internal(set) var selection: [NodeID] = []
+    /// Posted when a *phony* node (see `NodeAnchor`) was opened: the host
+    /// navigated to `target`, and target's canvas should jump to `fragment`.
+    /// Canvases observe this (`.onChange`) and act when `target` is their node.
+    /// The nonce makes repeat jumps to the same fragment observable.
+    public internal(set) var activeFragment: HostContext.NodeFragment?
+    /// Zen mode: the host is showing the canvas alone — no sidebar, inspector,
+    /// tab strip, or toolbar. Canvases should shed their own chrome too
+    /// (headers, status rows, anything that isn't the content).
+    public internal(set) var isZenMode = false
+    /// Posted when an open node's bytes changed outside the app — another
+    /// editor saving, a branch switch, a sync client. Canvases showing that
+    /// node observe this and reconcile against the file (see `ExternalEdit`);
+    /// nobody else has to care.
+    public internal(set) var externalEdit: ExternalEdit.Notice?
+    /// The node the sidebar is inline-renaming right now, nil when none. Set via
+    /// `beginRename(_:)` — the host validates support first — and cleared by the
+    /// shell when the edit commits or cancels. Plugins trigger the rename UI;
+    /// they never draw it.
+    public internal(set) var pendingRename: NodeID?
+    /// The keyboard mode the app is in — see `HostContext.keyMode`.
+    public internal(set) var keyMode: KeyMode = .normal
+
+    public init() {}
+}
+
+@MainActor
+@Observable
+public final class HostContext {
+    /// The two halves this stands in front of. Reading through the façade is
+    /// the same as reading them directly — SwiftUI tracks the property that was
+    /// actually touched — so a plugin never has to know which half it wanted.
+    public let graph: GraphState
+    public let shell: ShellState
+
+    public var roots: [NodeID] { graph.roots }
+    public var focusedNode: NodeID? { shell.focusedNode }
+    public var selection: [NodeID] { shell.selection }
+    public var activeFragment: NodeFragment? { shell.activeFragment }
+    public var isZenMode: Bool { shell.isZenMode }
+    public var externalEdit: ExternalEdit.Notice? { shell.externalEdit }
+    public var pendingRename: NodeID? { shell.pendingRename }
+
     /// Set by the host when it constructs the store. Weak to avoid a retain cycle.
     public weak var backend: GraphBackend?
 
-    public init() {}
+    public init(graph: GraphState = GraphState(), shell: ShellState = ShellState()) {
+        self.graph = graph
+        self.shell = shell
+    }
 
-    /// A phony-node jump request — see `activeFragment`.
+    /// A phony-node jump request — see `shell.activeFragment`.
     public struct NodeFragment: Equatable, Sendable {
         public let target: NodeID
         public let fragment: String
@@ -80,16 +123,16 @@ public final class HostContext {
 
     // MARK: Reads (safe to call from a view body)
 
-    public func node(_ id: NodeID) -> Node? { nodes[id] }
+    public func node(_ id: NodeID) -> Node? { graph.nodes[id] }
 
     /// Cached children, requesting a load if we've never fetched them — or a
     /// refetch if the cache is stale. Stale data keeps being served meanwhile,
     /// so an update never blanks what's on screen.
     public func children(of id: NodeID) -> [NodeID] {
-        if childrenByParent[id] == nil || staleChildren.contains(id) {
+        if graph.childrenByParent[id] == nil || graph.staleChildren.contains(id) {
             backend?.requestChildren(of: id)
         }
-        return childrenByParent[id] ?? []
+        return graph.childrenByParent[id] ?? []
     }
 
     /// The keyboard mode the app is in.
@@ -99,10 +142,10 @@ public final class HostContext {
     /// starts typing — the editor's `i` or `o`, a visual `c` — says so by
     /// setting this, because there is one mode and it is not the surface's to
     /// keep a copy of.
-    public private(set) var keyMode: KeyMode = .normal
+    public var keyMode: KeyMode { shell.keyMode }
 
     /// Host-only: the modal layer reporting where it got to.
-    @_spi(Host) public func _setKeyMode(_ mode: KeyMode) { keyMode = mode }
+    @_spi(Host) public func _setKeyMode(_ mode: KeyMode) { shell.keyMode = mode }
 
     /// Ask the app to change mode.
     public func setKeyMode(_ mode: KeyMode) { backend?.setKeyMode(mode) }
@@ -140,12 +183,12 @@ public final class HostContext {
 
     /// Cached forward links, requesting a load if we've never fetched them.
     public func related(of id: NodeID) -> [Related] {
-        if relatedByNode[id] == nil { backend?.requestRelated(of: id) }
-        return relatedByNode[id] ?? []
+        if graph.relatedByNode[id] == nil { backend?.requestRelated(of: id) }
+        return graph.relatedByNode[id] ?? []
     }
 
     /// Whether the provider reported more children beyond what's cached.
-    public func hasMoreChildren(_ id: NodeID) -> Bool { childCursors[id] != nil }
+    public func hasMoreChildren(_ id: NodeID) -> Bool { graph.childCursors[id] != nil }
 
     /// How to reach a node's children: places to expand into, or contents to
     /// go into.
@@ -156,8 +199,8 @@ public final class HostContext {
     /// until a first page has arrived, which is exactly when a node that needs
     /// the answer sooner should state it.
     public func childStyle(of id: NodeID) -> ChildStyle {
-        if let stated = nodes[id]?.childStyle { return stated }
-        return paginatedNodes.contains(id) ? .contents : .places
+        if let stated = graph.nodes[id]?.childStyle { return stated }
+        return graph.paginatedNodes.contains(id) ? .contents : .places
     }
 
     /// Whether the tree should offer to open this node in place.
@@ -187,9 +230,9 @@ public final class HostContext {
 
     /// Peek at the caches without triggering a load. For the host/backend, which
     /// needs to ask "already fetched?" without kicking off another request.
-    public func cachedChildren(of id: NodeID) -> [NodeID]? { childrenByParent[id] }
-    public func cachedRelated(of id: NodeID) -> [Related]? { relatedByNode[id] }
-    public func cachedChildCursor(of id: NodeID) -> Cursor? { childCursors[id] }
+    public func cachedChildren(of id: NodeID) -> [NodeID]? { graph.childrenByParent[id] }
+    public func cachedRelated(of id: NodeID) -> [Related]? { graph.relatedByNode[id] }
+    public func cachedChildCursor(of id: NodeID) -> Cursor? { graph.childCursors[id] }
 
     // MARK: Commands (routed to the host)
 
@@ -240,55 +283,55 @@ public final class HostContext {
 
     // MARK: Backend-facing mutation (host only)
 
-    @_spi(Host) public func _ingest(_ node: Node) { nodes[node.id] = node }
+    @_spi(Host) public func _ingest(_ node: Node) { graph.nodes[node.id] = node }
     @_spi(Host) public func _setChildren(_ ids: [NodeID], of parent: NodeID) {
-        childrenByParent[parent] = ids
-        staleChildren.remove(parent)
+        graph.childrenByParent[parent] = ids
+        graph.staleChildren.remove(parent)
     }
-    @_spi(Host) public func _setRelated(_ r: [Related], of id: NodeID) { relatedByNode[id] = r }
-    @_spi(Host) public func _setRoots(_ ids: [NodeID]) { roots = ids }
-    @_spi(Host) public func _setFocus(_ id: NodeID?) { focusedNode = id }
-    @_spi(Host) public func _setSelection(_ ids: [NodeID]) { selection = ids }
-    @_spi(Host) public func _postFragment(_ fragment: NodeFragment?) { activeFragment = fragment }
-    @_spi(Host) public func _setZenMode(_ zen: Bool) { isZenMode = zen }
-    @_spi(Host) public func _setPendingRename(_ id: NodeID?) { pendingRename = id }
-    @_spi(Host) public func _postExternalEdit(_ notice: ExternalEdit.Notice?) { externalEdit = notice }
+    @_spi(Host) public func _setRelated(_ r: [Related], of id: NodeID) { graph.relatedByNode[id] = r }
+    @_spi(Host) public func _setRoots(_ ids: [NodeID]) { graph.roots = ids }
+    @_spi(Host) public func _setFocus(_ id: NodeID?) { shell.focusedNode = id }
+    @_spi(Host) public func _setSelection(_ ids: [NodeID]) { shell.selection = ids }
+    @_spi(Host) public func _postFragment(_ fragment: NodeFragment?) { shell.activeFragment = fragment }
+    @_spi(Host) public func _setZenMode(_ zen: Bool) { shell.isZenMode = zen }
+    @_spi(Host) public func _setPendingRename(_ id: NodeID?) { shell.pendingRename = id }
+    @_spi(Host) public func _postExternalEdit(_ notice: ExternalEdit.Notice?) { shell.externalEdit = notice }
 
     /// Rewrite every cached reference to `old` as `new` after a rename. Note this is
     /// shallow: for a directory rename, descendant URIs also change, so the caller
     /// should also invalidate the renamed node's children (they refetch under the new
     /// path). Files (the common case) have no descendants and remap exactly.
     @_spi(Host) public func _remap(from old: NodeID, to new: NodeID) {
-        if let node = nodes.removeValue(forKey: old) { nodes[new] = node }
-        if let kids = childrenByParent.removeValue(forKey: old) { childrenByParent[new] = kids }
-        if staleChildren.remove(old) != nil { staleChildren.insert(new) }
-        if let cursor = childCursors.removeValue(forKey: old) { childCursors[new] = cursor }
-        if paginatedNodes.remove(old) != nil { paginatedNodes.insert(new) }
-        for (parent, kids) in childrenByParent where kids.contains(old) {
-            childrenByParent[parent] = kids.map { $0 == old ? new : $0 }
+        if let node = graph.nodes.removeValue(forKey: old) { graph.nodes[new] = node }
+        if let kids = graph.childrenByParent.removeValue(forKey: old) { graph.childrenByParent[new] = kids }
+        if graph.staleChildren.remove(old) != nil { graph.staleChildren.insert(new) }
+        if let cursor = graph.childCursors.removeValue(forKey: old) { graph.childCursors[new] = cursor }
+        if graph.paginatedNodes.remove(old) != nil { graph.paginatedNodes.insert(new) }
+        for (parent, kids) in graph.childrenByParent where kids.contains(old) {
+            graph.childrenByParent[parent] = kids.map { $0 == old ? new : $0 }
         }
-        if let related = relatedByNode.removeValue(forKey: old) { relatedByNode[new] = related }
-        roots = roots.map { $0 == old ? new : $0 }
-        if focusedNode == old { focusedNode = new }
-        selection = selection.map { $0 == old ? new : $0 }
-        if pendingRename == old { pendingRename = new }
+        if let related = graph.relatedByNode.removeValue(forKey: old) { graph.relatedByNode[new] = related }
+        graph.roots = graph.roots.map { $0 == old ? new : $0 }
+        if shell.focusedNode == old { shell.focusedNode = new }
+        shell.selection = shell.selection.map { $0 == old ? new : $0 }
+        if shell.pendingRename == old { shell.pendingRename = new }
     }
 
     /// Drop a node that no longer exists from every cache and from open state.
     @_spi(Host) public func _remove(_ id: NodeID) {
-        nodes[id] = nil
-        childrenByParent[id] = nil
-        relatedByNode[id] = nil
-        childCursors[id] = nil
-        paginatedNodes.remove(id)
-        staleChildren.remove(id)
-        for (parent, kids) in childrenByParent where kids.contains(id) {
-            childrenByParent[parent] = kids.filter { $0 != id }
+        graph.nodes[id] = nil
+        graph.childrenByParent[id] = nil
+        graph.relatedByNode[id] = nil
+        graph.childCursors[id] = nil
+        graph.paginatedNodes.remove(id)
+        graph.staleChildren.remove(id)
+        for (parent, kids) in graph.childrenByParent where kids.contains(id) {
+            graph.childrenByParent[parent] = kids.filter { $0 != id }
         }
-        roots = roots.filter { $0 != id }
-        if focusedNode == id { focusedNode = nil }
-        selection = selection.filter { $0 != id }
-        if pendingRename == id { pendingRename = nil }
+        graph.roots = graph.roots.filter { $0 != id }
+        if shell.focusedNode == id { shell.focusedNode = nil }
+        shell.selection = shell.selection.filter { $0 != id }
+        if shell.pendingRename == id { shell.pendingRename = nil }
     }
 
     /// Mark a node's children outdated so the next access refetches. The stale
@@ -297,18 +340,18 @@ public final class HostContext {
     /// refetch restarts from the first page. (A never-fetched parent has
     /// nothing to keep; it simply fetches on next access.)
     @_spi(Host) public func _invalidateChildren(of id: NodeID) {
-        if childrenByParent[id] != nil { staleChildren.insert(id) }
-        childCursors[id] = nil
+        if graph.childrenByParent[id] != nil { graph.staleChildren.insert(id) }
+        graph.childCursors[id] = nil
     }
 
     /// Whether a cached listing is awaiting its refetch (backend-facing).
-    @_spi(Host) public func _isChildrenStale(_ id: NodeID) -> Bool { staleChildren.contains(id) }
+    @_spi(Host) public func _isChildrenStale(_ id: NodeID) -> Bool { graph.staleChildren.contains(id) }
 
     @_spi(Host) public func _setChildCursor(_ cursor: Cursor?, of id: NodeID) {
-        childCursors[id] = cursor
+        graph.childCursors[id] = cursor
         // Only ever set. A page that reports no successor is the end of the
         // listing, not evidence that it never paged.
-        if cursor != nil { paginatedNodes.insert(id) }
+        if cursor != nil { graph.paginatedNodes.insert(id) }
     }
 }
 
