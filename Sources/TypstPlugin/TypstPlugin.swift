@@ -120,7 +120,7 @@ final class TypstPlugin: NSObject, Plugin {
             title: "Typst: Prose",
             systemImage: "square.and.pencil",
             appliesTo: .custom { Self.typFileURL(in: $0) != nil },
-            shortcut: KeyboardShortcut("1", modifiers: [.command, .option]),
+            shortcut: KeyChord("1", option: true, command: true),
             scope: .document,
             run: { ctx in
                 TypstUIState.shared.setSourceStyle(.prose, for: Self.typFileURL(in: ctx))
@@ -132,7 +132,7 @@ final class TypstPlugin: NSObject, Plugin {
             title: "Typst: Typeset",
             systemImage: "doc.richtext",
             appliesTo: .custom { Self.typFileURL(in: $0) != nil },
-            shortcut: KeyboardShortcut("2", modifiers: [.command, .option]),
+            shortcut: KeyChord("2", option: true, command: true),
             scope: .document,
             run: { ctx in
                 guard let url = Self.typFileURL(in: ctx) else { return }
@@ -193,7 +193,7 @@ final class TypstPlugin: NSObject, Plugin {
             appliesTo: .custom { Self.typFileURL(in: $0) != nil },
             // Where Read mode's key went: it opens the document's pages,
             // which is what reading it was.
-            shortcut: KeyboardShortcut("3", modifiers: [.command, .option]),
+            shortcut: KeyChord("3", option: true, command: true),
             scope: .document,
             run: { ctx in
                 guard let url = Self.typFileURL(in: ctx) else { return }
@@ -206,7 +206,7 @@ final class TypstPlugin: NSObject, Plugin {
             title: "Refresh Agenda",
             systemImage: "arrow.clockwise",
             appliesTo: .type(TypeID("typst.agenda")),
-            shortcut: KeyboardShortcut("r", modifiers: .command),
+            shortcut: KeyChord("r", command: true),
             scope: .workspace,
             run: { ctx in
                 TypstUIState.shared.agendaRefresh += 1

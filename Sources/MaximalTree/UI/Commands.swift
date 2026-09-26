@@ -75,7 +75,7 @@ struct ActionItem: View {
         if let action = model.action(id) {
             let button = Button(titled ?? action.title) { model.run(action) }
                 .disabled(!model.canRun(action))
-            if let shortcut = action.shortcut {
+            if let shortcut = action.shortcut?.keyboardShortcut {
                 button.keyboardShortcut(shortcut)
             } else {
                 button
@@ -137,7 +137,7 @@ private struct ActionMenuItems: View {
                         // Actions carrying a key equivalent register it
                         // window-wide from here — the menu bar is what makes
                         // shortcuts global.
-                        if let shortcut = action.shortcut {
+                        if let shortcut = action.shortcut?.keyboardShortcut {
                             Button(action.title) { model.run(action) }
                                 .keyboardShortcut(shortcut)
                         } else {

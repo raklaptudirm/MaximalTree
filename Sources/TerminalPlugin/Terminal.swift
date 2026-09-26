@@ -115,7 +115,7 @@ final class TerminalPlugin: NSObject, Plugin {
             id: "terminal.new",
             title: "New Terminal",
             systemImage: "apple.terminal",
-            shortcut: KeyboardShortcut("t", modifiers: [.command, .control]),
+            shortcut: KeyChord("t", control: true, command: true),
             scope: .workspace,
             run: { ctx in
                 TerminalPlugin.spawn(from: ctx)

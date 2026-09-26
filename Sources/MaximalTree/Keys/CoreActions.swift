@@ -221,7 +221,7 @@ extension AppModel {
         /// Registers one, weakly: the registry outlives no model, but nothing
         /// here should be what keeps the model alive either.
         func act(_ id: String, _ title: String, image: String? = nil,
-                 shortcut: KeyboardShortcut? = nil,
+                 shortcut: KeyChord? = nil,
                  when predicate: ActionPredicate = .always,
                  enabled: (@MainActor (AppModel) -> Bool)? = nil,
                  surfaces: ActionSurfaces = [.palette],
@@ -266,7 +266,7 @@ extension AppModel {
                 let label = ctx.host.node(target)?.label ?? target.uri
                 return ctx.canApply(.rename(target, to: label))
             },
-            shortcut: KeyboardShortcut("r", modifiers: [.command, .shift]),
+            shortcut: KeyChord("r", command: true, shift: true),
             run: { ctx in
                 guard let target = ctx.targets.first else { return }
                 ctx.beginRename(target)
@@ -329,13 +329,13 @@ extension AppModel {
         // also the only one available: an Undo that appears to work on a
         // deleted file and doesn't would be worse than no Undo at all.
         act("edit.undo", "Undo", image: "arrow.uturn.backward",
-            shortcut: KeyboardShortcut("z", modifiers: .command),
+            shortcut: KeyChord("z", command: true),
             enabled: { $0.workspaceStore.canUndo },
             surfaces: [.palette, .menuBar]) { model, _ in
             model.undo()
         }
         act("edit.redo", "Redo", image: "arrow.uturn.forward",
-            shortcut: KeyboardShortcut("z", modifiers: [.command, .shift]),
+            shortcut: KeyChord("z", command: true, shift: true),
             enabled: { $0.workspaceStore.canRedo },
             surfaces: [.palette, .menuBar]) { model, _ in
             model.redo()
@@ -344,22 +344,22 @@ extension AppModel {
         // MARK: The finder
 
         act("finder.all", "Find Anything…", image: "magnifyingglass",
-            shortcut: KeyboardShortcut("p", modifiers: [.command, .shift])) { model, _ in
+            shortcut: KeyChord("p", command: true, shift: true)) { model, _ in
             model.finderVisible ? model.closeFinder() : model.openFinder()
         }
         act("finder.actions", "Run Action…",
-            shortcut: KeyboardShortcut("p", modifiers: [.command, .option])) { model, _ in
+            shortcut: KeyChord("p", option: true, command: true)) { model, _ in
             model.openFinder(scope: "actions")
         }
         // Everything that can be done to what you are pointing at, as a list
         // you can search — the context menu, reachable from the keyboard.
         act("finder.nodeActions", "Act on Selection…", image: "hand.tap",
-            shortcut: KeyboardShortcut(".", modifiers: .command)) { model, _ in
+            shortcut: KeyChord(".", command: true)) { model, _ in
             model.openFinder(scope: "node-actions")
         }
         act("finder.nodes", "Find in Sidebar…") { model, _ in model.openFinder(scope: "nodes") }
         act("finder.files", "Find File…",
-            shortcut: KeyboardShortcut("o", modifiers: [.command, .shift])) { model, _ in
+            shortcut: KeyChord("o", command: true, shift: true)) { model, _ in
             model.openFinder(scope: "files")
         }
         act("finder.buffers", "Find Tab…") { model, _ in model.openFinder(scope: "buffers") }
@@ -408,12 +408,12 @@ extension AppModel {
         // MARK: History and tabs
 
         act("nav.back", "Back", image: "chevron.left",
-            shortcut: KeyboardShortcut("[", modifiers: .command),
+            shortcut: KeyChord("[", command: true),
             enabled: { $0.navigation.canGoBack }) { model, ctx in
             for _ in 0..<ctx.count { model.goBack() }
         }
         act("nav.forward", "Forward", image: "chevron.right",
-            shortcut: KeyboardShortcut("]", modifiers: .command),
+            shortcut: KeyChord("]", command: true),
             enabled: { $0.navigation.canGoForward }) { model, ctx in
             for _ in 0..<ctx.count { model.goForward() }
         }
@@ -424,11 +424,11 @@ extension AppModel {
             model.selectTab(max(model.navigation.tabs.count - 1, 0))
         }
         act("tab.new", "New Tab", image: "plus",
-            shortcut: KeyboardShortcut("t", modifiers: .command)) { model, _ in
+            shortcut: KeyChord("t", command: true)) { model, _ in
             model.newTab()
         }
         act("tab.close", "Close Tab", image: "xmark",
-            shortcut: KeyboardShortcut("w", modifiers: .command),
+            shortcut: KeyChord("w", command: true),
             enabled: { $0.navigation.tabs.count > 1 }) { model, _ in
             model.closeActiveTab()
         }
@@ -436,15 +436,15 @@ extension AppModel {
         // MARK: Panes and surfaces
 
         act("pane.splitRight", "Split Right", image: "rectangle.split.2x1",
-            shortcut: KeyboardShortcut("d", modifiers: .command)) { model, _ in
+            shortcut: KeyChord("d", command: true)) { model, _ in
             model.splitPaneRight()
         }
         act("pane.splitDown", "Split Down", image: "rectangle.split.1x2",
-            shortcut: KeyboardShortcut("d", modifiers: [.command, .shift])) { model, _ in
+            shortcut: KeyChord("d", command: true, shift: true)) { model, _ in
             model.splitPaneDown()
         }
         act("pane.close", "Close Pane", image: "xmark.rectangle",
-            shortcut: KeyboardShortcut("w", modifiers: [.command, .control]),
+            shortcut: KeyChord("w", control: true, command: true),
             enabled: { $0.navigation.canClosePane }) { model, _ in
             model.closeActivePane()
         }
@@ -511,7 +511,7 @@ extension AppModel {
         act("toggle.contents", "Toggle Contents",
             image: "list.bullet") { model, _ in model.contents.isHidden.toggle() }
         act("toggle.zen", "Toggle Zen Mode", image: "arrow.up.left.and.arrow.down.right",
-            shortcut: KeyboardShortcut("z", modifiers: [.command, .control])) { model, _ in
+            shortcut: KeyChord("z", control: true, command: true)) { model, _ in
             model.toggleZenMode()
         }
 

@@ -269,7 +269,7 @@ final class WebPlugin: NSObject, Plugin {
             id: "web.newPage",
             title: "New Web Page",
             systemImage: "globe",
-            shortcut: KeyboardShortcut("n", modifiers: [.command, .shift]),
+            shortcut: KeyChord("n", command: true, shift: true),
             scope: .workspace,
             run: { ctx in
                 ctx.mount(WebProvider.homepage)
@@ -282,7 +282,7 @@ final class WebPlugin: NSObject, Plugin {
             title: "Open Location…",
             systemImage: "link",
             appliesTo: .type(TypeID("web.page")),
-            shortcut: KeyboardShortcut("l", modifiers: .command),
+            shortcut: KeyChord("l", command: true),
             scope: .workspace,
             run: { ctx in
                 guard let id = ctx.selection.first ?? ctx.focused else { return }
@@ -296,7 +296,7 @@ final class WebPlugin: NSObject, Plugin {
             title: "Bookmark This Page",
             systemImage: "star",
             appliesTo: .type(TypeID("web.page")),
-            shortcut: KeyboardShortcut("d", modifiers: .command),
+            shortcut: KeyChord("d", command: true),
             scope: .document,
             run: { ctx in
                 guard let session = Self.session(in: ctx),
@@ -358,7 +358,7 @@ final class WebPlugin: NSObject, Plugin {
             title: "Reload Page",
             systemImage: "arrow.clockwise",
             appliesTo: .type(TypeID("web.page")),
-            shortcut: KeyboardShortcut("r", modifiers: .command),
+            shortcut: KeyChord("r", command: true),
             scope: .document,
             run: { ctx in Self.session(in: ctx)?.reload() }
         ))

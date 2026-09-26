@@ -1,4 +1,5 @@
 import Foundation
+import MaximalTreeKit
 
 /// What a key sequence leads to.
 enum KeyBinding: Equatable {

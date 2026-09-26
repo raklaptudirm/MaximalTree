@@ -570,3 +570,69 @@ import SwiftUI
         return editor
     }
 }
+
+/// An action's key equivalent is a chord, like every other key, and the menu
+/// bar is where one becomes AppKit's.
+@MainActor
+@Suite struct MenuShortcutTests {
+    @Test func aChordBecomesTheMenusShortcut() {
+        #expect(KeyChord("z", command: true, shift: true).keyboardShortcut
+                == KeyboardShortcut("z", modifiers: [.command, .shift]))
+        #expect(KeyChord("[", command: true).keyboardShortcut
+                == KeyboardShortcut("[", modifiers: .command))
+        #expect(KeyChord("1", option: true, command: true).keyboardShortcut
+                == KeyboardShortcut("1", modifiers: [.option, .command]))
+        #expect(KeyChord("t", control: true, command: true).keyboardShortcut
+                == KeyboardShortcut("t", modifiers: [.control, .command]))
+        #expect(KeyChord("RET", command: true).keyboardShortcut
+                == KeyboardShortcut(.return, modifiers: .command))
+        #expect(KeyChord("up", option: true).keyboardShortcut
+                == KeyboardShortcut(.upArrow, modifiers: .option))
+    }
+
+    /// A chord a menu can't hold is refused rather than guessed at.
+    @Test func aChordNoMenuCanHoldIsRefused() {
+        #expect(KeyChord("BOGUS", command: true).keyboardShortcut == nil)
+    }
+
+    private func actions() throws -> [Action] {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("shortcuts-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let model = AppModel(host: HostContext(),
+                             workspaceFile: dir.appendingPathComponent("workspaces.json"))
+        model.start()
+        let registry = model.pluginHost.registry
+        model.registerCoreActions(with: registry)
+        FileSystemPlugin().register(with: registry)
+        GitPlugin().register(with: registry)
+        TerminalPlugin().register(with: registry)
+        WebPlugin().register(with: registry)
+        ICloudPlugin().register(with: registry)
+        return registry.actions
+    }
+
+    /// No action's key equivalent falls off the menu bar on the way — which
+    /// is where a chord the conversion couldn't read would silently vanish.
+    @Test func everyKeyEquivalentReachesTheMenuBar() throws {
+        let withShortcuts = try actions().filter { $0.shortcut != nil }
+        #expect(!withShortcuts.isEmpty)
+        for action in withShortcuts {
+            #expect(action.shortcut?.keyboardShortcut != nil, "\(action.id) lost its menu shortcut")
+        }
+    }
+
+    /// The ones everyone reaches for are the keys they always were.
+    @Test func theFamiliarShortcutsAreUnchanged() throws {
+        let byID = Dictionary(try actions().map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let expected: [String: KeyboardShortcut] = [
+            "edit.undo": KeyboardShortcut("z", modifiers: .command),
+            "edit.redo": KeyboardShortcut("z", modifiers: [.command, .shift]),
+            "finder.nodeActions": KeyboardShortcut(".", modifiers: .command),
+            "finder.all": KeyboardShortcut("p", modifiers: [.command, .shift]),
+        ]
+        for (id, shortcut) in expected {
+            #expect(byID[id]?.shortcut?.keyboardShortcut == shortcut, "\(id) changed its key")
+        }
+    }
+}

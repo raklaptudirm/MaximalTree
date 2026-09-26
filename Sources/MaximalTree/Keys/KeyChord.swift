@@ -1,72 +1,11 @@
 import AppKit
+import SwiftUI
+import MaximalTreeKit
 
-/// One press: a key and the modifiers held with it.
-///
-/// Written the way Emacs writes them — `SPC`, `g`, `C-w`, `M-x`, `S-TAB` — so
-/// a keymap reads like a keymap and can be typed into a config one day rather
-/// than assembled out of AppKit enums.
-struct KeyChord: Hashable, Sendable, CustomStringConvertible {
-    /// Lowercased for letters, or a name like `SPC`, `RET`, `TAB`, `ESC`.
-    let key: String
-    let control: Bool
-    let option: Bool
-    let command: Bool
-    /// Only meaningful for keys that have no shifted character of their own:
-    /// `S-TAB` is a chord, `J` is just `J`.
-    let shift: Bool
-
-    init(_ key: String, control: Bool = false, option: Bool = false,
-         command: Bool = false, shift: Bool = false) {
-        self.key = key
-        self.control = control
-        self.option = option
-        self.command = command
-        self.shift = shift
-    }
-
-    /// Parse `C-x`, `M-RET`, `SPC`, `g`. Returns nil for anything malformed,
-    /// so a bad keymap entry is a visible mistake rather than a dead key.
-    init?(parsing text: String) {
-        var rest = text
-        var control = false, option = false, command = false, shift = false
-        while rest.count > 2, rest.dropFirst().first == "-" {
-            switch rest.first {
-            case "C": control = true
-            case "M": option = true          // Meta is Option on this keyboard
-            case "s": command = true         // super
-            case "S": shift = true
-            default: return nil
-            }
-            rest = String(rest.dropFirst(2))
-        }
-        guard !rest.isEmpty else { return nil }
-        // A bare capital is a shifted letter: `G` and `S-g` are the same
-        // press, and folding them together is what keeps `G` from clobbering
-        // the `g` prefix it would otherwise share a node with.
-        if rest.count == 1, let letter = rest.first, letter.isUppercase, letter.isLetter {
-            self.init(rest.lowercased(), control: control, option: option,
-                      command: command, shift: true)
-            return
-        }
-        let spelling = rest.count == 1 ? rest.lowercased()
-                     : Self.namedKeys[rest.uppercased()] ?? rest.uppercased()
-        self.init(spelling,
-                  control: control, option: option, command: command, shift: shift)
-    }
-
-    /// The keys with a name instead of a character, in the spelling a key
-    /// press produces.
-    ///
-    /// Written out because the two halves have to agree: a keymap says `up`
-    /// and a press says `up`, and they used not to — parsing uppercased any
-    /// name it did not recognise as a letter, so the arrows resolved to `UP`
-    /// and no binding for one could ever fire.
-    static let namedKeys: [String: String] = [
-        "SPC": "SPC", "RET": "RET", "TAB": "TAB", "ESC": "ESC", "DEL": "DEL",
-        "LEFT": "left", "RIGHT": "right", "UP": "up", "DOWN": "down",
-        "HOME": "home", "END": "end", "PAGEUP": "pageup", "PAGEDOWN": "pagedown",
-    ]
-
+// A chord from an actual key press, and a chord as the menu bar holds one. The
+// chord itself is the kit's — plain data any shell can read — and only these
+// two translations belong to AppKit and SwiftUI.
+extension KeyChord {
     /// What an actual key press amounts to.
     init?(event: NSEvent) {
         guard let characters = event.charactersIgnoringModifiers, !characters.isEmpty
@@ -104,16 +43,35 @@ struct KeyChord: Hashable, Sendable, CustomStringConvertible {
                   shift: (named != nil || isLetter) && flags.contains(.shift))
     }
 
-    var description: String {
-        var text = ""
-        if control { text += "C-" }
-        if option { text += "M-" }
-        if command { text += "s-" }
-        // A shifted letter reads as a capital, which is how a keymap writes it.
-        if shift, key.count == 1, key.first?.isLetter == true {
-            return text + key.uppercased()
+    /// The menu bar's form of this chord, or nil for one a menu can't hold.
+    ///
+    /// Letters stay lowercase with shift as a modifier, which is how a menu
+    /// spells ⇧⌘Z; the named keys map to their equivalents one for one.
+    var keyboardShortcut: KeyboardShortcut? {
+        let equivalent: KeyEquivalent
+        switch key {
+        case "SPC": equivalent = .space
+        case "RET": equivalent = .return
+        case "TAB": equivalent = .tab
+        case "ESC": equivalent = .escape
+        case "DEL": equivalent = .delete
+        case "left": equivalent = .leftArrow
+        case "right": equivalent = .rightArrow
+        case "up": equivalent = .upArrow
+        case "down": equivalent = .downArrow
+        case "home": equivalent = .home
+        case "end": equivalent = .end
+        case "pageup": equivalent = .pageUp
+        case "pagedown": equivalent = .pageDown
+        default:
+            guard key.count == 1, let character = key.first else { return nil }
+            equivalent = KeyEquivalent(character)
         }
-        if shift { text += "S-" }
-        return text + key
+        var modifiers: EventModifiers = []
+        if control { modifiers.insert(.control) }
+        if option { modifiers.insert(.option) }
+        if command { modifiers.insert(.command) }
+        if shift { modifiers.insert(.shift) }
+        return KeyboardShortcut(equivalent, modifiers: modifiers)
     }
 }

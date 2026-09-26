@@ -160,7 +160,7 @@ public struct Action: Identifiable {
     public let appliesTo: ActionPredicate
     /// Menu-bar key equivalent. Only the menu bar renders it (that's what makes
     /// it window-wide); other surfaces list the action without one.
-    public let shortcut: KeyboardShortcut?
+    public let shortcut: KeyChord?
     /// What this acts on relative to the current node — orders every surface.
     public let scope: ActionScope
     /// Where it's offered. Defaults to what the scope implies.
@@ -183,7 +183,7 @@ public struct Action: Identifiable {
         title: String,
         systemImage: String? = nil,
         appliesTo: ActionPredicate = .always,
-        shortcut: KeyboardShortcut? = nil,
+        shortcut: KeyChord? = nil,
         scope: ActionScope = .node,
         surfaces: ActionSurfaces? = nil,
         run: @escaping @MainActor (ActionContext) throws -> Void
@@ -198,7 +198,7 @@ public struct Action: Identifiable {
         title: String,
         systemImage: String? = nil,
         appliesTo: ActionPredicate = .always,
-        shortcut: KeyboardShortcut? = nil,
+        shortcut: KeyChord? = nil,
         scope: ActionScope = .node,
         surfaces: ActionSurfaces? = nil,
         run: @escaping @MainActor (ActionContext) async throws -> Void
@@ -216,7 +216,7 @@ public struct Action: Identifiable {
         title: String,
         systemImage: String? = nil,
         appliesTo: ActionPredicate = .always,
-        shortcut: KeyboardShortcut? = nil,
+        shortcut: KeyChord? = nil,
         scope: ActionScope = .node,
         surfaces: ActionSurfaces? = nil
     ) {
@@ -226,7 +226,7 @@ public struct Action: Identifiable {
     }
 
     private init(id: String, title: String, systemImage: String?,
-                 appliesTo: ActionPredicate, shortcut: KeyboardShortcut?,
+                 appliesTo: ActionPredicate, shortcut: KeyChord?,
                  scope: ActionScope, surfaces: ActionSurfaces?, command: AnyCommand) {
         self.id = id
         self.title = title
