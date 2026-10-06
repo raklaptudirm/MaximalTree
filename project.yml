@@ -51,10 +51,17 @@ targets:
   # compiled against SDK vN keeps loading against a newer host (the ABI contract
   # that makes in-process bundle plugins viable at step 2). Future .bundle plugin
   # targets link this framework "Do Not Embed"; the app embeds it once.
+  # One framework on macOS, built from two folders: Sources/MaximalTreeCore (no
+  # UI — also built alone by Package.swift for `swift build`/`swift test` and,
+  # later, Linux) and Sources/MaximalTreeKit (the SwiftUI half). One module, so
+  # plugins and the app see exactly what they always have.
+  #
+  # Not two frameworks: splitting the core into its own framework made the app
+  # idle at 100% CPU in a window-toolbar relayout loop that was never traced.
   MaximalTreeKit:
     type: framework
     platform: macOS
-    sources: [Sources/MaximalTreeKit]
+    sources: [Sources/MaximalTreeCore, Sources/MaximalTreeKit]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.maximaltree.kit
@@ -417,6 +424,8 @@ targets:
       # bundle under XCTest, so its principal class cannot collide.
       - path: Sources/YouTubePlugin/YouTube.swift
       - Sources/ICloudPlugin
+      # The core's own tests, so the app's suite runs them too.
+      - Tests/MaximalTreeCoreTests
     dependencies:
       - target: MaximalTree          # hosts the tests; wires TEST_HOST/BUNDLE_LOADER
       - target: MaximalEditorKit

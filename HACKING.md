@@ -70,15 +70,18 @@ Sources/
     ViewportAnchor.swift        #   pin the top visible line across a repaint
     EditorCompletion.swift      #   completion seam onto the engine's window
     EditorMath.swift            #   rendered-math seam (baseline-annotated images)
-  MaximalTreeKit/               # the plugin SDK (dynamic framework)
+  MaximalTreeCore/              # the SDK's core: no UI. Compiled into the one
+                                # MaximalTreeKit framework on macOS, and built
+                                # alone by Package.swift (`swift build`/`test`)
     Core.swift                  #   NodeID, TypeID (+ .file/.directory), Node +
                                 #   NodeAnchor (phony nodes), NodeIcon/Tint,
                                 #   Attributes, Related
     Provider.swift              #   NodeProvider + NodeBroker protocols
-    IconView.swift              #   NodeIconView + tint→Color (shared by host + plugins)
     Mutation.swift              #   GraphMutation, NodeChange, MutatingNodeProvider
     Command.swift               #   Command (typed argument + answer), NodeTargets,
                                 #   CommandValue (the data form), AnyCommand, errors
+    Actions.swift               #   Action (command + presentation), ActionContext,
+                                #   ChildContribution, CoreRegistry
     HostContext.swift           #   GraphState (the caches) + ShellState (selection,
                                 #   focus, mode) + the HostContext façade over both,
                                 #   and the GraphBackend seam
@@ -91,9 +94,11 @@ Sources/
     FeedMerge.swift             #   k-way merge over paged sources (aggregator feeds)
     ChangeStream.swift          #   ChangeStreamingProvider + FileTreeWatcher (FSEvents)
     ExternalEdit.swift          #   what a canvas is told when its bytes changed
-    Interface.swift             #   Action (command + presentation), ActionContext,
-                                #   SurfaceKey/SurfaceKeys, Canvas/Inspector/Child
-                                #   contributions, Plugin, Core/Shell/PluginRegistry
+  MaximalTreeKit/               # the SDK's SwiftUI half; with MaximalTreeCore, the
+                                # plugin SDK (one dynamic framework)
+    IconView.swift              #   NodeIconView + tint→Color (shared by host + plugins)
+    Interface.swift             #   SurfaceKey/SurfaceKeys, Canvas/Inspector
+                                #   contributions, ShellRegistry, PluginRegistry, Plugin
   MaximalTree/                  # the host app
     App.swift                   #   @main, AppModel wiring
     Host/                       #   Registry, GraphStore, HostBroker, NavigationModel,
@@ -153,7 +158,10 @@ Sources/
     ICloud.swift                #   show/mount actions, download + evict
 Vendor/typst-ffi/               # Rust staticlib: typst compiler/parser/renderers (C ABI)
 Vendor/highlight-js/            # highlight.min.js (BSD-3) — ~190 grammars, run in-process
-Tests/MaximalTreeTests/         # swift-testing suite (922 tests)
+Tests/MaximalTreeTests/         # swift-testing suite, run inside the app (956 tests)
+Tests/MaximalTreeCoreTests/     # the core's own tests — run by `swift test` *and* by the
+                                # app's suite; CoreBoundaryTests keeps UI out of the core
+Package.swift                   # builds Sources/MaximalTreeCore alone; not the app
 ```
 
 The generated `MaximalTree.xcodeproj` is **not** committed — regenerate it (below).
@@ -183,7 +191,15 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
   xcodebuild -project MaximalTree.xcodeproj -scheme MaximalTree \
   -destination 'platform=macOS' test
+
+# The core alone, with no UI and no Xcode project — seconds, not minutes
+DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test
 ```
+
+A test of core behaviour belongs in `Tests/MaximalTreeCoreTests` when it needs nothing
+but core types: both runners pick it up. Import with
+`#if canImport(MaximalTreeCore) … #else … MaximalTreeKit #endif`, since the core is its
+own module under `swift test` and part of `MaximalTreeKit` in the app.
 
 Or just open `MaximalTree.xcodeproj` in Xcode and ⌘R / ⌘U.
 
@@ -875,11 +891,16 @@ What that implies here:
 The extraction is planned in phases. **Making the SDK honest in place is done**: keys
 are plain data, `PluginRegistry` is now `CoreRegistry` (providers, children, actions,
 commands, finder sources) plus `ShellRegistry` (canvases, inspectors, surface keys),
-and `HostContext` is a façade over a graph half and a shell half. What remains is
-splitting the SDK into a `MaximalTreeCore` package plus the SwiftUI half, moving the
-host's model code out of the app target, splitting the plugins, and only then proving
-it off macOS with an iOS build, `swift test` on Linux, and a headless CLI host. Three constraints found
-while planning, worth knowing before starting:
+and `HostContext` is a façade over a graph half and a shell half. **The core also
+builds on its own**: `Sources/MaximalTreeCore` holds everything with no UI, and
+`Package.swift` builds and tests just that, while the Mac app keeps compiling it into
+the one `MaximalTreeKit` framework. The no-UI rule is enforced by `CoreBoundaryTests`
+rather than by a module boundary — a separate `MaximalTreeCore` framework was tried,
+and made the app idle at 100% CPU in a window-toolbar relayout loop that was never
+traced, so the Mac build stays one module. What remains is moving the host's model
+code out of the app target, splitting the plugins, and only then proving it off macOS
+with an iOS build, `swift test` on Linux, and a headless CLI host. Three constraints
+found while planning, worth knowing before starting:
 
 - the core has to stay a **dynamic** framework on Apple platforms (see Conventions);
 - `Vendor/typst-ffi` must be cross-compiled before anything typst runs on iOS, so the
