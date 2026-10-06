@@ -990,6 +990,43 @@ final class AppModel {
 
     func dismissCommandFailure() { commandFailure = nil }
 
+    /// Say something about the reader's data that no command failed to do.
+    func notice(_ title: String, _ message: String, from source: String) {
+        commandFailure = CommandFailure(title: title, command: source, message: message)
+    }
+
+    /// What the workspace library has to say before anything else happens: that
+    /// it couldn't be read and was kept aside, or that it can't be saved.
+    private func hearFromTheLibrary() {
+        let store = workspaceStore
+        if let unreadable = store.unreadable {
+            if let kept = unreadable.keptAt {
+                notice("Your Workspaces Were Set Aside",
+                       "MaximalTree couldn't read your workspaces, so it moved them, untouched, "
+                       + "to “\(kept.lastPathComponent)” in \(kept.deletingLastPathComponent().path) "
+                       + "and started a fresh one. A newer build may be able to read them: to put "
+                       + "them back, quit and rename that file to “workspaces.json”.",
+                       from: "workspace.load")
+            } else {
+                notice("Your Workspaces Couldn't Be Read",
+                       "MaximalTree couldn't read your workspaces or move them aside, so it is "
+                       + "leaving the file exactly as it is and won't save over it. Nothing you "
+                       + "change this session will be kept.",
+                       from: "workspace.load")
+            }
+        }
+        store.onSaveFailed = { [weak self] error in self?.reportSaveFailure(error) }
+        if let error = store.saveError { reportSaveFailure(error) }
+    }
+
+    private func reportSaveFailure(_ error: Error) {
+        notice("Your Workspaces Weren't Saved",
+               "MaximalTree couldn't save your workspaces: \(error.localizedDescription) "
+               + "It tries again with every change; until one succeeds, what you change won't "
+               + "be there next time.",
+               from: "workspace.save")
+    }
+
     /// Actions the host contributes itself — node manipulation that belongs to no
     /// plugin because it rides the generic mutation vocabulary. Rename is the
     /// model case: any provider that supports `.rename` (filesystem today,
@@ -1009,6 +1046,7 @@ final class AppModel {
 
     func start() {
         guard store == nil else { return }
+        hearFromTheLibrary()
         // Host-owned actions register first so they lead every action list.
         registerCoreActions(with: pluginHost.registry)
         registerCoreInspector(with: pluginHost.registry)

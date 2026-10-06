@@ -235,6 +235,25 @@ final class WorkspaceStore: PlacementHost {
         library.workspaces.first { $0.id == library.activeID } ?? library.workspaces[0]
     }
 
+    /// What happened to a library that was there but couldn't be read: where
+    /// it was moved to, untouched, and why. Nil when it read fine or wasn't
+    /// there. The owner says so to the reader — see `UserDataFile`.
+    let unreadable: (keptAt: URL?, reason: String)?
+
+    /// False when the library couldn't be read *and* couldn't be moved out of
+    /// the way. It is still at its own path, and nothing may be saved over it.
+    private let mayWrite: Bool
+
+    /// Called when a save didn't happen — a full disk, a folder that went
+    /// read-only — once per run of failures rather than on every change, so a
+    /// reader working through it hears about it once.
+    @ObservationIgnored var onSaveFailed: ((Error) -> Void)?
+
+    /// The last save that failed, until one succeeds. Kept rather than only
+    /// announced because the first save happens in `init`, before anyone can
+    /// have subscribed: whoever opens the store reads this to hear about it.
+    @ObservationIgnored private(set) var saveError: (any Error)?
+
     /// Called when the active workspace's placements change, however they
     /// changed, with every parent whose placed children are now different —
     /// so the owner can bring the mounted roots, the group rows and the
@@ -246,20 +265,34 @@ final class WorkspaceStore: PlacementHost {
         let url = fileURL ?? Self.defaultURL()
         self.fileURL = url
 
-        if let data = try? Data(contentsOf: url),
-           let lib = try? JSONDecoder().decode(WorkspaceLibrary.self, from: data),
-           !lib.workspaces.isEmpty {
+        // A library that is there but unreadable — a newer build's format, a
+        // branch with a different schema — used to fall through to a fresh one,
+        // which the `persist()` below then wrote straight over it. It is moved
+        // aside instead, and the fresh library is written where it was.
+        var unreadable: (keptAt: URL?, reason: String)?
+        switch UserDataFile.read(WorkspaceLibrary.self, from: url) {
+        case .read(let lib) where !lib.workspaces.isEmpty:
             self.library = lib
             self.wasFreshlyCreated = false
-        } else if let migrated = Self.migrateLegacy(besides: url) {
-            // Pre-workspaces builds stored a single root set in workspace.json.
-            self.library = WorkspaceLibrary(workspaces: [migrated], activeID: migrated.id)
-            self.wasFreshlyCreated = false
-        } else {
+        case .unreadable(let keptAt, let reason):
+            unreadable = (keptAt, reason)
             let main = Workspace(name: "Main")
             self.library = WorkspaceLibrary(workspaces: [main], activeID: main.id)
             self.wasFreshlyCreated = true
+        case .read, .missing:
+            if let migrated = Self.migrateLegacy(besides: url) {
+                // Pre-workspaces builds stored a single root set in workspace.json.
+                self.library = WorkspaceLibrary(workspaces: [migrated], activeID: migrated.id)
+                self.wasFreshlyCreated = false
+            } else {
+                let main = Workspace(name: "Main")
+                self.library = WorkspaceLibrary(workspaces: [main], activeID: main.id)
+                self.wasFreshlyCreated = true
+            }
         }
+        self.unreadable = unreadable
+        // Only an unreadable file that couldn't be moved stops saving.
+        self.mayWrite = unreadable.map { $0.keptAt != nil } ?? true
 
         // Heal a dangling activeID rather than trusting the file.
         if !library.workspaces.contains(where: { $0.id == library.activeID }) {
@@ -792,8 +825,14 @@ final class WorkspaceStore: PlacementHost {
         if !stored.workspaces.contains(where: { $0.id == stored.activeID }) {
             stored.activeID = stored.workspaces[0].id
         }
-        if let data = try? JSONEncoder().encode(stored) {
-            try? data.write(to: fileURL, options: .atomic)
+        guard mayWrite else { return }
+        do {
+            try UserDataFile.write(stored, to: fileURL)
+            saveError = nil
+        } catch {
+            let first = saveError == nil
+            saveError = error
+            if first { onSaveFailed?(error) }
         }
     }
 

@@ -1,4 +1,5 @@
 import Foundation
+import MaximalTreeKit
 
 // What the plugin keeps between runs: what a video was called, what it looked
 // like, and what you searched for. Nothing about you goes to YouTube — this is
@@ -67,7 +68,17 @@ final class YouTubeStore: @unchecked Sendable {
     private var searches: [String] = []
     /// What each feed is called. Here rather than in its URI, so renaming one
     /// is not a change of identity — see `YouTubeRef`.
+    ///
+    /// Kept in a file of its own, apart from everything else here. The rest is a
+    /// cache, safe to drop because all of it can be fetched again; a name the
+    /// reader chose can't be, so it lives under `UserDataFile`'s rule instead.
     private var feedNames: [String: String] = [:]
+    private let feedsURL: URL
+    /// False when the feeds file couldn't be read or moved aside.
+    private var feedsWritable = true
+    /// The last time the names didn't save, until they do.
+    private var lastFeedsSaveError: (any Error)?
+    var feedsSaveError: (any Error)? { lock.withLock { lastFeedsSaveError } }
     /// Thumbnails read (or written) this run, so drawing a row is not a disk
     /// read each time. `nil` records one we have no image for.
     private var icons: [String: Data?] = [:]
@@ -83,7 +94,20 @@ final class YouTubeStore: @unchecked Sendable {
         videos = Dictionary(uniqueKeysWithValues: (known?.videos ?? []).map { ($0.id, $0) })
         playlists = Dictionary(uniqueKeysWithValues: (known?.playlists ?? []).map { ($0.id, $0) })
         searches = known?.searches ?? []
-        feedNames = known?.feedNames ?? [:]
+        feedsURL = self.directory.appendingPathComponent("feeds.json")
+        switch UserDataFile.read([String: String].self, from: feedsURL) {
+        case .read(let names):
+            feedNames = names
+        case .missing:
+            // Builds before this kept the names in the cache file. Take them
+            // across once, and from then on they are only here.
+            feedNames = known?.feedNames ?? [:]
+            if !feedNames.isEmpty { writeFeeds() }
+        case .unreadable(let keptAt, let reason):
+            feedsWritable = keptAt != nil
+            NSLog("[YouTubePlugin] feed names unreadable (\(reason)); "
+                  + (keptAt.map { "kept at \($0.path)" } ?? "left in place, not saving over it"))
+        }
     }
 
     // MARK: What things are called
@@ -129,7 +153,7 @@ final class YouTubeStore: @unchecked Sendable {
             if name.isEmpty { feedNames[id.uuidString.lowercased()] = nil }
             else { feedNames[id.uuidString.lowercased()] = name }
         }
-        write()
+        writeFeeds()
     }
 
     // MARK: What you looked for
@@ -224,7 +248,8 @@ final class YouTubeStore: @unchecked Sendable {
         var videos: [VideoRecord]
         var playlists: [PlaylistRecord]
         var searches: [String]
-        /// Absent in a file written before feeds kept their names here.
+        /// Read from caches written before feed names had a file of their own,
+        /// to carry them across; never written any more.
         var feedNames: [String: String]?
     }
 
@@ -235,9 +260,23 @@ final class YouTubeStore: @unchecked Sendable {
     private func write() {
         let known = lock.withLock {
             Known(videos: Array(videos.values), playlists: Array(playlists.values),
-                  searches: searches, feedNames: feedNames)
+                  searches: searches, feedNames: nil)
         }
+        // A cache: a write that fails costs a refetch, so it isn't worth more
+        // than trying.
         guard let data = try? JSONEncoder().encode(known) else { return }
         try? data.write(to: directory.appendingPathComponent("known.json"), options: .atomic)
+    }
+
+    private func writeFeeds() {
+        guard feedsWritable else { return }
+        let names = lock.withLock { feedNames }
+        do {
+            try UserDataFile.write(names, to: feedsURL)
+            lock.withLock { lastFeedsSaveError = nil }
+        } catch {
+            lock.withLock { lastFeedsSaveError = error }
+            NSLog("[YouTubePlugin] feed names not saved: \(error.localizedDescription)")
+        }
     }
 }

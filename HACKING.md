@@ -85,6 +85,8 @@ Sources/
     KeyChord.swift              #   one press, in Emacs notation — a keymap's
                                 #   vocabulary and an action's key equivalent alike
     KeyMode.swift               #   the app's one mode (normal/insert/visual)
+    UserDataFile.swift          #   reading and writing the reader's own data:
+                                #   unreadable files are set aside, never replaced
     Finder.swift                #   FinderSource/FinderItem (a searchable list)
     FeedMerge.swift             #   k-way merge over paged sources (aggregator feeds)
     ChangeStream.swift          #   ChangeStreamingProvider + FileTreeWatcher (FSEvents)
@@ -912,6 +914,15 @@ committed and builds aren't byte-for-byte reproducible across machines.
   compatibility**: every plugin ships inside the app and is rebuilt with it, so a
   breaking SDK change is allowed as long as it is made everywhere in the same commit.
   (`Action.init(handler:)` was removed that way.)
+- **The reader's data is not a cache.** Workspaces, bookmarks, a feed's name — anything
+  only the reader has — is read and written through `UserDataFile`: a file that is
+  there but can't be read is moved aside (`workspaces.unreadable-<date>.json`) and
+  reported, never replaced, and one that can't even be moved is never saved over. A
+  failed save is reported rather than discarded. Everything re-fetchable can stay
+  behind `try?` — but don't put the two in one file, or the cache's carelessness
+  becomes the data's. (Feed names lived in YouTube's cache file until they had to
+  move out for exactly that reason.) Before this, an unreadable library was
+  answered by a fresh one written straight over it.
 - **The SDK must stay a dynamic framework.** Plugin bundles link it "Do Not Embed" and
   share the host's one copy. Statically linking it into the app *and* each bundle would
   duplicate type metadata — `as?` casts across the boundary would start failing, and

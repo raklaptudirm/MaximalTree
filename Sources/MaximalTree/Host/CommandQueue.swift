@@ -43,6 +43,10 @@ final class CommandQueue {
 
 /// A command that failed, on its way to the reader.
 struct CommandFailure: Equatable {
+    /// What the alert is headed. Most of these are a command that couldn't do
+    /// what it was asked; a few are the app telling the reader something about
+    /// their data, which deserves to say so.
+    var title = "Couldn't Do That"
     let command: String
     let message: String
 }

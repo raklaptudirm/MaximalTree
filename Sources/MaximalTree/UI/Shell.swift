@@ -150,7 +150,7 @@ struct ContentView: View {
             Button("Rename") { model.renameActiveWorkspace(to: workspaceNameDraft) }
             Button("Cancel", role: .cancel) {}
         }
-        .alert("Couldn't Do That", isPresented: Binding(
+        .alert(model.commandFailure?.title ?? "Couldn't Do That", isPresented: Binding(
             get: { model.commandFailure != nil },
             set: { if !$0 { model.dismissCommandFailure() } })
         ) {

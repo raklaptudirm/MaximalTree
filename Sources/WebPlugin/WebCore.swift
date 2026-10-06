@@ -210,11 +210,36 @@ final class BookmarkStore: @unchecked Sendable {
     private var bookmarks: [Bookmark]
     let fileURL: URL
 
+    /// What happened to a bookmarks file that was there but couldn't be read —
+    /// see `UserDataFile`. It was moved aside rather than replaced by the first
+    /// bookmark added after it.
+    let unreadable: (keptAt: URL?, reason: String)?
+    /// False when it couldn't be read and couldn't be moved: nothing is saved
+    /// over it.
+    private let mayWrite: Bool
+    /// The last save that failed, until one succeeds.
+    private var lastSaveError: (any Error)?
+    var saveError: (any Error)? { lock.withLock { lastSaveError } }
+
     init(fileURL: URL? = nil) {
-        self.fileURL = fileURL
-            ?? WebStorage.directory().appendingPathComponent("web-bookmarks.json")
-        bookmarks = (try? Data(contentsOf: self.fileURL))
-            .flatMap { try? JSONDecoder().decode([Bookmark].self, from: $0) } ?? []
+        let url = fileURL ?? WebStorage.directory().appendingPathComponent("web-bookmarks.json")
+        self.fileURL = url
+        switch UserDataFile.read([Bookmark].self, from: url) {
+        case .read(let stored):
+            bookmarks = stored
+            unreadable = nil
+            mayWrite = true
+        case .missing:
+            bookmarks = []
+            unreadable = nil
+            mayWrite = true
+        case .unreadable(let keptAt, let reason):
+            bookmarks = []
+            unreadable = (keptAt, reason)
+            mayWrite = keptAt != nil
+            NSLog("[WebPlugin] bookmarks unreadable (\(reason)); "
+                  + (keptAt.map { "kept at \($0.path)" } ?? "left in place, not saving over it"))
+        }
     }
 
     func all() -> [Bookmark] {
@@ -253,9 +278,13 @@ final class BookmarkStore: @unchecked Sendable {
 
     /// Caller must hold `lock`.
     private func persist() {
-        guard let data = try? JSONEncoder().encode(bookmarks) else { return }
-        try? FileManager.default.createDirectory(
-            at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: fileURL, options: .atomic)
+        guard mayWrite else { return }
+        do {
+            try UserDataFile.write(bookmarks, to: fileURL)
+            lastSaveError = nil
+        } catch {
+            lastSaveError = error
+            NSLog("[WebPlugin] bookmarks not saved: \(error.localizedDescription)")
+        }
     }
 }
