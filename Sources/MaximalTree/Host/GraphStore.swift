@@ -100,10 +100,15 @@ final class GraphStore: GraphBackend {
     // In-flight de-duplication. Kept here (not on HostContext) precisely because
     // GraphStore is not @Observable — touching it during a SwiftUI body is safe.
     private var childrenInFlight: Set<NodeID> = []
-    private var attributesInFlight: Set<NodeID> = []
+    /// Which generation of a node each outstanding attributes fetch belongs to.
+    private var attributesInFlight: [NodeID: Int] = [:]
     /// Nodes whose expensive attributes have already been asked for — see
     /// `requestAttributes(of:)`.
     private var enrichedNodes: Set<NodeID> = []
+    /// Bumped when a node's listing is refreshed. What was fetched about the old
+    /// listing is not evidence about the new one, so a fetch still out when the
+    /// refresh lands neither blocks asking again nor gets to answer.
+    private var attributeGenerations: [NodeID: Int] = [:]
     private var relatedInFlight: Set<NodeID> = []
 
     /// One consuming task per mounted root whose provider streams external
@@ -401,7 +406,18 @@ final class GraphStore: GraphBackend {
         }
         let current = nav.current
         context._setFocus(current)
-        context._setSelection(current.map { [$0] } ?? [])
+        // Unlike `didNavigate`, nobody navigated: this is a change arriving from
+        // somewhere else — a file another app touched, a placement refreshing, a
+        // feed updating — and that is no reason to take the reader's selection
+        // away. A multi-selection is what the next action acts on, and a
+        // selected group or feed is what the contents column is showing;
+        // snapping either back to the open node made the next action act on
+        // something the reader never chose.
+        //
+        // Renames and removals keep the selection truthful already (`_remap`,
+        // `_remove`). Only when nothing it held survived does it fall back to
+        // what the pane is showing.
+        if context.selection.isEmpty, let current { context._setSelection([current]) }
         if let current, context.node(current) == nil { ingestNode(current) }
     }
 
@@ -643,6 +659,7 @@ final class GraphStore: GraphBackend {
         for id in ids where context.cachedChildren(of: id) != nil {
             for child in context.cachedChildren(of: id) ?? [] {
                 enrichedNodes.remove(child)
+                attributeGenerations[child, default: 0] += 1
             }
             context._invalidateChildren(of: id)
             requestChildren(of: id)
@@ -680,12 +697,19 @@ final class GraphStore: GraphBackend {
     /// Refreshing a listing clears the record, since new children may be new
     /// nodes anyway.
     func requestAttributes(of id: NodeID) {
-        guard !enrichedNodes.contains(id), !attributesInFlight.contains(id),
+        let generation = attributeGenerations[id, default: 0]
+        guard !enrichedNodes.contains(id), attributesInFlight[id] != generation,
               let p = provider(for: id) else { return }
-        attributesInFlight.insert(id)
+        attributesInFlight[id] = generation
         Task { @MainActor in
             let extra = await p.attributes(of: id)
-            attributesInFlight.remove(id)
+            // Refreshed while this was out: it describes a listing that is gone,
+            // and whatever was asked since is the answer that counts.
+            guard attributeGenerations[id, default: 0] == generation else {
+                if attributesInFlight[id] == generation { attributesInFlight[id] = nil }
+                return
+            }
+            attributesInFlight[id] = nil
             enrichedNodes.insert(id)
             guard var node = context.node(id), !extra.isEmpty else { return }
             node.attributes.merge(extra)
