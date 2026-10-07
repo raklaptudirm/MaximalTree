@@ -2,8 +2,9 @@ import Testing
 import Foundation
 import AppKit
 @testable import MaximalTreeKit
-// FileSystemProvider + NodeID(fileURL:) are compiled into this test target directly
-// (see project.yml), so no app import is needed for them.
+// The app, only for its registries — FileSystemProvider + NodeID(fileURL:) are
+// compiled into this test target directly (see project.yml).
+@testable import MaximalTree
 
 @Suite struct NodeIDTests {
     @Test func trailingSlashCollapses() {
@@ -379,5 +380,24 @@ import AppKit
         let node = try #require(FileSystemProvider.makeNode(url: url, id: id))
         #expect(node.icon?.systemName == "chevron.left.forwardslash.chevron.right")
         #expect(node.icon?.tint != nil, "a Rust file should not use the generic doc icon")
+    }
+}
+
+/// What a host with no window gets from the file system: the files, and what
+/// can be done to them with nothing but the disk. The Mac adds the pasteboard,
+/// Finder and other apps.
+@MainActor
+@Suite struct FileSystemSplitTests {
+    @Test func theCoreHalfIsWhatNeedsOnlyTheDisk() {
+        let core = CoreContributions()
+        FileSystemCore.register(with: core)
+        #expect(core.providers.contains { $0.schemes.contains("file") })
+        #expect(Set(core.actions.map(\.id))
+                == ["file.newFile", "file.newFolder", "file.duplicate", "file.trash"])
+
+        let mac = Registry()
+        FileSystemPlugin().register(with: mac)
+        #expect(Set(mac.actions.map(\.id)).subtracting(core.actions.map(\.id))
+                == ["file.copyPath", "file.reveal", "file.openDefault"])
     }
 }

@@ -1,12 +1,12 @@
-import AppKit
+import Foundation
 import MaximalTreeKit
 
-// The plugin's action vocabulary — everything you can *do* to a file from the
-// context menu, the menu bar, the palette, and the inspector. Mutations that fit
-// the generic vocabulary go through `ctx.apply` (create, trash); side effects
-// that don't (duplicate's IO, the pasteboard, Finder) happen here and report
-// through `notify`. Rename is deliberately absent: the host's `core.rename`
-// covers any provider supporting `.rename`, including this one.
+// What you can do to a file with no window — make one, make a folder, copy one,
+// put it in the Trash. Mutations that fit the generic vocabulary go through
+// `ctx.apply` (create, trash); duplicate's IO happens here and reports through
+// `notify`. What needs the Mac — the pasteboard, Finder, another app — is the
+// shell's, in FileSystem.swift. Rename is deliberately absent: the host's
+// `core.rename` covers any provider supporting `.rename`, including this one.
 
 /// True when every target is somewhere on this disk — which is what copying a
 /// path, revealing in Finder, duplicating and handing a file to another app
@@ -19,7 +19,7 @@ import MaximalTreeKit
 /// another name — a repository, an iCloud item — is offered here as the file
 /// it also is, so it still gets all of these.
 @MainActor
-private func allOnDisk(_ ctx: ActionContext) -> Bool {
+func allOnDisk(_ ctx: ActionContext) -> Bool {
     !ctx.targets.isEmpty && ctx.targets.allSatisfy { $0.fileURL != nil }
 }
 
@@ -27,16 +27,21 @@ private func allOnDisk(_ ctx: ActionContext) -> Bool {
 /// nil when the selection isn't exactly one directory — or is one whose owner
 /// can't make anything in it.
 @MainActor
-private func targetDirectory(_ ctx: ActionContext) -> NodeID? {
+func targetDirectory(_ ctx: ActionContext) -> NodeID? {
     guard ctx.selectedNodes.count == 1, ctx.selectedNodes[0].type == directoryType,
           ctx.canApply(.create(in: ctx.selectedNodes[0].id, name: "untitled", asContainer: false))
     else { return nil }
     return ctx.selectedNodes[0].id
 }
 
-extension FileSystemPlugin {
+/// The file system's half that needs no window: the provider, and the actions
+/// above. What a host with no window registers, and the first thing the Mac
+/// plugin does.
+enum FileSystemCore {
     @MainActor
-    func registerActions(with registry: PluginRegistry) {
+    static func register(with registry: CoreRegistry) {
+        registry.register(provider: FileSystemProvider())
+
         registry.register(action: Action(
             id: "file.newFile",
             title: "New File",
@@ -88,45 +93,6 @@ extension FileSystemPlugin {
             // rather than assumed from what kind of thing it is.
             appliesTo: .custom { ctx in !ctx.targets.isEmpty && ctx.canApply(.delete(ctx.targets)) },
             run: { ctx in ctx.apply(.delete(ctx.selection)) }
-        ))
-
-        registry.register(action: Action(
-            id: "file.copyPath",
-            title: "Copy Path",
-            systemImage: "document.on.clipboard",
-            appliesTo: .custom(allOnDisk),
-            run: { ctx in
-                let paths = ctx.selection.compactMap { $0.fileURL?.path }
-                guard !paths.isEmpty else { return }
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(paths.joined(separator: "\n"), forType: .string)
-            }
-        ))
-
-        registry.register(action: Action(
-            id: "file.reveal",
-            title: "Reveal in Finder",
-            systemImage: "folder",
-            appliesTo: .custom(allOnDisk),
-            run: { ctx in
-                let urls = ctx.selection.compactMap(\.fileURL)
-                if !urls.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(urls) }
-            }
-        ))
-
-        registry.register(action: Action(
-            id: "file.openDefault",
-            title: "Open with Default App",
-            systemImage: "arrow.up.forward.app",
-            appliesTo: .custom { ctx in
-                allOnDisk(ctx) && ctx.selectedNodes.count == ctx.targets.count
-                    && ctx.selectedNodes.allSatisfy { $0.type == fileType }
-            },
-            run: { ctx in
-                for url in ctx.selection.compactMap(\.fileURL) {
-                    NSWorkspace.shared.open(url)
-                }
-            }
         ))
     }
 }
