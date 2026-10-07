@@ -18,10 +18,8 @@ final class YouTubePlugin: NSObject, Plugin {
     private nonisolated(unsafe) static var provider: YouTubeProvider?
 
     func register(with registry: PluginRegistry) {
-        let provider = YouTubeProvider(broker: registry.broker)
+        let provider = YouTubeCore.register(with: registry)
         Self.provider = provider
-        registry.register(provider: provider)
-        YouTubeStore.shared.report(to: registry.notices)
 
         registry.registerCanvas(forType: TypeID("youtube.video")) { id, _ in
             AnyView(YouTubeVideoCanvas(url: YouTubeRef(uri: id.uri)?.webURL))
@@ -35,21 +33,6 @@ final class YouTubePlugin: NSObject, Plugin {
             }))
         }
 
-        // What you searched for before, so the one you keep coming back to is
-        // a few keystrokes rather than a retyped query. The finder gathers a
-        // list when it opens, so this is the list it can offer — a live
-        // YouTube search is the action below.
-        registry.register(finder: FinderSource(
-            id: "youtube.searches", title: "YouTube", prompt: "A search you made before…",
-            systemImage: "magnifyingglass", weight: 12
-        ) {
-            YouTubeStore.shared.recentSearches().map { query in
-                FinderItem(id: "youtube:\(query)", title: query, subtitle: "YouTube",
-                           systemImage: "magnifyingglass",
-                           effect: .open(YouTubeRef.search(query).uri))
-            }
-        })
-
         registry.register(action: Action(
             id: "youtube.search",
             title: "Search YouTube…",
@@ -57,24 +40,9 @@ final class YouTubePlugin: NSObject, Plugin {
             scope: .workspace,
             run: { ctx in
                 guard let query = Self.ask("Search YouTube", detail: "What to look for.",
-                                           confirm: "Search", placeholder: "swift concurrency"),
-                      !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-                YouTubeStore.shared.remember(search: query)
-                // A search is a place, so it joins the sidebar and can be kept,
-                // put in a collection, or come back to tomorrow.
-                let uri = YouTubeRef.search(query).uri
-                ctx.mount(uri)
-                ctx.host.openURI(uri)
-            }
-        ))
-
-        registry.register(action: Action(
-            id: "youtube.newFeed",
-            title: "New YouTube Feed",
-            systemImage: "rectangle.stack.badge.play",
-            scope: .workspace,
-            run: { ctx in
-                ctx.mount(YouTubeRef.aggregator(UUID()).uri)
+                                           confirm: "Search", placeholder: "swift concurrency")
+                else { return }
+                YouTubeCore.search(query, in: ctx)
             }
         ))
 
@@ -85,16 +53,22 @@ final class YouTubePlugin: NSObject, Plugin {
             scope: .workspace,
             run: { ctx in
                 // Into the feed you are on, if you are on one; else the sidebar.
-                let aggregator = ctx.targets.first {
-                    if case .aggregator? = YouTubeRef(uri: $0.uri) { return true }
-                    return false
-                }
+                let aggregator = YouTubeCore.aggregator(in: ctx.targets)
                 guard let text = Self.ask("Add YouTube Channel",
                                           detail: aggregator == nil
                                               ? "A channel link, its @handle, or its id."
                                               : "A channel link, its @handle, or its id, to add to this feed."),
                       let input = ChannelInput(text) else { return }
-                Task { @MainActor in await Self.add(input, into: aggregator, in: ctx) }
+                Task { @MainActor in
+                    guard let provider = Self.provider,
+                          await YouTubeCore.add(input, into: aggregator, in: ctx, using: provider)
+                    else {
+                        Self.tell("Couldn't find that channel",
+                                  detail: "YouTube didn't answer with a channel for it. "
+                                      + "Check the link or handle and try again.")
+                        return
+                    }
+                }
             }
         ))
 
@@ -112,28 +86,6 @@ final class YouTubePlugin: NSObject, Plugin {
                 }
             }
         ))
-    }
-
-    /// Find the channel, and put it where it was asked for.
-    @MainActor
-    private static func add(_ input: ChannelInput, into aggregator: NodeID?,
-                            in ctx: ActionContext) async {
-        guard let provider,
-              let channelID = await provider.channelID(for: input),
-              let feed = await provider.feed(of: channelID) else {
-            tell("Couldn't find that channel",
-                 detail: "YouTube didn't answer with a channel for it. Check the link or handle and try again.")
-            return
-        }
-        let channel = YouTubeProvider.channelNode(feed.channelID, title: feed.title)
-        guard let aggregator else {
-            ctx.mount(channel.id.uri)
-            return
-        }
-        // The host checks what the feed accepts against the channel's record,
-        // so it has to have one before it is placed.
-        ctx.ingest(channel)
-        ctx.apply(.adopt([channel.id], into: aggregator, at: nil))
     }
 
     @MainActor

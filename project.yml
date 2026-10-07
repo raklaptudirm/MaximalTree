@@ -422,9 +422,7 @@ targets:
       - path: Sources/TypstPlugin/ProseStyle.swift
       - Sources/WebPlugin
       - Sources/TerminalPlugin
-      - path: Sources/YouTubePlugin/YouTubeCore.swift
-      - path: Sources/YouTubePlugin/InnerTube.swift
-      - path: Sources/YouTubePlugin/YouTubeStore.swift
+      - Sources/YouTubePlugin/Core
       # The plugin itself too, as WebPlugin does: the host does not dlopen the
       # bundle under XCTest, so its principal class cannot collide.
       - path: Sources/YouTubePlugin/YouTube.swift

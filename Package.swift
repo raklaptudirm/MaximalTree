@@ -35,11 +35,13 @@ let package = Package(
                 path: "Sources/ICloudPlugin/Core"),
         .target(name: "Web", dependencies: ["MaximalTreeKit"],
                 path: "Sources/WebPlugin/Core"),
+        .target(name: "YouTube", dependencies: ["MaximalTreeKit"],
+                path: "Sources/YouTubePlugin/Core"),
 
         // On everything above, so `swift test` builds it all: alone is the only
         // place a reference to a view would fail to compile.
         .testTarget(name: "MaximalTreeCoreTests",
-                    dependencies: ["MaximalTreeKit", "MaximalTreeHost", "ICloud", "Web"],
+                    dependencies: ["MaximalTreeKit", "MaximalTreeHost", "ICloud", "Web", "YouTube"],
                     path: "Tests/MaximalTreeCoreTests"),
     ]
 )

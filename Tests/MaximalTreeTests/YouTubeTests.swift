@@ -341,3 +341,36 @@ private final class Clock: @unchecked Sendable {
                 "the channels stayed under a name nothing points at")
     }
 }
+
+/// What a host with no window gets from YouTube: the nodes, the searches to
+/// find again, a new feed — and, once someone has said what they want, a
+/// search run. The Mac adds the asking, the player, and the comments.
+@MainActor
+@Suite struct YouTubeSplitTests {
+    @Test func theCoreHalfIsWhatNeedsNoPrompt() {
+        let core = CoreContributions()
+        YouTubeCore.register(with: core)
+        #expect(core.providers.contains { $0.schemes.contains("youtube") })
+        #expect(core.finders.map(\.id) == ["youtube.searches"])
+        #expect(core.actions.map(\.id) == ["youtube.newFeed"])
+
+        let mac = Registry()
+        YouTubePlugin().register(with: mac)
+        #expect(Set(mac.actions.map(\.id))
+                == ["youtube.newFeed", "youtube.search", "youtube.addChannel", "youtube.open"])
+    }
+
+    @Test func aBlankSearchGoesNowhere() {
+        let host = HostContext()
+        let before = YouTubeStore.shared.recentSearches()
+        YouTubeCore.search("   ", in: ActionContext(host: host, targets: []))
+        #expect(YouTubeStore.shared.recentSearches() == before)
+    }
+
+    @Test func aFeedIsWhatAnActionAimedAtOneIsAimedAt() throws {
+        let feed = YouTubeRef.aggregator(UUID()).nodeID
+        let video = YouTubeRef.video("a1").nodeID
+        #expect(YouTubeCore.aggregator(in: [video, feed]) == feed)
+        #expect(YouTubeCore.aggregator(in: [video]) == nil)
+    }
+}
