@@ -142,39 +142,54 @@ Sources/
                                 #   CoreActions (every operation the host owns,
                                 #   and the sidebar's own keys),
                                 #   DefaultKeymap (the keys it ships with)
-  FileSystemPlugin/             # reference provider plugin (loadable bundle)
-    FileSystem.swift            #   provider, mutations, symlink anchors, FSEvents
-    FileActions.swift           #   the action vocabulary (new/duplicate/trash/…)
-    FileIcons.swift             #   per-language icons (symbol = kind, tint = language)
+  # Every plugin below is a loadable bundle, split in two: Core/ is what it does
+  # with no window (Package.swift builds it alone, under the bundle's module
+  # name), the rest is the Mac's. Core/ registers itself — `<Name>Core.register`.
+  FileSystemPlugin/             # reference provider plugin
+    Core/FileSystemProvider.swift #  provider, mutations, symlink anchors, FSEvents
+    Core/FileActions.swift      #   new file/folder, duplicate, trash (FileSystemCore)
+    Core/FileIcons.swift        #   per-language icons (symbol = kind, tint = language)
+    FileSystem.swift            #   the plugin: canvases, copy path/reveal/open with
     FileViews.swift             #   canvas (Quick Look) + inspector (editable)
-  TextEditorPlugin/             # reference cross-plugin renderer (loadable bundle)
+  TextEditorPlugin/             # reference cross-plugin renderer — a canvas only, no core
     TextEditor.swift            #   syntax-highlighted editor over filesystem files
-  TypstPlugin/                  # the flagship: typst as a daily driver (loadable bundle)
-    TypstCore.swift             #   diagnostics, notes pkg, TypstRef URIs,
+  TypstPlugin/                  # the flagship: typst as a daily driver
+    Core/TypstCore.swift        #   diagnostics, notes pkg, TypstRef URIs,
                                 #   structure/edit helpers (all tested)
-    TypstEngine.swift           #   in-process compiler facade: compile, export, math
+    Core/TypstEngine.swift      #   in-process compiler facade: compile, export, math
+    Core/TypstProvider.swift    #   section/task/agenda nodes (phony)
+    Core/TypstActions.swift     #   TypstCore: registration, notes, installPackages
     TypstLSP.swift              #   minimal JSON-RPC client for tinymist completions
-    TypstProvider.swift         #   section/task/agenda nodes (phony), agenda canvas
-    TypstPlugin.swift           #   registration, actions, modes, TypstUIState
+    TypstPlugin.swift           #   the plugin: canvases, modes, faces, export
+    TypstAgenda.swift           #   agenda canvas + task inspector
     TypstCanvas.swift           #   Write/Typeset/Read canvas + inspector + preview
     TypstServices.swift         #   editor-seam impls: tokens, completions, math
     ProseStyle.swift            #   the typefaces and sizes Write mode offers
-  GitPlugin/                    # reference non-file provider (loadable bundle)
-    Git.swift                   #   git:// URI model, git CLI, provider, branch anchors
+  GitPlugin/                    # reference non-file provider
+    Core/GitProvider.swift      #   git:// URI model, git CLI, provider, branch anchors
+    Core/GitDiff.swift, GitStatus.swift
+    Git.swift                   #   the plugin: canvases, inspector
+    GitActions.swift            #   stage/commit/stash… (still the shell's: they
+                                #   report into the repo canvas)
     GitViews.swift              #   commit / list canvases + inspector
-  WebPlugin/                    # reference AppKit-view canvas (loadable bundle)
-    WebCore.swift               #   http(s)+web:// provider, bookmark store (tested)
-    Web.swift                   #   WKWebView sessions (delegates, favicons), actions
+  WebPlugin/                    # reference AppKit-view canvas
+    Core/WebCore.swift          #   http(s)+web:// provider, bookmark store (tested)
+    Core/WebActions.swift       #   WebCore: new page, bookmarks, the finder list
+    Web.swift                   #   WKWebView sessions, the actions that need a page
     WebViews.swift              #   page/bookmarks canvases + address-bar inspector
-  YouTubePlugin/                # reference placing adopter (loadable bundle)
-    YouTubeCore.swift           #   youtube:// URIs, channel RSS, provider + feeds (tested)
-    InnerTube.swift             #   YouTube's private JSON API, read anonymously (tested)
-    YouTubeStore.swift          #   titles, thumbnails and recent searches, bounded (tested)
-    YouTube.swift               #   add channel / new feed actions, video canvas
-  ICloudPlugin/                 # reference identity adopter (loadable bundle)
-    ICloudCore.swift            #   icloud:// addresses, app containers, download
+  YouTubePlugin/                # reference placing adopter
+    Core/YouTubeCore.swift      #   youtube:// URIs, channel RSS, provider + feeds (tested)
+    Core/InnerTube.swift        #   YouTube's private JSON API, read anonymously (tested)
+    Core/YouTubeStore.swift     #   titles, thumbnails and recent searches, bounded (tested)
+    Core/YouTubeActions.swift   #   YouTubeCore: new feed, searching, adding a channel
+    YouTube.swift               #   the prompts, the player, comments
+  ICloudPlugin/                 # reference identity adopter
+    Core/ICloudCore.swift       #   icloud:// addresses, app containers, download
                                 #   state, provider (each item *is* its file)
-    ICloud.swift                #   show/mount actions, download + evict
+    Core/ICloudActions.swift    #   ICloudCore: show, download, evict
+    ICloud.swift                #   the plugin: mounting a folder chosen in a panel
+  TerminalPlugin/               # libghostty terminals — no core: a session *is* a
+                                # Ghostty surface, so there is nothing to run headless
 Vendor/typst-ffi/               # Rust staticlib: typst compiler/parser/renderers (C ABI)
 Vendor/highlight-js/            # highlight.min.js (BSD-3) — ~190 grammars, run in-process
 Tests/MaximalTreeTests/         # swift-testing suite, run inside the app (~970 tests)
@@ -690,6 +705,18 @@ NodeIDs (`git://<kind>/<id>?repo=…`), model *synthetic* containment (Branches/
 folders), and emit cross-references, including one into *another* provider (a commit's
 file → the `file://` working-tree node).
 
+**Two halves.** Put what the plugin does with no window — the provider, its stores, the
+actions whose bodies need only the graph or the disk — in `Core/`, behind a
+`<Name>Core.register(with: CoreRegistry)`, and add a target for that folder to
+`Package.swift` under the bundle's module name. Canvases, inspectors, and actions that
+need a panel, the pasteboard, Finder or a live view stay outside it, in the principal
+class, which calls the core's `register` first. When an action asks the reader
+something and then does something, split it there: the prompt is the shell's, the
+doing is the core's (`YouTubeCore.search`). When the core needs something only a shell
+has, it is told rather than reaching for it (`WebProvider(liveTitle:)`,
+`TypstProvider(onAgendaChanged:)`). `CoreBoundaryTests` fails if a `Core/` imports UI
+or isn't built by `Package.swift`.
+
 ### 1. A `NodeProvider`
 
 Vends nodes for one or more URI schemes. Only `schemes`, `resolve`, `node(for:)`, and
@@ -921,8 +948,12 @@ too**: `Sources/MaximalTreeHost` holds the host's model code — workspaces, pla
 undo, the graph store, command dispatch — compiled into the Mac app as before, and
 built alone by `Package.swift`, where a reference to one of the app's views fails to
 compile. `AppModel` is split the same way: `HostEngine` is the host with no window,
-and `AppModel` is the Mac window around one, talking to it through `HostShell`. What
-remains is splitting the plugins, and only then proving it off macOS
+and `AppModel` is the Mac window around one, talking to it through `HostShell`. **The
+plugins are split too**: each has a `Core/` that `Package.swift` builds alone (typst's
+links the same cargo-built engine) — except the terminal, which is libghostty, and the
+text editor, which is only a canvas. Git's repository actions are still the shell's:
+they report failures into the repository canvas, and where a failed `git` goes without
+one is a decision for a shell that has none. What remains is proving it off macOS
 with an iOS build, `swift test` on Linux, and a headless CLI host. Three constraints
 found while planning, worth knowing before starting:
 
@@ -1004,9 +1035,9 @@ Known gaps, roughly in order:
 - **Typst follow-ups** — tinymist hover/go-to-definition, snippet tab-stops, and
   a rename event doesn't yet remap a file's `typst://` section nodes in history.
 - **A second shell** — the hard prerequisites are done (in-process compiler, no CLI
-  dependencies, cross-platform editor engine). The core and the host's
-  engine build without UI; what remains is splitting the plugins and the platform
-  work; see [Other shells](#other-shells).
+  dependencies, cross-platform editor engine). The core, the host's
+  engine and the plugins' cores build without UI; what remains is the platform work;
+  see [Other shells](#other-shells).
 - **Smaller**: richer inspector composition, multi-select in the directory grid.
 - **The host's own views write directly** — `NodeInspector` and `SidebarTree` call
   `host.apply` for rename and drag-to-move, which [Who may write](#who-may-write)
@@ -1018,6 +1049,10 @@ Known gaps, roughly in order:
   applies, which is what `AppModel.applicableActions` already does.
 - **The terminal has no UI-free half** — sessions and the PTY are tangled with Ghostty,
   so it is the one plugin with nothing to put in a core.
+- **Git's repository actions are the shell's** — stage, commit, stash and the rest
+  report failures into the repository canvas and take the commit message from its
+  editor, so a host with no window can browse a repository but not change it. Moving
+  them means deciding where a failed `git` is reported without a canvas.
 - **The inspector has no keys** — every other surface declares some; it is the one
   place you still cannot reach from the keyboard alone.
 - **One shell window** — there is one `AppModel`, so a second window of the main
