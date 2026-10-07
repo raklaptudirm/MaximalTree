@@ -53,7 +53,11 @@ import SwiftUI
                               backing: .buffered, defer: false)
         window.contentView = host
         host.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(50))
+        await waitUntil("the panes never mounted", in: window) {
+            leftBox.view != nil && rightBox.view != nil
+                && Surfaces.frame(of: .pane(leftID), in: window) != nil
+                && Surfaces.frame(of: .pane(rightID), in: window) != nil
+        }
 
         return ((leftID, try #require(leftBox.view)),
                 (rightID, try #require(rightBox.view)), window)
@@ -166,7 +170,9 @@ import SwiftUI
         window.contentView = host
         host.layoutSubtreeIfNeeded()
         defer { window.orderOut(nil) }
-        try await Task.sleep(for: .milliseconds(50))
+        await waitUntil("the document never mounted", in: window) {
+            box.view != nil && Surfaces.frame(of: .pane(pane), in: window) != nil
+        }
 
         let canvas = try #require(box.view)
         #expect(canvas.frame.height > 1000, "the document should overflow its pane")
@@ -213,8 +219,10 @@ import SwiftUI
         window.contentView = host
         host.layoutSubtreeIfNeeded()
         defer { window.orderOut(nil) }
-        try await Task.sleep(for: .milliseconds(200))
-        host.layoutSubtreeIfNeeded()
+        await waitUntil("the editors never mounted", in: window) {
+            Surfaces.focusTarget(of: .pane(left), in: window) != nil
+                && Surfaces.focusTarget(of: .pane(right), in: window) != nil
+        }
 
         let leftTarget = Surfaces.focusTarget(of: .pane(left), in: window)
         let rightTarget = Surfaces.focusTarget(of: .pane(right), in: window)
@@ -265,7 +273,9 @@ import SwiftUI
         window.makeKeyAndOrderFront(nil)
         host.layoutSubtreeIfNeeded()
         defer { window.orderOut(nil) }
-        try await Task.sleep(for: .milliseconds(200))
+        await waitUntil("the editor never mounted", in: window) {
+            Surfaces.focusTarget(of: .pane(pane), in: window) != nil
+        }
 
         let editor = try #require(Surfaces.focusTarget(of: .pane(pane), in: window))
         #expect(window.makeFirstResponder(editor))
@@ -303,7 +313,10 @@ import SwiftUI
                               backing: .buffered, defer: false)
         window.contentView = host
         host.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(80))
+        let surfaces: [SurfaceID] = [.sidebar, .pane(left), .pane(right), .inspector]
+        await waitUntil("the surfaces never mounted", in: window) {
+            surfaces.allSatisfy { Surfaces.frame(of: $0, in: window) != nil }
+        }
         return (left, right, window)
     }
 

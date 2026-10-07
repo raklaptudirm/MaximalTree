@@ -94,6 +94,7 @@ private struct StubProvider: NodeProvider {
 
 /// The watcher end to end: a file appearing, changing, and vanishing on disk,
 /// through real FSEvents and the real provider.
+@MainActor
 @Suite struct FileSystemWatchTests {
     private func makeDirectory() throws -> URL {
         let dir = FileManager.default.temporaryDirectory
@@ -106,31 +107,46 @@ private struct StubProvider: NodeProvider {
 
     /// Watch `root`, make a change on disk, and report whether the expected
     /// changes ever arrived. FSEvents is coalesced and asynchronous, so this
-    /// waits rather than assuming a fixed delay — and gives up rather than
+    /// waits for them rather than for a while — and gives up rather than
     /// hanging a test run if the watcher never fires.
+    ///
+    /// FSEvents also takes a moment to start listening, and a change made
+    /// before it does is simply missed. So it is poked first, in a folder of
+    /// its own that none of these tests are about, until it answers; only then
+    /// is the change under test made.
     private func watching(_ root: NodeID, with provider: FileSystemProvider,
                           until matches: @escaping @Sendable ([NodeChange]) -> Bool,
                           perform: () throws -> Void) async throws -> Bool {
-        let stream = try #require(provider.changes(under: root))
-        // The stream's watcher starts when the stream is built, but FSEvents
-        // takes a moment to arm; a change made too early is simply missed.
-        try? await Task.sleep(for: .milliseconds(300))
-        try perform()
+        let probe = try #require(root.fileURL).appendingPathComponent("probe", isDirectory: true)
+        try FileManager.default.createDirectory(at: probe, withIntermediateDirectories: true)
+        let probeID = try #require(NodeID(fileURL: probe))
 
-        let consumer = Task {
-            var seen: [NodeChange] = []
-            for await batch in stream {
-                seen += batch
-                if matches(seen) { return true }
-            }
-            return false
+        let stream = try #require(provider.changes(under: root))
+        let seen = Seen()
+        let consumer = Task { for await batch in stream { seen.add(batch) } }
+        defer { consumer.cancel() }
+
+        let armed = await waitUntil("the watcher never started listening") {
+            try? UUID().uuidString.write(to: probe.appendingPathComponent("poke"),
+                                         atomically: true, encoding: .utf8)
+            return seen.changes.contains(.childrenChanged(probeID))
         }
-        let deadline = Task {
-            try? await Task.sleep(for: .seconds(5))
-            consumer.cancel()
+        guard armed else { return false }
+
+        seen.clear()
+        try perform()
+        return await waitUntil("the change never arrived", within: .seconds(5)) {
+            matches(seen.changes)
         }
-        defer { deadline.cancel() }
-        return await consumer.value
+    }
+
+    /// What the watcher has reported, as it arrives.
+    private final class Seen: @unchecked Sendable {
+        private let lock = NSLock()
+        private var all: [NodeChange] = []
+        var changes: [NodeChange] { lock.withLock { all } }
+        func add(_ batch: [NodeChange]) { lock.withLock { all += batch } }
+        func clear() { lock.withLock { all = [] } }
     }
 
     @Test func creatingAFileOutsideTheAppRefreshesItsFolder() async throws {

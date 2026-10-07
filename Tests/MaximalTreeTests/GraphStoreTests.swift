@@ -79,30 +79,22 @@ private final class ShiftingProvider: NodeProvider {
         return (store, context)
     }
 
-    /// Polls the main actor until `condition` holds (the store's loads are Tasks).
-    private func waitUntil(_ condition: () -> Bool) async throws {
-        for _ in 0..<200 where !condition() {
-            try await Task.sleep(nanoseconds: 5_000_000)
-        }
-        #expect(condition())
-    }
-
     @Test func childrenPaginateAndAppend() async throws {
         let (store, context) = makeStore()
         let root = try #require(NodeID("stub://root"))
 
         store.requestChildren(of: root)
-        try await waitUntil { context.cachedChildren(of: root) != nil }
+        await waitUntil("never held: context.cachedChildren(of: root) != nil") { context.cachedChildren(of: root) != nil }
         #expect(context.cachedChildren(of: root)?.count == 2)
         #expect(context.hasMoreChildren(root))
 
         context.loadMoreChildren(of: root)   // through the public plugin-facing API
-        try await waitUntil { context.cachedChildren(of: root)?.count == 4 }
+        await waitUntil("never held: context.cachedChildren(of: root)?.count == 4") { context.cachedChildren(of: root)?.count == 4 }
         #expect(!context.hasMoreChildren(root), "cursor exhausted after the last page")
 
         // No cursor left: a further request must be a no-op, not a crash or refetch.
         context.loadMoreChildren(of: root)
-        try await Task.sleep(nanoseconds: 20_000_000)
+        #expect(store.outstanding == 0, "it went out for a page that doesn't exist")
         #expect(context.cachedChildren(of: root)?.count == 4)
     }
 
@@ -124,7 +116,7 @@ private final class ShiftingProvider: NodeProvider {
         let root = try #require(NodeID("stub://root"))
 
         store.requestChildren(of: root)
-        try await waitUntil { context.cachedChildren(of: root) != nil }
+        await waitUntil("never held: context.cachedChildren(of: root) != nil") { context.cachedChildren(of: root) != nil }
         let before = try #require(context.cachedChildren(of: root))
         #expect(before.count == 2)
 
@@ -137,7 +129,7 @@ private final class ShiftingProvider: NodeProvider {
 
         // The read above also kicked the refetch; the fresh page swaps in
         // (and restores the provider's pagination cursor).
-        try await waitUntil { context.hasMoreChildren(root) }
+        await waitUntil("never held: context.hasMoreChildren(root)") { context.hasMoreChildren(root) }
         #expect(context.cachedChildren(of: root)?.count == 2)
         #expect(!context._isChildrenStale(root))
     }
@@ -148,7 +140,7 @@ private final class ShiftingProvider: NodeProvider {
         context._ingest(Node(id: id, type: "stub.item"))   // no "refetched" attribute
 
         store.notify([.modified(id)])
-        try await waitUntil {
+        await waitUntil("the modified node was never fetched again") {
             if case .bool(true)? = context.node(id)?.attributes["refetched"] { return true }
             return false
         }
@@ -238,12 +230,6 @@ private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider
 
 @MainActor
 @Suite struct ChangeStreamTests {
-    private func waitUntil(_ condition: () -> Bool) async throws {
-        for _ in 0..<200 where !condition() {
-            try await Task.sleep(nanoseconds: 5_000_000)
-        }
-        #expect(condition())
-    }
 
     @Test func externalChangesFlowIntoTheFunnelAndStopOnUnmount() async throws {
         let context = HostContext()
@@ -254,18 +240,18 @@ private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider
 
         store.mount("stub://root")
         let root = try #require(NodeID("stub://root"))
-        try await waitUntil { provider.continuationBox.continuation != nil }
+        await waitUntil("never held: provider.continuationBox.continuation != nil") { provider.continuationBox.continuation != nil }
 
         // An external batch invalidates the cache like a plugin notify would:
         // the listing goes stale (kept on screen), not blank.
         context._setChildren([], of: root)
         provider.continuationBox.continuation?.yield([.childrenChanged(root)])
-        try await waitUntil { context._isChildrenStale(root) }
+        await waitUntil("never held: context._isChildrenStale(root)") { context._isChildrenStale(root) }
         #expect(context.cachedChildren(of: root) != nil, "stale must still be served")
 
         // Unmounting cancels the consuming task, which terminates the stream.
         store.unmount(root)
-        try await waitUntil { provider.continuationBox.terminated }
+        await waitUntil("never held: provider.continuationBox.terminated") { provider.continuationBox.terminated }
     }
 
     /// A root that is removed has to leave the workspace as well, or closing
@@ -366,9 +352,7 @@ private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider
         let id = try #require(NodeID("stub://item/5"))
 
         store.open(id)   // not cached: resolves through provider.node(for:)
-        for _ in 0..<200 where nav.current == nil {
-            try await Task.sleep(nanoseconds: 5_000_000)
-        }
+        await waitUntil("it never opened") { nav.current != nil }
         #expect(nav.current == id, "non-phony nodes open as themselves")
         #expect(context.activeFragment == nil)
     }
@@ -392,18 +376,11 @@ private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider
         return (store, context)
     }
 
-    private func waitUntil(_ condition: () -> Bool) async throws {
-        for _ in 0..<200 where !condition() {
-            try await Task.sleep(nanoseconds: 5_000_000)
-        }
-        #expect(condition())
-    }
-
     @Test func matchingLeavesGainDisclosure() async throws {
         let (store, context) = makeStore()
         let root = try #require(NodeID("stub://root"))
         store.requestChildren(of: root)
-        try await waitUntil { context.cachedChildren(of: root) != nil }
+        await waitUntil("never held: context.cachedChildren(of: root) != nil") { context.cachedChildren(of: root) != nil }
 
         // Provider vends stub.item as leaves; the contribution makes them expandable.
         let child = try #require(context.cachedChildren(of: root)?.first)
@@ -416,7 +393,7 @@ private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider
         context._ingest(Node(id: item, type: "stub.item"))
 
         store.requestChildren(of: item)
-        try await waitUntil { context.cachedChildren(of: item) != nil }
+        await waitUntil("never held: context.cachedChildren(of: item) != nil") { context.cachedChildren(of: item) != nil }
 
         let children = try #require(context.cachedChildren(of: item))
         // PagingProvider vends 2 children for any node; the contribution appends 1.
@@ -436,14 +413,14 @@ private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider
         let root = try #require(NodeID("shift://root"))
 
         store.requestChildren(of: root)
-        try await waitUntil { context.cachedChildren(of: root)?.count == 2 }
+        await waitUntil("never held: context.cachedChildren(of: root)?.count == 2") { context.cachedChildren(of: root)?.count == 2 }
         #expect(provider.listings == 1)
 
         // Something else changes the directory.
         provider.contents = ["a", "b", "c"]
 
         store.refreshChildren(of: [root])
-        try await waitUntil { context.cachedChildren(of: root)?.count == 3 }
+        await waitUntil("never held: context.cachedChildren(of: root)?.count == 3") { context.cachedChildren(of: root)?.count == 3 }
         #expect(provider.listings == 2)
     }
 
@@ -458,7 +435,7 @@ private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider
         let unopened = try #require(NodeID("shift://never-opened"))
 
         store.refreshChildren(of: [unopened])
-        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(store.outstanding == 0, "it went out for a listing nobody had opened")
         #expect(provider.listings == 0)
         #expect(context.cachedChildren(of: unopened) == nil)
     }
@@ -474,7 +451,7 @@ private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider
         let root = try #require(NodeID("shift://root"))
 
         store.requestChildren(of: root)
-        try await waitUntil { context.cachedChildren(of: root)?.count == 2 }
+        await waitUntil("never held: context.cachedChildren(of: root)?.count == 2") { context.cachedChildren(of: root)?.count == 2 }
 
         store.refreshChildren(of: [root])
         // Read straight after asking, before the provider can have answered.
@@ -609,15 +586,6 @@ private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider
 @Suite struct LazyAttributeTests {
     private func id(_ uri: String) -> NodeID { NodeID(uri)! }
 
-    /// Polls the main actor until `condition` holds — the store's fetches are
-    /// Tasks, and a fixed sleep is a race dressed up as a wait.
-    private func waitUntil(_ condition: () -> Bool) async throws {
-        for _ in 0..<200 where !condition() {
-            try await Task.sleep(nanoseconds: 5_000_000)
-        }
-        #expect(condition())
-    }
-
     /// Both halves handed back, and both have to be *held*: `backend` is a
     /// weak reference, so a test that keeps only the context is testing a
     /// store that has already gone.
@@ -637,7 +605,7 @@ private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider
         context._ingest(Node(id: id("tier://a"), type: "tier.item", subtitle: "cheap"))
 
         context.loadAttributes(of: id("tier://a"))
-        try await waitUntil { context.node(self.id("tier://a"))?.detail != nil }
+        await waitUntil("never held: context.node(self.id(\"tier://a\"))?.detail != nil") { context.node(self.id("tier://a"))?.detail != nil }
 
         #expect(context.node(id("tier://a"))?.detail == "+42 −7")
         #expect(context.node(id("tier://a"))?.subtitle == "cheap",
@@ -650,15 +618,15 @@ private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider
     @Test func askingTwiceCostsOneFetch() async throws {
         let provider = TieredProvider()
         let (store, context) = store(provider)
-        _ = store
         context._ingest(Node(id: id("tier://a"), type: "tier.item"))
 
         context.loadAttributes(of: id("tier://a"))
-        try await waitUntil { provider.enrichments == 1 }
+        await waitUntil("the first fetch never finished") { store.outstanding == 0 }
+        #expect(provider.enrichments == 1)
         context.loadAttributes(of: id("tier://a"))
         context.loadAttributes(of: id("tier://a"))
-        try await Task.sleep(for: .milliseconds(50))
 
+        #expect(store.outstanding == 0, "asking again went out again")
         #expect(provider.enrichments == 1)
     }
 
@@ -673,10 +641,10 @@ private final class StreamingStubProvider: NodeProvider, ChangeStreamingProvider
         context._setChildren([child], of: parent)
 
         context.loadAttributes(of: child)
-        try await waitUntil { provider.enrichments == 1 }
+        await waitUntil("never held: provider.enrichments == 1") { provider.enrichments == 1 }
         store.refreshChildren(of: [parent])
         context.loadAttributes(of: child)
-        try await waitUntil { provider.enrichments == 2 }
+        await waitUntil("never held: provider.enrichments == 2") { provider.enrichments == 2 }
     }
 }
 
@@ -757,13 +725,6 @@ private final class RecordingPlacements: PlacementHost {
         return (store, context, collections, items, placements)
     }
 
-    private func waitUntil(_ condition: () -> Bool) async throws {
-        for _ in 0..<200 where !condition() {
-            try await Task.sleep(nanoseconds: 5_000_000)
-        }
-        #expect(condition())
-    }
-
     /// Neither the node's provider nor the child's is asked: what was put
     /// inside a node is the host's to keep, whoever owns the node.
     @Test func anAdoptionIsTheHostsNotAnyProviders() {
@@ -829,7 +790,7 @@ private final class RecordingPlacements: PlacementHost {
         placements.table["coll://a"] = ["item://x", "item://missing", "coll://b"]
 
         store.requestChildren(of: id("coll://a"))
-        try await waitUntil { context.cachedChildren(of: id("coll://a")) != nil }
+        await waitUntil("never held: context.cachedChildren(of: id(\"coll://a\")) != nil") { context.cachedChildren(of: id("coll://a")) != nil }
 
         #expect(context.cachedChildren(of: id("coll://a")) == [id("item://x"), id("item://missing"), id("coll://b")])
         #expect(context.node(id("item://missing"))?.type == TypeID("placed.unavailable"))
@@ -842,7 +803,7 @@ private final class RecordingPlacements: PlacementHost {
         let (store, context, _, _, placements) = makeStore()
         placements.table["coll://full"] = ["item://x"]
         store.ensureNodes([id("coll://full"), id("coll://empty")])
-        try await waitUntil { context.node(id("coll://full")) != nil && context.node(id("coll://empty")) != nil }
+        await waitUntil("never held: context.node(id(\"coll://full\")) != nil && context.node(id(\"coll://empty\")) != nil") { context.node(id("coll://full")) != nil && context.node(id("coll://empty")) != nil }
         #expect(context.node(id("coll://full"))?.hasChildren == true)
         #expect(context.node(id("coll://empty"))?.hasChildren == false)
     }
@@ -852,11 +813,11 @@ private final class RecordingPlacements: PlacementHost {
         let (store, context, _, _, placements) = makeStore()
         defer { withExtendedLifetime(placements) {} }   // the store holds it weakly
         store.requestChildren(of: id("coll://a"))
-        try await waitUntil { context.cachedChildren(of: id("coll://a")) == [] }
+        await waitUntil("never held: context.cachedChildren(of: id(\"coll://a\")) == []") { context.cachedChildren(of: id("coll://a")) == [] }
 
         store.apply(.adopt([id("item://x")], into: id("coll://a"), at: nil))
         store.requestChildren(of: id("coll://a"))
-        try await waitUntil { context.cachedChildren(of: id("coll://a")) == [id("item://x")] }
+        await waitUntil("never held: context.cachedChildren(of: id(\"coll://a\")) == [id(\"item://x\")]") { context.cachedChildren(of: id("coll://a")) == [id("item://x")] }
     }
 
     // MARK: Cycles

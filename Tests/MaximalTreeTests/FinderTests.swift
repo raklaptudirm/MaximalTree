@@ -99,14 +99,15 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
         return (FinderModel(), source)
     }
 
-    private func settle() async {
-        try? await Task.sleep(for: .milliseconds(50))
+    /// Let the last open finish gathering.
+    private func settle(_ finder: FinderModel) async {
+        await finder.gathering?.value
     }
 
     @Test func gathersItemsFromTheSourcesItWasOpenedOver() async {
         let (finder, source) = model(["alpha", "beta"])
         finder.open(scope: nil, sources: [source])
-        await settle()
+        await settle(finder)
         #expect(finder.results().count == 2)
     }
 
@@ -114,18 +115,18 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
     @Test func aSourceCanOptOutOfSearchingEverything() async {
         let (finder, source) = model(["alpha"], id: "workspaces", byDefault: false)
         finder.open(scope: nil, sources: [source])
-        await settle()
+        await settle(finder)
         #expect(finder.results().isEmpty, "opted out of the general search")
 
         finder.open(scope: "workspaces", sources: [source])
-        await settle()
+        await settle(finder)
         #expect(finder.results().count == 1, "but its own key still reaches it")
     }
 
     @Test func rankingPutsTheBestMatchFirst() async {
         let (finder, source) = model(["aggregate purple", "GitPlugin", "digitize"])
         finder.open(scope: nil, sources: [source])
-        await settle()
+        await settle(finder)
         finder.query = "gp"
         #expect(finder.results().first?.item.title == "GitPlugin")
     }
@@ -141,7 +142,7 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
         }
         let finder = FinderModel()
         finder.open(scope: nil, sources: [files, actions])
-        await settle()
+        await settle(finder)
         finder.query = "note"
         #expect(finder.results().count == 2, "both sources are in one ranked list")
     }
@@ -154,7 +155,7 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
              item("widgets.swift")]
         }
         finder.open(scope: nil, sources: [source])
-        await settle()
+        await settle(finder)
         finder.query = "widgets"
         let titles = finder.results().map(\.item.title)
         #expect(titles.count == 2)
@@ -164,7 +165,7 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
     @Test func movingWrapsAtBothEnds() async {
         let (finder, source) = model(["a", "b", "c"])
         finder.open(scope: nil, sources: [source])
-        await settle()
+        await settle(finder)
         #expect(finder.index == 0)
         finder.move(-1)
         #expect(finder.index == 2, "up from the first goes to the last")
@@ -175,7 +176,7 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
     @Test func typingReturnsToTheTopOfTheList() async {
         let (finder, source) = model(["alpha", "beta", "gamma"])
         finder.open(scope: nil, sources: [source])
-        await settle()
+        await settle(finder)
         finder.move(2)
         #expect(finder.index == 2)
         finder.query = "a"
@@ -185,8 +186,11 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
     /// Opening again while a slow source is still walking must not have the
     /// first search's results arrive into the second's list.
     @Test func aSecondOpenAbandonsTheFirst() async {
+        // Held until the second open has finished, so the first one's answer
+        // is certain to arrive last — the order this test is about.
+        let held = Held()
         let slow = FinderSource(id: "slow", title: "", prompt: "") {
-            try? await Task.sleep(for: .milliseconds(80))
+            await held.wait()
             return [item("from the slow one")]
         }
         let quick = FinderSource(id: "quick", title: "", prompt: "") {
@@ -194,8 +198,12 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
         }
         let finder = FinderModel()
         finder.open(scope: "slow", sources: [slow, quick])
+        let first = finder.gathering
         finder.open(scope: "quick", sources: [slow, quick])
-        try? await Task.sleep(for: .milliseconds(150))
+        await settle(finder)
+        await waitUntil("the first open never asked") { held.isWaiting }
+        held.release()
+        await first?.value
         #expect(finder.results().map(\.item.title) == ["from the quick one"])
     }
 
@@ -206,7 +214,7 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
         let titles = ["alpha", "beta", "gamma", "delta", "sigma", "omega"]
         let (finder, source) = model(titles)
         finder.open(scope: nil, sources: [source])
-        await settle()
+        await settle(finder)
         finder.query = "a"
         #expect(finder.results().count == titles.count, "every one of these has an a")
     }
@@ -223,7 +231,7 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
         }
         let finder = FinderModel()
         finder.open(scope: nil, sources: [files, actions])
-        await settle()
+        await settle(finder)
         let ids = finder.results().map(\.item.id)
         #expect(Set(ids).count == ids.count, "a repeated id draws one row for both")
     }
@@ -253,7 +261,7 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
             told.value = true
         }
         finder.open(scope: nil, sources: [source])
-        await settle()
+        await settle(finder)
         #expect(told.value)
     }
 
@@ -273,7 +281,7 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
         }
         let finder = FinderModel()
         finder.open(scope: nil, sources: [files, actions])
-        await settle()
+        await settle(finder)
         finder.query = "we"
         #expect(finder.results().first?.item.title == "New Web Page")
     }
@@ -290,7 +298,7 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
         }
         let finder = FinderModel()
         finder.open(scope: nil, sources: [files, actions])
-        await settle()
+        await settle(finder)
         finder.query = "webpack"
         #expect(finder.results().first?.item.title == "webpack.config.js")
     }
@@ -303,7 +311,7 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
         }
         let finder = FinderModel()
         finder.open(scope: nil, sources: [files])
-        await settle()
+        await settle(finder)
         #expect(finder.results().first?.source == "File")
     }
 
@@ -321,7 +329,7 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
         }
         let finder = FinderModel()
         finder.open(scope: nil, sources: [first, second])
-        await settle()
+        await settle(finder)
         finder.query = "notes"
         #expect(finder.results().count == 1)
     }
@@ -332,7 +340,7 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
     @Test func rowsAreIdentifiedByTheirItem() async {
         let (finder, source) = model(["alpha", "beta"])
         finder.open(scope: nil, sources: [source])
-        await settle()
+        await settle(finder)
         let before = finder.results().map(\.id)
         finder.query = "beta"
         let after = finder.results().map(\.id)
@@ -343,7 +351,7 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
     @Test func closingForgetsEverything() async {
         let (finder, source) = model(["alpha"])
         finder.open(scope: nil, sources: [source])
-        await settle()
+        await settle(finder)
         finder.close()
         #expect(finder.results().isEmpty)
         #expect(finder.query.isEmpty)
@@ -412,7 +420,7 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
         }
         model.finder.open(scope: nil, sources: [source])
         model.finderVisible = true
-        try? await Task.sleep(for: .milliseconds(50))
+        await model.finder.gathering?.value
 
         #expect(model.handleFinderKey(KeyChord("down")), "the finder has to claim it")
         #expect(model.finder.index == 1)
@@ -428,7 +436,7 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
         }
         model.finder.open(scope: nil, sources: [source])
         model.finderVisible = true
-        try? await Task.sleep(for: .milliseconds(50))
+        await model.finder.gathering?.value
 
         #expect(model.handleFinderKey(KeyChord("n", control: true)))
         #expect(model.finder.index == 1)
@@ -604,4 +612,13 @@ private func item(_ title: String, subtitle: String? = nil) -> FinderItem {
         #expect(argument == .fields(["workspace": .string(workspace.uuidString)]))
         #expect(!id.contains(":"), "the id encodes the argument again")
     }
+}
+
+/// A source's answer, held back until the test lets it go.
+@MainActor
+private final class Held {
+    private var waiting: CheckedContinuation<Void, Never>?
+    var isWaiting: Bool { waiting != nil }
+    func wait() async { await withCheckedContinuation { waiting = $0 } }
+    func release() { waiting?.resume(); waiting = nil }
 }

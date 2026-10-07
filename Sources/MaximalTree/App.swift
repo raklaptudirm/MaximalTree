@@ -176,6 +176,10 @@ final class AppModel {
 
     /// Commands that might suspend, one at a time — see `CommandQueue`.
     let commandQueue = CommandQueue()
+    /// Commands invoked from a surface that haven't finished, failures
+    /// reported included. Zero means everything asked for so far has been
+    /// done or said — what a test waits for instead of a guessed delay.
+    @ObservationIgnored var commandsRunning = 0
 
     /// The last command that failed, until the reader waves it away.
     ///
@@ -956,8 +960,10 @@ final class AppModel {
             report(error, from: command.id)
             return
         }
+        commandsRunning += 1
         Task { @MainActor [weak self] in
             guard let self else { return }
+            defer { commandsRunning -= 1 }
             do {
                 _ = try await commandQueue.serialized { try await command.run(input, in: context) }
             } catch {

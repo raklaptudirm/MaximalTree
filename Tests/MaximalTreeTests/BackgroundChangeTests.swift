@@ -61,14 +61,6 @@ private final class GatedProvider: NodeProvider, @unchecked Sendable {
         return (store, context)
     }
 
-    /// Polls until `condition` holds, failing with `message` if it never does.
-    private func waitUntil(_ message: Comment, _ condition: () -> Bool) async throws {
-        for _ in 0..<400 where !condition() {
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        #expect(condition(), message)
-    }
-
     // MARK: The selection is the reader's
 
     /// Select several things, and let something change elsewhere. They stay
@@ -141,13 +133,13 @@ private final class GatedProvider: NodeProvider, @unchecked Sendable {
         context._setChildren([child], of: parent)
 
         context.loadAttributes(of: child)
-        try await waitUntil("the first fetch never started") { gate.waiting.count == 1 }
+        await waitUntil("the first fetch never started") { gate.waiting.count == 1 }
 
         store.refreshChildren(of: [parent])
         context.loadAttributes(of: child)
         // Parked, not merely counted: the count moves before the fetch reaches
         // the gate, which is the same gap that made the old test a race.
-        try await waitUntil("the refresh did not let it ask again") { gate.waiting.count == 2 }
+        await waitUntil("the refresh did not let it ask again") { gate.waiting.count == 2 }
         #expect(provider.fetches == 2)
 
         gate.releaseAll()
@@ -166,17 +158,17 @@ private final class GatedProvider: NodeProvider, @unchecked Sendable {
         context._setChildren([child], of: parent)
 
         context.loadAttributes(of: child)
-        try await waitUntil("the first fetch never started") { gate.waiting.count == 1 }
+        await waitUntil("the first fetch never started") { gate.waiting.count == 1 }
         store.refreshChildren(of: [parent])
         context.loadAttributes(of: child)
-        try await waitUntil("the second fetch never started") { gate.waiting.count == 2 }
+        await waitUntil("the second fetch never started") { gate.waiting.count == 2 }
         guard gate.waiting.count == 2 else { gate.releaseAll(); return }
 
         gate.releaseNewest()
-        try await waitUntil("the fresh answer never landed") { context.node(child)?.detail == "fetch 2" }
+        await waitUntil("the fresh answer never landed") { context.node(child)?.detail == "fetch 2" }
 
         gate.releaseOldest()
-        try await Task.sleep(for: .milliseconds(50))
+        await waitUntil("the stale fetch never finished") { store.outstanding == 0 }
         #expect(context.node(child)?.detail == "fetch 2", "the stale answer overwrote the fresh one")
     }
 }

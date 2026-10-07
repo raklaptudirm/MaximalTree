@@ -137,14 +137,16 @@ import Foundation
         container.addSubview(session.view)
         window.orderFrontRegardless()
         defer { store.close(session.id); window.orderOut(nil) }
-        try? await Task.sleep(for: .milliseconds(400))
-        #expect(session.view.hasLiveSurface)
+        try #require(await waitUntil("the surface never came up", in: window) {
+            session.view.hasLiveSurface
+        })
 
-        // The tab switch: out of the view tree entirely, then back.
+        // The tab switch: out of the view tree entirely, then back — each
+        // given the turn anything deferred about it would take.
         session.view.removeFromSuperview()
-        try? await Task.sleep(for: .milliseconds(100))
+        await mainQueueDrained()
         container.addSubview(session.view)
-        try? await Task.sleep(for: .milliseconds(100))
+        await mainQueueDrained()
 
         #expect(session.view.hasLiveSurface, "the shell died when its canvas went away")
         #expect(store.session(for: session.id) === session)
@@ -161,8 +163,9 @@ import Foundation
         window.contentView = session.view
         window.orderFrontRegardless()
         defer { window.orderOut(nil) }
-        try? await Task.sleep(for: .milliseconds(400))
-        try #require(session.view.hasLiveSurface)
+        try #require(await waitUntil("the surface never came up", in: window) {
+            session.view.hasLiveSurface
+        })
 
         store.close(session.id)
         #expect(!session.view.hasLiveSurface)
@@ -233,18 +236,17 @@ import Foundation
         window.contentView = session.view
         window.orderFrontRegardless()
         defer { store.close(session.id); window.orderOut(nil) }
-        try? await Task.sleep(for: .milliseconds(800))
-        try #require(session.view.hasLiveSurface)
+        try #require(await waitUntil("the surface never came up", in: window) {
+            session.view.hasLiveSurface
+        })
 
         session.view.send(text: "cd /usr/local\n")
 
         // The shell has to run the command and report back through OSC 7.
-        var moved = false
-        for _ in 0..<40 {
-            try? await Task.sleep(for: .milliseconds(100))
-            if session.directory.hasSuffix("/usr/local") { moved = true; break }
+        await waitUntil("the node never followed the shell to /usr/local",
+                        every: .milliseconds(50)) {
+            session.directory.hasSuffix("/usr/local")
         }
-        #expect(moved, "the node still says \(session.directory), not /usr/local")
     }
 
     /// A terminal is somewhere you go back to, so it belongs in the sidebar
@@ -340,12 +342,9 @@ import Foundation
 
         let before = ghostty.configReloads
         ghostty_app_set_color_scheme(app, other)
-        var reloaded = false
-        for _ in 0..<20 {
-            try? await Task.sleep(for: .milliseconds(50))
-            if ghostty.configReloads > before { reloaded = true; break }
+        await waitUntil("the scheme changed and the config was never re-applied") {
+            ghostty.configReloads > before
         }
-        #expect(reloaded, "the scheme changed and the config was never re-applied")
 
         ghostty_app_set_color_scheme(app, current)
     }
@@ -436,25 +435,16 @@ import Foundation
         window.orderFrontRegardless()
         defer { store.close(session.id); window.orderOut(nil) }
 
-        var screen = ""
-        for _ in 0..<40 {
-            try? await Task.sleep(for: .milliseconds(200))
-            screen = session.view.visibleText() ?? ""
-            if screen.contains(marker) { break }
-        }
-        try #require(screen.contains(marker), "the shell never echoed it")
+        try #require(await waitUntil("the shell never echoed it", every: .milliseconds(50)) {
+            session.view.visibleText()?.contains(marker) ?? false
+        })
 
         // select_all then copy_to_clipboard, the same bindings ⌘A/⌘C invoke.
         session.view.perform(binding: "select_all")
         session.view.perform(binding: "copy_to_clipboard")
-        var pasteboard = ""
-        for _ in 0..<20 {
-            try? await Task.sleep(for: .milliseconds(100))
-            pasteboard = NSPasteboard.general.string(forType: .string) ?? ""
-            if pasteboard.contains(marker) { break }
+        await waitUntil("copying out of the terminal put nothing on the pasteboard") {
+            NSPasteboard.general.string(forType: .string)?.contains(marker) ?? false
         }
-        #expect(pasteboard.contains(marker),
-                "copying out of the terminal put nothing on the pasteboard")
     }
 
     /// A shell that exits takes its terminal with it. Left alone, the node
@@ -476,13 +466,13 @@ import Foundation
 
         // Generous: the first `login` in a process can take several seconds
         // before the shell is even up to run `exit`.
-        var closed = false
-        for _ in 0..<100 {
-            try? await Task.sleep(for: .milliseconds(200))
-            if TerminalSessions.shared.session(for: id) == nil { closed = true; break }
+        let closed = await waitUntil("the shell exited and its terminal stayed behind",
+                                     within: .seconds(20), every: .milliseconds(50)) {
+            TerminalSessions.shared.session(for: id) == nil
         }
-        let screen = session.view.visibleText()?.suffix(200) ?? "<no screen>"
-        #expect(closed, "the shell exited and its terminal stayed behind: \(screen)")
+        if !closed {
+            Issue.record("the screen said: \(session.view.visibleText()?.suffix(200) ?? "<no screen>")")
+        }
     }
 
     /// The host's environment is not the user's.
@@ -511,15 +501,14 @@ import Foundation
         defer { store.close(session.id); window.orderOut(nil) }
 
         var answers: [String] = []
-        for _ in 0..<75 {
-            try? await Task.sleep(for: .milliseconds(200))
+        await waitUntil("the shell never answered", within: .seconds(15), every: .milliseconds(50)) {
             let screen = session.view.visibleText() ?? ""
             answers = screen.split(separator: "\n")
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 // The command as typed still mentions the variable; the shell's
                 // answer never does.
                 .filter { $0.contains("seen<") && !$0.contains("$") }
-            if !answers.isEmpty { break }
+            return !answers.isEmpty
         }
         let answer = try #require(answers.first, "the shell never answered")
         #expect(answer.contains("seen<>end"), "the shell inherited it: \(answer)")
@@ -560,13 +549,11 @@ import Foundation
         defer { store.close(session.id); window.orderOut(nil) }
 
         var screen = ""
-        for _ in 0..<50 {
-            try? await Task.sleep(for: .milliseconds(200))
+        let editing = await waitUntil("no editor came up", every: .milliseconds(50)) {
             screen = session.view.visibleText() ?? ""
-            if screen.contains("COMMIT_EDITMSG") || screen.contains("commit message") { break }
+            return screen.contains("COMMIT_EDITMSG") || screen.contains("commit message")
         }
-        #expect(screen.contains("commit message") || screen.contains("COMMIT_EDITMSG"),
-                "no editor came up; the terminal showed:\n\(screen.suffix(600))")
+        if !editing { Issue.record("the terminal showed:\n\(screen.suffix(600))") }
         // The tell-tale of a missing terminfo entry, in case it ever regresses
         // into the fallback rather than failing outright.
         #expect(!screen.contains("Terminal entry not found"), "\(screen.suffix(400))")
@@ -594,31 +581,33 @@ import Foundation
             window.orderOut(nil)
         }
 
-        // Let the surface come up: creation is synchronous, but the renderer
-        // and IO threads start behind it.
-        try? await Task.sleep(for: .milliseconds(500))
-
         #expect(view.hasLiveSurface, "no surface — libghostty refused the view")
 
         // A terminal that renders but runs nothing is not a terminal: the
-        // surface should have forked a shell under this very process.
-        let ps = Process()
-        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
-        ps.arguments = ["-A", "-o", "ppid=,comm="]
-        let pipe = Pipe()
-        ps.standardOutput = pipe
-        try ps.run()
-        let listing = String(data: pipe.fileHandleForReading.readDataToEndOfFile(),
-                             encoding: .utf8) ?? ""
-        ps.waitUntilExit()
-
-        let mine = String(ProcessInfo.processInfo.processIdentifier)
-        let children = listing.split(separator: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { $0.hasPrefix(mine + " ") }
+        // surface should have forked a shell under this very process. The
+        // renderer and IO threads start behind the surface, so it is waited for.
+        func children() -> [String] {
+            let ps = Process()
+            ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+            ps.arguments = ["-A", "-o", "ppid=,comm="]
+            let pipe = Pipe()
+            ps.standardOutput = pipe
+            guard (try? ps.run()) != nil else { return [] }
+            let listing = String(data: pipe.fileHandleForReading.readDataToEndOfFile(),
+                                 encoding: .utf8) ?? ""
+            ps.waitUntilExit()
+            let mine = String(ProcessInfo.processInfo.processIdentifier)
+            return listing.split(separator: "\n")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { $0.hasPrefix(mine + " ") }
+        }
         // macOS starts a login shell through `login -fp`, so that — not a
         // bare zsh — is what a working terminal forks here.
-        #expect(children.contains { $0.hasSuffix("login") || $0.hasSuffix("sh") },
-                "nothing forked by this process:\n\(children.joined(separator: "\n"))")
+        var forked: [String] = []
+        let spawned = await waitUntil("nothing was forked by this process", every: .milliseconds(100)) {
+            forked = children()
+            return forked.contains { $0.hasSuffix("login") || $0.hasSuffix("sh") }
+        }
+        if !spawned { Issue.record("its children were:\n\(forked.joined(separator: "\n"))") }
     }
 }

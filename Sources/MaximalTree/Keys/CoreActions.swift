@@ -132,8 +132,10 @@ extension AppModel {
     func runCommand(_ id: String, with argument: CommandValue) {
         guard let command = store?.registry.command(id) else { return }
         let context = ActionContext(host: host, targets: keyTargets())
+        commandsRunning += 1
         Task { @MainActor [weak self] in
             guard let self else { return }
+            defer { commandsRunning -= 1 }
             do {
                 _ = try await commandQueue.serialized {
                     try await command.run(value: argument, in: context)

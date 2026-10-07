@@ -930,6 +930,16 @@ committed and builds aren't byte-for-byte reproducible across machines.
   reports; an action writes. The host's internals are behind `@_spi(Host)` — if you
   find yourself importing that from a plugin, the operation you want is missing from
   `ActionContext` and that is the thing to fix.
+- **A test waits for something, never for a while.** A fixed sleep is a guess, and it
+  fails on a loaded machine for no reason of the test's own. `Tests/…/Waiting.swift`
+  has `waitUntil(_:)` (and `waitUntil(_:in: window)`, which lays the window out each
+  time round) for things that will happen. For things that mustn't happen, ask the
+  code whether it's at rest — `GraphStore.outstanding`, `AppModel.commandsRunning`,
+  `FinderModel.gathering`, the editor coordinator's `isSettled` — and check after;
+  often a call that should start nothing can be checked straight away
+  (`#expect(store.outstanding == 0)`). Something new that works in the background
+  should come with a way to tell when it's done. `mainQueueDrained()` is the last
+  resort, for code with no such signal.
 - **Don't set `navigationTitle` in a canvas.** The window title belongs to the host
   (workspace name, focused node as subtitle); a canvas that sets its own title
   hijacks it. Your node's name is already shown by the tab strip and subtitle.

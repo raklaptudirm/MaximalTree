@@ -232,10 +232,6 @@ private final class Clock: @unchecked Sendable {
 /// Through the app: a feed's channels are placed, and the feed follows them.
 @MainActor
 @Suite struct YouTubeHostTests {
-    private func waitUntil(_ condition: () -> Bool) async throws {
-        for _ in 0..<300 where !condition() { try await Task.sleep(nanoseconds: 5_000_000) }
-        #expect(condition())
-    }
 
     @Test func placingAChannelInAFeedShowsItsVideos() async throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -255,29 +251,25 @@ private final class Clock: @unchecked Sendable {
         let feed = YouTubeRef.feed(id).nodeID
         let channel = YouTubeRef.channel(alpha).nodeID
         model.store?.ensureNodes([aggregator, channel])
-        try await waitUntil { model.host.node(aggregator) != nil && model.host.node(channel) != nil }
+        await waitUntil("never held: model.host.node(aggregator) != nil && model.host.node(channel) != nil") { model.host.node(aggregator) != nil && model.host.node(channel) != nil }
 
         // What the Add Channel action and a drop both do.
         #expect(model.host.canApply(.adopt([channel], into: aggregator, at: nil)))
         #expect(!model.host.canApply(.adopt([feed], into: aggregator, at: nil)), "a feed took something not a channel")
         model.host.apply(.adopt([channel], into: aggregator, at: nil))
-        try await waitUntil { model.workspaceStore.placedChildren(of: aggregator.uri) == [channel.uri] }
+        await waitUntil("never held: model.workspaceStore.placedChildren(of: aggregator.uri) == [channel.uri]") { model.workspaceStore.placedChildren(of: aggregator.uri) == [channel.uri] }
 
         model.host.select([aggregator])
-        try await waitUntil { model.host.node(feed) != nil }
+        await waitUntil("never held: model.host.node(feed) != nil") { model.host.node(feed) != nil }
         #expect(model.contentsContainer == feed)
         model.store?.requestChildren(of: feed)
-        try await waitUntil { model.host.cachedChildren(of: feed) == [YouTubeRef.video("a1").nodeID] }
+        await waitUntil("never held: model.host.cachedChildren(of: feed) == [YouTubeRef.video(\"a1\").nodeID]") { model.host.cachedChildren(of: feed) == [YouTubeRef.video("a1").nodeID] }
     }
 }
 
 /// Renaming a feed in the sidebar, as the reader does it.
 @MainActor
 @Suite struct YouTubeRenameTests {
-    private func waitUntil(_ condition: () -> Bool) async throws {
-        for _ in 0..<300 where !condition() { try await Task.sleep(nanoseconds: 5_000_000) }
-        #expect(condition())
-    }
 
     /// Renaming a feed cannot lose its channels, because it does not move it:
     /// its URI is its id, and its name is the plugin's to keep.
@@ -300,14 +292,14 @@ private final class Clock: @unchecked Sendable {
         model.workspaceStore.place([old.uri], into: model.sidebarRoot, at: nil)
         let channel = YouTubeRef.channel(alpha).nodeID
         model.store?.ensureNodes([old, channel])
-        try await waitUntil { model.host.node(old) != nil && model.host.node(channel) != nil }
+        await waitUntil("never held: model.host.node(old) != nil && model.host.node(channel) != nil") { model.host.node(old) != nil && model.host.node(channel) != nil }
         model.host.apply(.adopt([channel], into: old, at: nil))
-        try await waitUntil { !model.workspaceStore.placedChildren(of: old.uri).isEmpty }
+        await waitUntil("never held: !model.workspaceStore.placedChildren(of: old.uri).isEmpty") { !model.workspaceStore.placedChildren(of: old.uri).isEmpty }
 
         let before = model.placements
 
         model.host.apply(.rename(old, to: "YouTube"))
-        try await waitUntil { model.host.node(old)?.label == "YouTube" }
+        await waitUntil("never held: model.host.node(old)?.label == \"YouTube\"") { model.host.node(old)?.label == "YouTube" }
 
         #expect(model.placements == before, "a rename rearranged what was placed")
         #expect(model.workspaceStore.placedChildren(of: old.uri) == [YouTubeRef.channel(alpha).uri])
@@ -341,7 +333,7 @@ private final class Clock: @unchecked Sendable {
         registry.register(provider: YouTubeProvider(broker: registry.broker, innerTube: .offline,
                                                     fetch: { _ in throw URLError(.badURL) }))
         model.start()
-        try await waitUntil { model.placements.children.count == 2 }
+        await waitUntil("never held: model.placements.children.count == 2") { model.placements.children.count == 2 }
 
         let bare = YouTubeRef.aggregator(feed).uri
         #expect(model.placements.children(of: model.sidebarRoot) == [bare])

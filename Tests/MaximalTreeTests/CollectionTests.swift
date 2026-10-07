@@ -185,21 +185,14 @@ import Foundation
         let aggregator = NodeID("agg://feed")!
         model.workspaceStore.place(["file:///a"], into: aggregator.uri, at: nil)
         model.store?.ensureNodes([aggregator])
-        try await waitUntil { model.host.node(aggregator) != nil }
+        await waitUntil("never held: model.host.node(aggregator) != nil") { model.host.node(aggregator) != nil }
         model.store?.requestChildren(of: aggregator)
-        try await waitUntil { model.host.cachedChildren(of: aggregator)?.map(\.uri) == ["file:///a"] }
+        await waitUntil("never held: model.host.cachedChildren(of: aggregator)?.map(\\.uri) == [\"file:///a\"]") { model.host.cachedChildren(of: aggregator)?.map(\.uri) == ["file:///a"] }
 
         let other = model.workspaceStore.create(named: "Other")
         model.switchWorkspace(to: other.id)
 
-        try await waitUntil { model.host.cachedChildren(of: aggregator) == [] }
-    }
-
-    private func waitUntil(_ condition: () -> Bool) async throws {
-        for _ in 0..<200 where !condition() {
-            try await Task.sleep(nanoseconds: 5_000_000)
-        }
-        #expect(condition())
+        await waitUntil("never held: model.host.cachedChildren(of: aggregator) == []") { model.host.cachedChildren(of: aggregator) == [] }
     }
 
     @Test func aNewCollectionIsAGroupInTheSidebar() throws {

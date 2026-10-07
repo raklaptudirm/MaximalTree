@@ -358,13 +358,9 @@ private final class Drive: @unchecked Sendable {
         let duplicate = try #require(model.action("file.duplicate"))
 
         model.perform(duplicate, targets: [item.id])
-        for _ in 0..<400 where !FileManager.default.fileExists(
-            atPath: root.appendingPathComponent("plan 2.txt").path) {
-            try await Task.sleep(for: .milliseconds(5))
+        await waitUntil("the file action never reached the file") {
+            FileManager.default.fileExists(atPath: root.appendingPathComponent("plan 2.txt").path)
         }
-
-        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("plan 2.txt").path),
-                "the file action never reached the file")
         #expect(model.commandFailure == nil, "\(model.commandFailure?.message ?? "")")
     }
 

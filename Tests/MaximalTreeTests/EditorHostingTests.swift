@@ -30,6 +30,8 @@ import STTextView
         /// so switching modes triggers the same repaint-per-landed-render storm
         /// the app sees, not one stable paint.
         private var ready = Set<String>()
+        /// Renders asked for that haven't landed yet.
+        private(set) var pending = 0
 
         func renderedMath(for equation: String, fontSize: CGFloat, dark: Bool,
                           block: Bool,
@@ -38,7 +40,9 @@ import STTextView
             if ready.contains(key) {
                 return RenderedEquation(image: image, baseline: 24)
             }
+            pending += 1
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(Int.random(in: 10...80))) { [weak self] in
+                self?.pending -= 1
                 self?.ready.insert(key)
                 completion()
             }
@@ -116,6 +120,27 @@ import STTextView
     }
 
     /// Views still marked dirty after a full layout pass.
+    private func editorTextView(in view: NSView) -> STTextView? {
+        if let found = view as? STTextView { return found }
+        for sub in view.subviews {
+            if let found = editorTextView(in: sub) { return found }
+        }
+        return nil
+    }
+
+    /// Until every render the switch set off has landed and the hosting
+    /// subtree has then stayed clean for several turns running. A feedback
+    /// loop re-dirties it on every turn, forever, so it never gets there.
+    @discardableResult
+    private func settles(_ what: Comment, _ hosting: NSView, in window: NSWindow,
+                         math: StubMath) async -> Bool {
+        var clean = 0
+        return await waitUntil(what, in: window) {
+            clean = unsettled(in: hosting) == 0 ? clean + 1 : 0
+            return math.pending == 0 && clean >= 5
+        }
+    }
+
     private func unsettled(in root: NSView) -> Int {
         var count = root.needsUpdateConstraints ? 1 : 0
         for subview in root.subviews { count += unsettled(in: subview) }
@@ -173,9 +198,10 @@ import STTextView
     @Test(arguments: ["", "x", "= H\n\nsome words $x^2$ here"])
     func modeSwitchAppliesWithoutMutatingLayoutInPlace(_ text: String) async throws {
         let mode = Mode()
+        let math = StubMath()
         let hosting = NSHostingView(rootView: Shell(
             mode: mode, text: text,
-            tokenizer: StubTokenizer(), math: StubMath()))
+            tokenizer: StubTokenizer(), math: math))
         let window = TestWindow(contentRect: NSRect(x: 0, y: 0, width: 1310, height: 850),
                               styleMask: [.titled, .resizable],
                               backing: .buffered, defer: false)
@@ -183,32 +209,18 @@ import STTextView
         window.orderFrontRegardless()
         window.layoutIfNeeded()
         defer { window.orderOut(nil) }
-        for _ in 0..<10 {
-            try? await Task.sleep(for: .milliseconds(30))
-            window.layoutIfNeeded()
-        }
+        await settles("the first layout never settled", hosting, in: window, math: math)
 
-        func editorTextView(in view: NSView) -> STTextView? {
-            if let found = view as? STTextView { return found }
-            for sub in view.subviews {
-                if let found = editorTextView(in: sub) { return found }
-            }
-            return nil
-        }
         let before = try #require(editorTextView(in: hosting))
         #expect(before.font.fontName == EditorStyle.code(size: 12).font.fontName)
 
         mode.write = true
-        for _ in 0..<20 {
-            try? await Task.sleep(for: .milliseconds(30))
-            window.displayIfNeeded()
-            window.layoutIfNeeded()
-        }
 
         // Deferring must not mean dropping: prose is serif, code is monospaced.
-        let after = try #require(editorTextView(in: hosting))
-        #expect(after.font.fontName == EditorStyle.prose().font.fontName,
-                "the deferred style change never landed for a \(text.count)-char document")
+        await waitUntil("the deferred style change never landed for a \(text.count)-char document",
+                        in: window) {
+            editorTextView(in: hosting)?.font.fontName == EditorStyle.prose().font.fontName
+        }
     }
 
     /// A newly created file is empty or nearly so — the reported hang-then-crash
@@ -217,9 +229,10 @@ import STTextView
     @Test(arguments: ["", "x", "= H\n\nsome words $x^2$ here"])
     func switchingToWriteModeSettlesForSmallDocuments(_ text: String) async throws {
         let mode = Mode()
+        let math = StubMath()
         let hosting = NSHostingView(rootView: Shell(
             mode: mode, text: text,
-            tokenizer: StubTokenizer(), math: StubMath()))
+            tokenizer: StubTokenizer(), math: math))
         let window = TestWindow(contentRect: NSRect(x: 0, y: 0, width: 1310, height: 850),
                               styleMask: [.titled, .resizable],
                               backing: .buffered, defer: false)
@@ -227,30 +240,20 @@ import STTextView
         window.orderFrontRegardless()
         window.layoutIfNeeded()
         defer { window.orderOut(nil) }
-
-        for _ in 0..<10 {
-            try? await Task.sleep(for: .milliseconds(30))
-            window.layoutIfNeeded()
-        }
+        await settles("the first layout never settled", hosting, in: window, math: math)
 
         mode.write = true
 
-        var dirtyTurns = 0
-        for _ in 0..<25 {
-            try? await Task.sleep(for: .milliseconds(30))
-            window.displayIfNeeded()
-            window.layoutIfNeeded()
-            if unsettled(in: hosting) > 0 { dirtyTurns += 1 }
-        }
-        #expect(dirtyTurns < 20,
-                "constraints never settle for a \(text.count)-char document: \(dirtyTurns)/25")
+        await settles("constraints never settle for a \(text.count)-char document",
+                      hosting, in: window, math: math)
     }
 
     @Test func switchingToWriteModeSettles() async throws {
         let mode = Mode()
+        let math = StubMath()
         let hosting = NSHostingView(rootView: Shell(
             mode: mode, text: document,
-            tokenizer: StubTokenizer(), math: StubMath()))
+            tokenizer: StubTokenizer(), math: math))
         // Sized so the write column sits at its maxWidth boundary — where the
         // editor's width is negotiable and a content-derived intrinsic size can
         // oscillate the constraint solver.
@@ -265,25 +268,15 @@ import STTextView
         defer { window.orderOut(nil) }
 
         // Let the initial (Typeset-style) layout and overlay passes finish.
-        for _ in 0..<10 {
-            try? await Task.sleep(for: .milliseconds(30))
-            window.layoutIfNeeded()
-        }
+        await settles("the first layout never settled", hosting, in: window, math: math)
 
         mode.write = true
 
         // Pump display turns. A healthy switch settles almost immediately; the
         // feedback loop re-dirties the hosting subtree on every turn (the app
         // aborts once AppKit's detector counts enough passes in one flush).
-        var dirtyTurns = 0
-        for _ in 0..<25 {
-            try? await Task.sleep(for: .milliseconds(30))
-            window.displayIfNeeded()
-            window.layoutIfNeeded()
-            if unsettled(in: hosting) > 0 { dirtyTurns += 1 }
-        }
-        #expect(dirtyTurns < 20,
-                "constraints never settle after the mode switch: \(dirtyTurns)/25 dirty turns")
+        await settles("constraints never settle after the mode switch",
+                      hosting, in: window, math: math)
     }
 }
 
@@ -365,10 +358,8 @@ import STTextView
         window.orderFrontRegardless()
         window.layoutIfNeeded()
         defer { window.orderOut(nil) }
-        for _ in 0..<6 {
-            try? await Task.sleep(for: .milliseconds(30))
-            window.displayIfNeeded()
-            window.layoutIfNeeded()
+        await waitUntil("the document never grew wider than its viewport", in: window) {
+            textView.frame.width > scrollView.contentView.bounds.width + 1
         }
 
         let viewport = scrollView.contentView.bounds.width
@@ -401,10 +392,8 @@ import STTextView
         window.orderFrontRegardless()
         window.layoutIfNeeded()
         defer { window.orderOut(nil) }
-        for _ in 0..<8 {
-            try? await Task.sleep(for: .milliseconds(30))
-            window.displayIfNeeded()
-            window.layoutIfNeeded()
+        await waitUntil("the document never grew wider than its viewport", in: window) {
+            textView.frame.width > scrollView.contentView.bounds.width + 1
         }
 
         let viewport = scrollView.contentView.bounds.width
@@ -435,11 +424,6 @@ import STTextView
         window.orderFrontRegardless()
         window.layoutIfNeeded()
         defer { window.orderOut(nil) }
-        for _ in 0..<10 {
-            try? await Task.sleep(for: .milliseconds(40))
-            window.displayIfNeeded()
-            window.layoutIfNeeded()
-        }
 
         func findScrollView(_ view: NSView) -> NSScrollView? {
             if let found = view as? NSScrollView { return found }
@@ -447,6 +431,13 @@ import STTextView
                 if let found = findScrollView(sub) { return found }
             }
             return nil
+        }
+        await waitUntil("the editor never filled its pane with a document wider than it", in: window) {
+            guard let scrollView = findScrollView(hosting),
+                  let textView = scrollView.documentView else { return false }
+            let viewport = scrollView.contentView.bounds.width
+            return abs(scrollView.frame.width - hosting.bounds.width) < 1
+                && viewport > 100 && textView.frame.width > viewport + 1
         }
         let scrollView = try #require(findScrollView(hosting))
         #expect(abs(scrollView.frame.width - hosting.bounds.width) < 1,
@@ -480,11 +471,6 @@ import STTextView
         window.orderFrontRegardless()
         window.layoutIfNeeded()
         defer { window.orderOut(nil) }
-        for _ in 0..<10 {
-            try? await Task.sleep(for: .milliseconds(40))
-            window.displayIfNeeded()
-            window.layoutIfNeeded()
-        }
 
         func findScrollView(_ view: NSView) -> NSScrollView? {
             if let found = view as? NSScrollView { return found }
@@ -492,6 +478,13 @@ import STTextView
                 if let found = findScrollView(sub) { return found }
             }
             return nil
+        }
+        await waitUntil("the editor never filled its pane with a document wider than it", in: window) {
+            guard let scrollView = findScrollView(hosting),
+                  let textView = scrollView.documentView else { return false }
+            let viewport = scrollView.contentView.bounds.width
+            return abs(scrollView.frame.width - hosting.bounds.width) < 1
+                && viewport > 100 && textView.frame.width > viewport + 1
         }
         let scrollView = try #require(findScrollView(hosting))
         let textView = try #require(scrollView.documentView as? STTextView)
@@ -527,12 +520,9 @@ import STTextView
         window.orderFrontRegardless()
         window.layoutIfNeeded()
         defer { window.orderOut(nil) }
-        for _ in 0..<4 {
-            try? await Task.sleep(for: .milliseconds(20))
-            window.displayIfNeeded()
-            window.layoutIfNeeded()
-        }
 
-        #expect(controller.canScroll, "on screen and laid out, and still refusing")
+        await waitUntil("on screen and laid out, and still refusing", in: window) {
+            controller.canScroll
+        }
     }
 }

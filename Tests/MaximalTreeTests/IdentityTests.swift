@@ -141,13 +141,11 @@ import Foundation
         })
         // The node record, and the record of what it also is, both have to
         // land before anything can be asked about them.
-        for _ in 0..<40 where host.node(repo)?.identities.isEmpty ?? true {
-            try? await Task.sleep(for: .milliseconds(50))
+        await waitUntil("the repository never said what else it is") {
+            !(host.node(repo)?.identities.isEmpty ?? true)
         }
         let identity = try #require(host.node(repo)?.identities.first)
-        for _ in 0..<40 where host.node(identity) == nil {
-            try? await Task.sleep(for: .milliseconds(50))
-        }
+        await waitUntil("what it also is never arrived") { host.node(identity) != nil }
 
         let actions = model.applicableActions(for: [repo])
         let ids = actions.map(\.id)

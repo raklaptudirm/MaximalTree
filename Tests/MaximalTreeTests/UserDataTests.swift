@@ -313,11 +313,11 @@ private final class Heard {
         #expect(model.commandFailure?.title == "Your Workspaces Were Set Aside")
 
         model.dismissCommandFailure()
-        for _ in 0..<200 where model.commandFailure == nil { await Task.yield() }
-        #expect(model.commandFailure?.title == "Second", "the second notice was lost")
+        await waitUntil("the second notice was lost") { model.commandFailure != nil }
+        #expect(model.commandFailure?.title == "Second")
 
         model.dismissCommandFailure()
-        for _ in 0..<20 { await Task.yield() }
+        await mainQueueDrained()
         #expect(model.commandFailure == nil)
     }
 }

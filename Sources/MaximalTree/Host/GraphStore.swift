@@ -114,6 +114,12 @@ final class GraphStore: GraphBackend {
     private var attributeGenerations: [NodeID: Int] = [:]
     private var relatedInFlight: Set<NodeID> = []
 
+    /// How many fetches and writes are out on the store's behalf. Zero is the
+    /// store at rest: every answer it asked for has landed or been dropped.
+    /// Which is what a test waits for, rather than guessing how long a fetch
+    /// takes — and what proves a call started nothing at all.
+    private(set) var outstanding = 0
+
     /// One consuming task per mounted root whose provider streams external
     /// changes. Synced against the root set at every mount/unmount/switch.
     private var changeStreams: [NodeID: Task<Void, Never>] = [:]
@@ -233,7 +239,9 @@ final class GraphStore: GraphBackend {
             let (target, fragment) = resolve(from: node)
             body(target, fragment)
         } else if let p = provider(for: id) {
+            outstanding += 1
             Task { @MainActor in
+                defer { outstanding -= 1 }
                 let node = await p.node(for: id)
                 if let node { self.context._ingest(self.decorate(node)) }
                 let (target, fragment) = resolve(from: node)
@@ -346,7 +354,9 @@ final class GraphStore: GraphBackend {
             break
         }
         guard let provider = mutatingProvider(for: mutation), provider.supports(mutation) else { return }
+        outstanding += 1
         Task { @MainActor in
+            defer { outstanding -= 1 }
             do {
                 let changes = try await provider.apply(mutation)
                 process(changes)
@@ -583,7 +593,9 @@ final class GraphStore: GraphBackend {
         for id in ids where context.node(id) == nil && !nodesInFlight.contains(id) {
             guard let p = provider(for: id) else { continue }
             nodesInFlight.insert(id)
+            outstanding += 1
             Task { @MainActor in
+                defer { outstanding -= 1 }
                 if let n = await p.node(for: id) { ingest(n) }
                 nodesInFlight.remove(id)
             }
@@ -592,7 +604,9 @@ final class GraphStore: GraphBackend {
 
     private func ingestNode(_ id: NodeID) {
         guard let p = provider(for: id) else { return }
+        outstanding += 1
         Task { @MainActor in
+            defer { outstanding -= 1 }
             if let n = await p.node(for: id) { ingest(n) }
         }
     }
@@ -607,7 +621,9 @@ final class GraphStore: GraphBackend {
         context._ingest(decorate(node))
         for identity in node.identities where context.node(identity) == nil {
             guard let provider = provider(for: identity) else { continue }
+            outstanding += 1
             Task { @MainActor in
+                defer { outstanding -= 1 }
                 if let other = await provider.node(for: identity) {
                     context._ingest(decorate(other))
                 }
@@ -622,7 +638,9 @@ final class GraphStore: GraphBackend {
               !childrenInFlight.contains(id),
               let p = provider(for: id) else { return }
         childrenInFlight.insert(id)
+        outstanding += 1
         Task { @MainActor in
+            defer { outstanding -= 1 }
             var subject = context.node(id)
             if subject == nil { subject = (await p.node(for: id)).map(decorate) }
 
@@ -676,7 +694,9 @@ final class GraphStore: GraphBackend {
               !childrenInFlight.contains(id),
               let p = provider(for: id) else { return }
         childrenInFlight.insert(id)
+        outstanding += 1
         Task { @MainActor in
+            defer { outstanding -= 1 }
             let page = await p.children(of: id, page: cursor)
             let items = page.items.map(decorate)
             for n in items { context._ingest(n) }
@@ -704,7 +724,9 @@ final class GraphStore: GraphBackend {
         guard !enrichedNodes.contains(id), attributesInFlight[id] != generation,
               let p = provider(for: id) else { return }
         attributesInFlight[id] = generation
+        outstanding += 1
         Task { @MainActor in
+            defer { outstanding -= 1 }
             let extra = await p.attributes(of: id)
             // Refreshed while this was out: it describes a listing that is gone,
             // and whatever was asked since is the answer that counts.
@@ -741,7 +763,9 @@ final class GraphStore: GraphBackend {
               !relatedInFlight.contains(id),
               let p = provider(for: id) else { return }
         relatedInFlight.insert(id)
+        outstanding += 1
         Task { @MainActor in
+            defer { outstanding -= 1 }
             let r = await p.related(to: id)
             context._setRelated(r, of: id)
             relatedInFlight.remove(id)

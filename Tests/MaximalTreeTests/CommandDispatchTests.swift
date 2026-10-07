@@ -80,8 +80,10 @@ private struct Explains: Command {
         return model
     }
 
-    /// Let everything already queued finish.
-    private func settle() async { for _ in 0..<200 { await Task.yield() } }
+    /// Let everything already invoked finish, failures reported included.
+    private func settle(_ model: AppModel) async {
+        await waitUntil("the commands never finished") { model.commandsRunning == 0 }
+    }
 
     private func context(_ model: AppModel) -> ActionContext {
         ActionContext(host: model.host, targets: [])
@@ -113,7 +115,7 @@ private struct Explains: Command {
 
         model.invoke(command, in: context(model))
         model.invoke(command, in: context(model))
-        await settle()
+        await settle(model)
 
         #expect(log.entries == ["start", "end", "start", "end"],
                 "they ran into each other: \(log.entries)")
@@ -128,7 +130,7 @@ private struct Explains: Command {
         model.pluginHost.registry.register(Fails())
 
         model.runCommand("test.fails")
-        await settle()
+        await settle(model)
 
         #expect(model.commandFailure?.command == "test.fails")
         model.dismissCommandFailure()
@@ -143,7 +145,7 @@ private struct Explains: Command {
         model.pluginHost.registry.register(Explains())
 
         model.runCommand("test.explains")
-        await settle()
+        await settle(model)
 
         #expect(model.commandFailure?.message == "The channel has no videos yet.")
     }
@@ -155,7 +157,7 @@ private struct Explains: Command {
         model.pluginHost.registry.register(Slow(log: log))
 
         model.runCommand("test.slow")
-        await settle()
+        await settle(model)
 
         #expect(log.entries == ["start", "end"])
     }
@@ -163,7 +165,7 @@ private struct Explains: Command {
     @Test func anIDNobodyRegisteredDoesNothing() async throws {
         let model = try makeModel()
         model.runCommand("test.nothing")
-        await settle()
+        await settle(model)
         #expect(model.commandFailure == nil, "it complained about a key that is simply unbound")
     }
 
@@ -215,7 +217,7 @@ private struct Explains: Command {
         })
 
         model.runCommand("test.breaks")
-        await settle()
+        await settle(model)
 
         #expect(model.commandFailure?.command == "test.breaks")
     }
@@ -233,7 +235,7 @@ private struct Explains: Command {
 
         model.runCommand(SelectWorkspace.id,
                          with: .fields(["workspace": .string(other.id.uuidString)]))
-        await settle()
+        await settle(model)
 
         #expect(model.activeWorkspaceID == other.id, "it did not go to the named workspace")
         #expect(model.activeWorkspaceID != first)
@@ -249,7 +251,7 @@ private struct Explains: Command {
 
         model.runCommand(SelectWorkspace.id,
                          with: .fields(["workspace": .string(UUID().uuidString)]))
-        await settle()
+        await settle(model)
 
         #expect(model.activeWorkspaceID == before, "it went somewhere")
         #expect(model.commandFailure?.command == SelectWorkspace.id)
@@ -261,7 +263,7 @@ private struct Explains: Command {
         model.registerCoreActions(with: model.pluginHost.registry)
 
         model.runCommand(SelectWorkspace.id, with: .fields(["workspace": .number(3)]))
-        await settle()
+        await settle(model)
 
         #expect(model.commandFailure?.command == SelectWorkspace.id)
     }

@@ -144,11 +144,17 @@ import STTextView
                       coordinator: coordinator, window: window)
     }
 
-    /// Let the coordinator's deferred overlay pass (and AppKit's display cycle)
-    /// run, the way they would in the app. Awaiting frees the main actor so its
-    /// queued work actually drains — a nested RunLoop.run does not.
-    private func settle() async {
-        try? await Task.sleep(for: .milliseconds(120))
+    /// Let the coordinator's deferred overlay passes run, the way they would
+    /// in the app, until it owes the screen nothing. Awaiting frees the main
+    /// actor so its queued work actually drains — a nested RunLoop.run does
+    /// not. At rest across a turn of the main queue, not just for a moment:
+    /// what the engine defers can come back to the coordinator a turn later.
+    private func settle(_ editor: Editor) async {
+        repeat {
+            guard await waitUntil("the editor never settled", { editor.coordinator.isSettled })
+            else { return }
+            await mainQueueDrained()
+        } while !editor.coordinator.isSettled
     }
 
     private func overlays(in textView: STTextView) -> [NSImageView] {
@@ -185,10 +191,34 @@ import STTextView
         return lines.joined(separator: "\n")
     }
 
+    /// What every test here waits on has to be honest. Today one turn of the
+    /// main queue happens to be enough for what they do, which a guess would
+    /// get away with; a typed character is where it stops being: its repaint
+    /// waits out a debounce, and a turn is not a debounce.
+    @Test func settledMeansTheEditorOwesTheScreenNothing() async throws {
+        let editor = makeEditor(text: document)
+        editor.coordinator.highlightNow()
+        await settle(editor)
+        #expect(editor.coordinator.isSettled)
+
+        // A resize: the overlays follow a turn later.
+        NotificationCenter.default.post(name: NSView.frameDidChangeNotification,
+                                        object: editor.textView)
+        #expect(!editor.coordinator.isSettled, "the overlay pass is still to come")
+        await settle(editor)
+        #expect(editor.coordinator.isSettled)
+
+        editor.coordinator.textViewDidChangeText(Notification(name: .init("typed")))
+        await mainQueueDrained()
+        #expect(!editor.coordinator.isSettled, "the debounced repaint hasn't run yet")
+        await settle(editor)
+        #expect(editor.coordinator.isSettled)
+    }
+
     @Test func displayEquationsFollowTheirLinesAcrossAClick() async throws {
         let editor = makeEditor(text: blockDocument)
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
 
         let ns = blockDocument as NSString
         let clicked = ns.range(of: "Paragraph 2")
@@ -196,7 +226,7 @@ import STTextView
         editor.coordinator.textViewDidChangeSelection(
             Notification(name: STTextView.didChangeSelectionNotification,
                          object: editor.textView))
-        await settle()
+        await settle(editor)
 
         let equation = lastEquation(in: blockDocument)
         let expected = try #require(settledFrame(for: equation, in: editor, block: true))
@@ -241,7 +271,7 @@ import STTextView
     @Test func imagesLandOnTheirEquationsAfterTheFirstPaint() async throws {
         let editor = makeEditor(text: document)
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
 
         let equation = lastEquation(in: document)
         let expected = try #require(settledFrame(for: equation, in: editor))
@@ -260,7 +290,7 @@ import STTextView
     @Test func repositioningReusesOverlayViewsInsteadOfRebuilding() async throws {
         let editor = makeEditor(text: document)
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
 
         let before = overlays(in: editor.textView)
         #expect(!before.isEmpty)
@@ -269,7 +299,7 @@ import STTextView
         // coordinator observes. Must reposition without any churn.
         NotificationCenter.default.post(name: NSView.frameDidChangeNotification,
                                         object: editor.textView)
-        await settle()
+        await settle(editor)
 
         let after = overlays(in: editor.textView)
         #expect(after.count == before.count)
@@ -283,11 +313,11 @@ import STTextView
     @Test func imagesFollowTheirEquationsWhenScrolledAway() async throws {
         let editor = makeEditor(text: document)
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
 
         editor.textView.scroll(CGPoint(x: 0, y: 500))
         editor.scrollView.reflectScrolledClipView(editor.scrollView.contentView)
-        await settle()
+        await settle(editor)
 
         let ns = document as NSString
         let clicked = ns.range(of: "Paragraph 8")
@@ -295,7 +325,7 @@ import STTextView
         editor.coordinator.textViewDidChangeSelection(
             Notification(name: STTextView.didChangeSelectionNotification,
                          object: editor.textView))
-        await settle()
+        await settle(editor)
 
         let equation = lastEquation(in: document)
         let expected = try #require(settledFrame(for: equation, in: editor))
@@ -324,7 +354,7 @@ import STTextView
         }
         let editor = makeEditor(text: long)
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
 
         let ns = long as NSString
         let low = ns.range(of: "Paragraph 9")
@@ -347,14 +377,14 @@ import STTextView
         let highY = try #require(documentY(of: high.location))
         editor.textView.scroll(CGPoint(x: 0, y: max(0, highY - 60)))
         editor.scrollView.reflectScrolledClipView(editor.scrollView.contentView)
-        await settle()
+        await settle(editor)
 
         func click(at offset: Int) async {
             editor.textView.textSelection = NSRange(location: offset, length: 0)
             editor.coordinator.textViewDidChangeSelection(
                 Notification(name: STTextView.didChangeSelectionNotification,
                              object: editor.textView))
-            await settle()
+            await settle(editor)
         }
 
         // Everything from the top of the document down to the paragraph being
@@ -397,7 +427,7 @@ import STTextView
         }
         let editor = makeEditor(text: long)
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
 
         // Measured the way the reader sees it, and *without* forcing layout:
         // which line is at the top of the viewport, and how far into it. Asking
@@ -415,7 +445,7 @@ import STTextView
 
         editor.textView.scroll(CGPoint(x: 0, y: 4000))
         editor.scrollView.reflectScrolledClipView(editor.scrollView.contentView)
-        await settle()
+        await settle(editor)
 
         let before = try #require(topOfViewport())
 
@@ -423,7 +453,7 @@ import STTextView
         // about what is on screen should differ afterwards.
         editor.coordinator.invalidateHighlight()
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
 
         let after = try #require(topOfViewport())
         #expect(before.offset == after.offset && abs(before.into - after.into) < 1,
@@ -439,11 +469,11 @@ import STTextView
         let paragraph = String(repeating: "words that wrap and keep going ", count: 12)
         let editor = makeEditor(text: paragraph + "\n\nA second paragraph.")
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
 
         editor.textView.textSelection = NSRange(location: 0, length: 0)
         editor.textView.run(.down, count: 1, mode: .normal)
-        await settle()
+        await settle(editor)
 
         let landed = editor.textView.textSelection.location
         #expect(landed > 0, "did not move")
@@ -460,11 +490,11 @@ import STTextView
     @Test func downCrossesALineBreakInsteadOfStoppingAtItsEnd() async throws {
         let editor = makeEditor(text: "Intro line.\n\nA paragraph after it.")
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
 
         editor.textView.textSelection = NSRange(location: 0, length: 1)
         editor.textView.run(.down, count: 1, mode: .normal)
-        await settle()
+        await settle(editor)
 
         #expect(editor.textView.textSelection.location == 12,
                 "landed at \(editor.textView.textSelection.location); 11 is the end of the line it started on")
@@ -483,14 +513,14 @@ import STTextView
         }
         let editor = makeEditor(text: long)
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
 
         let ns = long as NSString
         let target = ns.range(of: "Paragraph 120")
         try #require(target.location != NSNotFound)
 
         editor.textView.reveal(target)
-        await settle()
+        await settle(editor)
 
         let lm = editor.textView.textLayoutManager
         let cm = try #require(lm.textContentManager)
@@ -508,11 +538,11 @@ import STTextView
     @Test func revealingSomethingAlreadyVisibleDoesNotMove() async throws {
         let editor = makeEditor(text: document)
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
 
         let before = editor.textView.visibleRect.minY
         editor.textView.reveal(NSRange(location: 5, length: 0))
-        await settle()
+        await settle(editor)
 
         #expect(editor.textView.visibleRect.minY == before,
                 "the view moved for something already in front of the reader")
@@ -530,7 +560,7 @@ import STTextView
     @Test func anEditRepaintsTheParagraphItTouched() async throws {
         let editor = makeEditor(text: document)
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
 
         let ns = (editor.textView.text ?? "") as NSString
         let region = MaximalEditor.Coordinator.repaintRegion(
@@ -570,14 +600,14 @@ import STTextView
     @Test func aClickDoesNotLeaveNormalModeWithoutASelection() async throws {
         let editor = makeEditor(text: document)
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
 
         // What a click does: a collapsed selection, set outside the engine.
         editor.textView.textSelection = NSRange(location: 5, length: 0)
         editor.coordinator.textViewDidChangeSelection(
             Notification(name: STTextView.didChangeSelectionNotification,
                          object: editor.textView))
-        await settle()
+        await settle(editor)
 
         #expect(editor.textView.textSelection == NSRange(location: 5, length: 1),
                 "left at \(editor.textView.textSelection), which no verb can act on")
@@ -588,17 +618,17 @@ import STTextView
     @Test func deletingAfterAClickDeletesTheCharacterUnderIt() async throws {
         let editor = makeEditor(text: document)
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
         let before = editor.textView.text ?? ""
 
         editor.textView.textSelection = NSRange(location: 5, length: 0)
         editor.coordinator.textViewDidChangeSelection(
             Notification(name: STTextView.didChangeSelectionNotification,
                          object: editor.textView))
-        await settle()
+        await settle(editor)
 
         editor.textView.run(.delete, count: 1, mode: .normal)
-        await settle()
+        await settle(editor)
 
         #expect((editor.textView.text ?? "").count == before.count - 1,
                 "d after a click changed nothing")
@@ -610,13 +640,13 @@ import STTextView
     @Test func anEmptyEditIsNotAnnouncedAsAChange() async throws {
         let editor = makeEditor(text: document)
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
         editor.textView.undoManager?.removeAllActions()
 
         editor.textView.apply(EditOutcome(edit: (NSRange(location: 5, length: 0), ""),
                                           selection: NSRange(location: 5, length: 1),
                                           mode: .normal))
-        await settle()
+        await settle(editor)
 
         #expect(editor.textView.undoManager?.canUndo != true,
                 "an edit that changes nothing reached the document")
@@ -627,10 +657,10 @@ import STTextView
     @Test func enteringInsertModeKeepsItsCollapsedSelection() async throws {
         let editor = makeEditor(text: document)
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
 
         editor.textView.run(.insertBefore, count: 1, mode: .normal)
-        await settle()
+        await settle(editor)
 
         #expect(editor.textView.textSelection.length == 0,
                 "insert mode was handed a selection it did not ask for")
@@ -648,13 +678,13 @@ import STTextView
     @Test func aMotionWithTheCaretInViewLeavesTheViewAlone() async throws {
         let editor = makeEditor(text: document)
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
 
         editor.textView.textSelection = NSRange(location: 5, length: 0)
         let before = editor.textView.visibleRect.minY
 
         editor.textView.keepVisible(NSRange(location: 5, length: 0))
-        await settle()
+        await settle(editor)
 
         #expect(editor.textView.visibleRect.minY == before,
                 "the view moved for a caret already in front of the reader")
@@ -670,7 +700,7 @@ import STTextView
         }
         let editor = makeEditor(text: long)
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
         #expect(editor.textView.visibleRect.minY < 1, "should start at the top")
 
         let ns = long as NSString
@@ -678,7 +708,7 @@ import STTextView
         try #require(target.location != NSNotFound)
 
         editor.textView.keepVisible(NSRange(location: target.location, length: 0))
-        await settle()
+        await settle(editor)
 
         #expect(editor.textView.visibleRect.minY > 100,
                 "the view stayed at \(editor.textView.visibleRect.minY) with the caret far below")
@@ -694,13 +724,13 @@ import STTextView
         }
         let editor = makeEditor(text: long)
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
 
         let ns = long as NSString
         let target = ns.range(of: "Paragraph 120")
         try #require(target.location != NSNotFound)
         editor.textView.keepVisible(NSRange(location: target.location, length: 0))
-        await settle()
+        await settle(editor)
 
         let lm = editor.textView.textLayoutManager
         let cm = try #require(lm.textContentManager)
@@ -730,17 +760,17 @@ import STTextView
         }
         let editor = makeEditor(text: long)
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
 
         editor.textView.textSelection = NSRange(location: 0, length: 0)
         editor.coordinator.textViewDidChangeSelection(
             Notification(name: STTextView.didChangeSelectionNotification,
                          object: editor.textView))
-        await settle()
+        await settle(editor)
         #expect(editor.textView.visibleRect.minY < 1, "should start at the top")
 
         editor.textView.run(.lastLine, count: 1, mode: .normal)
-        await settle()
+        await settle(editor)
 
         #expect(editor.textView.visibleRect.minY > 100,
                 "G moved the caret and left the view behind at \(editor.textView.visibleRect.minY)")
@@ -772,7 +802,7 @@ import STTextView
         }
         let editor = makeEditor(text: long)
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
 
         let lm = editor.textView.textLayoutManager
         func topOfViewport() -> (offset: Int, into: CGFloat)? {
@@ -785,7 +815,7 @@ import STTextView
 
         editor.textView.scroll(CGPoint(x: 0, y: 3000))
         editor.scrollView.reflectScrolledClipView(editor.scrollView.contentView)
-        await settle()
+        await settle(editor)
 
         let before = try #require(topOfViewport())
 
@@ -799,7 +829,7 @@ import STTextView
             windowNumber: editor.window.windowNumber, context: nil,
             eventNumber: 1, clickCount: 1, pressure: 1))
         editor.textView.mouseDown(with: down)
-        await settle()
+        await settle(editor)
 
         let after = try #require(topOfViewport())
         #expect(before.offset == after.offset && abs(before.into - after.into) < 1,
@@ -824,7 +854,7 @@ import STTextView
         }
         let editor = makeEditor(text: long)
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
 
         let ns = long as NSString
         func offset(_ name: String) throws -> Int {
@@ -848,7 +878,7 @@ import STTextView
             editor.coordinator.textViewDidChangeSelection(
                 Notification(name: STTextView.didChangeSelectionNotification,
                              object: editor.textView))
-            await settle()
+            await settle(editor)
         }
 
         // Caret near the top, then scroll far down — the caret's paragraph ends
@@ -860,7 +890,7 @@ import STTextView
         let targetY = try #require(documentY(of: target))
         editor.textView.scroll(CGPoint(x: 0, y: targetY - 80))
         editor.scrollView.reflectScrolledClipView(editor.scrollView.contentView)
-        await settle()
+        await settle(editor)
 
         // Where a visible line sits on screen, before and after clicking it.
         let screenBefore = try #require(documentY(of: target)) - editor.textView.visibleRect.minY
@@ -878,7 +908,7 @@ import STTextView
     @Test func imagesFollowTheirEquationsAcrossAClick() async throws {
         let editor = makeEditor(text: document)
         editor.coordinator.highlightNow()
-        await settle()
+        await settle(editor)
 
         // Click into the first paragraph: caret moves, markup there reveals.
         let ns = document as NSString
@@ -887,7 +917,7 @@ import STTextView
         editor.coordinator.textViewDidChangeSelection(
             Notification(name: STTextView.didChangeSelectionNotification,
                          object: editor.textView))
-        await settle()
+        await settle(editor)
 
         let equation = lastEquation(in: document)
         let expected = try #require(settledFrame(for: equation, in: editor))

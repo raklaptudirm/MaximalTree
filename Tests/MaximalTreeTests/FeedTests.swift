@@ -149,12 +149,6 @@ private struct AggregatorProvider: NodeProvider {
 
 @MainActor
 @Suite struct AggregatorFeedTests {
-    private func waitUntil(_ condition: () -> Bool) async throws {
-        for _ in 0..<300 where !condition() {
-            try await Task.sleep(nanoseconds: 5_000_000)
-        }
-        #expect(condition())
-    }
 
     private func makeModel() throws -> AppModel {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -182,19 +176,19 @@ private struct AggregatorProvider: NodeProvider {
         let aggregator = NodeID("agg://watch")!, feed = NodeID("feed://watch")!
         model.workspaceStore.place(["ch://a", "ch://b"], into: aggregator.uri, at: nil)
         model.store?.ensureNodes([aggregator])
-        try await waitUntil { model.host.node(feed) != nil }
+        await waitUntil("never held: model.host.node(feed) != nil") { model.host.node(feed) != nil }
 
         model.host.select([aggregator])
         #expect(model.contentsContainer == feed, "the column is not showing the feed")
 
         model.store?.requestChildren(of: feed)
-        try await waitUntil { labels(model, feed) == ["1", "2", "3"] }
+        await waitUntil("never held: labels(model, feed) == [\"1\", \"2\", \"3\"]") { labels(model, feed) == ["1", "2", "3"] }
         model.store?.requestMoreChildren(of: feed)
-        try await waitUntil { labels(model, feed) == ["1", "2", "3", "4", "6", "7"] }
+        await waitUntil("never held: labels(model, feed) == [\"1\", \"2\", \"3\", \"4\", \"6\", \"7\"]") { labels(model, feed) == ["1", "2", "3", "4", "6", "7"] }
         #expect(!model.host.hasMoreChildren(feed))
 
         model.workspaceStore.place(["ch://c"], into: aggregator.uri, at: nil)
-        try await waitUntil { labels(model, feed) == ["0", "1", "2"] }
+        await waitUntil("never held: labels(model, feed) == [\"0\", \"1\", \"2\"]") { labels(model, feed) == ["0", "1", "2"] }
     }
 
     /// Only a declared contents identity takes the column — a node whose other

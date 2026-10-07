@@ -798,6 +798,25 @@ public struct MaximalEditor: NSViewRepresentable {
 
         private var highlightTask: Task<Void, Never>?
         private var autoCompleteTask: Task<Void, Never>?
+
+        /// Work handed to a later runloop turn that hasn't run yet.
+        private var deferred = 0
+        /// Nothing deferred and no highlight waiting out its debounce: the
+        /// screen holds everything this coordinator owes it. What a test waits
+        /// for, rather than guessing how long a turn takes.
+        var isSettled: Bool { deferred == 0 && highlightTask == nil }
+
+        /// The next runloop turn, counted — see `isSettled`.
+        private func later(_ work: @escaping @MainActor (Coordinator) -> Void) {
+            deferred += 1
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.deferred -= 1
+                    work(self)
+                }
+            }
+        }
         private var lastHighlightedText: String?
         private var lastHighlightedDark: Bool?
         private var lastHighlightedRevealStart: Int?
@@ -894,12 +913,9 @@ public struct MaximalEditor: NSViewRepresentable {
         private func scheduleOverlayReposition() {
             guard !repositionScheduled, !pendingMath.isEmpty else { return }
             repositionScheduled = true
-            DispatchQueue.main.async { [weak self] in
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    self.repositionScheduled = false
-                    self.layoutMathOverlays()
-                }
+            later { coordinator in
+                coordinator.repositionScheduled = false
+                coordinator.layoutMathOverlays()
             }
         }
 
@@ -955,9 +971,7 @@ public struct MaximalEditor: NSViewRepresentable {
             // not be carried: whatever moved it was wrong about the document.
             pendingMath.removeAll { NSMaxRange($0.range) > length }
             // A tick later: the edit's layout has to settle before frames are real.
-            DispatchQueue.main.async { [weak self] in
-                MainActor.assumeIsolated { self?.layoutMathOverlays() }
-            }
+            later { $0.layoutMathOverlays() }
         }
 
         /// What an edit changed, waiting for a repaint that accounts for it.
@@ -1020,9 +1034,7 @@ public struct MaximalEditor: NSViewRepresentable {
                              extra: "region=\(region.location)+\(region.length) of \(ns.length)")
             paint(region, style: lastStyle ?? .code(), content: content, ns: ns,
                   tokenizer: tokenizer, on: textView)
-            DispatchQueue.main.async { [weak self] in
-                MainActor.assumeIsolated { self?.layoutMathOverlays() }
-            }
+            later { $0.layoutMathOverlays() }
         }
 
         /// The span an incremental repaint has to cover.
@@ -1215,11 +1227,9 @@ public struct MaximalEditor: NSViewRepresentable {
                 paint(clamped, style: style, content: content, ns: ns,
                       tokenizer: tokenizer, on: textView)
             }
-            DispatchQueue.main.async { [weak self] in
-                MainActor.assumeIsolated {
-                    self?.layoutMathOverlays()
-                    self?.restoreScrollAnchor()
-                }
+            later { coordinator in
+                coordinator.layoutMathOverlays()
+                coordinator.restoreScrollAnchor()
             }
         }
 
@@ -1228,6 +1238,7 @@ public struct MaximalEditor: NSViewRepresentable {
             highlightTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .milliseconds(100))
                 guard !Task.isCancelled else { return }
+                self?.highlightTask = nil
                 self?.repaintAfterEdit(from: nil, to: self?.revealedParagraph)
             }
         }
@@ -1298,12 +1309,10 @@ public struct MaximalEditor: NSViewRepresentable {
             // when the doc emptied or the style stopped rendering markup.
             // Deferred a tick: TextKit must lay out the new attributes first.
             defer {
-                DispatchQueue.main.async { [weak self] in
-                    MainActor.assumeIsolated {
-                        self?.layoutMathOverlays()
-                        self?.applyHeightCompensation()
-                        self?.restoreScrollAnchor()
-                    }
+                later { coordinator in
+                    coordinator.layoutMathOverlays()
+                    coordinator.applyHeightCompensation()
+                    coordinator.restoreScrollAnchor()
                 }
             }
             guard full.length > 0 else { return }

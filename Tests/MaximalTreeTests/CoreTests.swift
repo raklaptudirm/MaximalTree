@@ -175,27 +175,36 @@ import AppKit
         #expect(changes == [.childrenChanged(NodeID(fileURL: base)!)])
     }
 
+    @MainActor
     @Test func liveWatcherReportsExternalWrites() async throws {
         let base = try makeTempTree()
         defer { try? FileManager.default.removeItem(at: base) }
+        let probe = base.appendingPathComponent("probe", isDirectory: true)
+        try FileManager.default.createDirectory(at: probe, withIntermediateDirectories: true)
 
+        let armed = expectationBox()
         let hit = expectationBox()
+        // By the end of the path: FSEvents reports /private/var for /var.
+        let probed = "\(base.lastPathComponent)/probe"
         let watcher = try #require(FileTreeWatcher(path: base.path, latency: 0.1) { events in
-            if events.contains(where: { $0.path.hasSuffix("external.txt") }) {
-                hit.fulfill()
-            }
+            if events.contains(where: { $0.path.contains(probed) }) { armed.fulfill() }
+            if events.contains(where: { $0.path.hasSuffix("external.txt") }) { hit.fulfill() }
         })
         defer { watcher.stop() }
 
-        // Let the stream settle, then simulate another app writing a file.
-        try await Task.sleep(nanoseconds: 300_000_000)
+        // FSEvents takes a moment to start listening: poke it until it
+        // answers, then simulate another app writing a file.
+        try #require(await waitUntil("the watcher never started listening") {
+            try? UUID().uuidString.write(to: probe.appendingPathComponent("poke"),
+                                         atomically: true, encoding: .utf8)
+            return armed.isFulfilled
+        })
         try "outside edit".write(to: base.appendingPathComponent("external.txt"),
                                  atomically: true, encoding: .utf8)
 
-        for _ in 0..<100 where !hit.isFulfilled {   // FSEvents latency: allow ~5s
-            try await Task.sleep(nanoseconds: 50_000_000)
+        await waitUntil("expected an FSEvents callback for the written file", within: .seconds(5)) {
+            hit.isFulfilled
         }
-        #expect(hit.isFulfilled, "expected an FSEvents callback for the written file")
     }
 
     private final class ExpectationBox: @unchecked Sendable {

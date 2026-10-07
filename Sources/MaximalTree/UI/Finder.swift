@@ -36,6 +36,9 @@ final class FinderModel {
     var index = 0
 
     private var loadID = 0
+    /// The latest gathering, so a test can wait for one to finish — even one
+    /// a later open overtook, whose results must then go nowhere.
+    @ObservationIgnored private(set) var gathering: Task<Void, Never>?
 
     /// What the query matches, best first.
     ///
@@ -101,7 +104,7 @@ final class FinderModel {
         let id = loadID
         let wanted = sources.filter { scope == nil ? $0.searchedByDefault : $0.id == scope }
 
-        Task { @MainActor in
+        gathering = Task { @MainActor in
             var gathered: [(item: FinderItem, source: String, weight: Int)] = []
             for source in wanted {
                 let found = await source.items()
