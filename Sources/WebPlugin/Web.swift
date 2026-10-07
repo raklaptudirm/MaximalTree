@@ -234,6 +234,7 @@ final class WebPlugin: NSObject, Plugin {
     func register(with registry: PluginRegistry) {
         registry.register(provider: WebProvider())
         WebKeys.register(with: registry)
+        BookmarkStore.shared.report(to: registry.notices)
 
         registry.register(canvas: CanvasContribution(
             priority: 0,

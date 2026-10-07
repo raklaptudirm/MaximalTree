@@ -183,6 +183,10 @@ final class AppModel {
     /// asked for something to happen, not for an answer, so the host is the
     /// one that has to say it didn't.
     private(set) var commandFailure: CommandFailure?
+    /// What else is waiting to be said, in the order it came. Two things can
+    /// go wrong at once — on a launch where nothing can be read, everything
+    /// does — and the second must not quietly replace the first.
+    @ObservationIgnored private var waitingFailures: [CommandFailure] = []
 
     /// The finder: fuzzy search over everything the app knows about.
     var finderVisible = false
@@ -985,14 +989,29 @@ final class AppModel {
         let message = (error as? CommandError)?.description
             ?? (error as? LocalizedError)?.errorDescription
             ?? String(describing: error)
-        commandFailure = CommandFailure(command: command, message: message)
+        show(CommandFailure(command: command, message: message))
     }
 
-    func dismissCommandFailure() { commandFailure = nil }
+    func dismissCommandFailure() {
+        commandFailure = nil
+        guard !waitingFailures.isEmpty else { return }
+        // On the next turn rather than this one, so the alert being dismissed
+        // is taken down before the next is put up in its place.
+        Task { @MainActor [weak self] in self?.showWaiting() }
+    }
 
     /// Say something about the reader's data that no command failed to do.
-    func notice(_ title: String, _ message: String, from source: String) {
-        commandFailure = CommandFailure(title: title, command: source, message: message)
+    func notice(_ notice: Notice) {
+        show(CommandFailure(title: notice.title, command: notice.source, message: notice.message))
+    }
+
+    private func show(_ failure: CommandFailure) {
+        if commandFailure == nil { commandFailure = failure } else { waitingFailures.append(failure) }
+    }
+
+    private func showWaiting() {
+        guard commandFailure == nil, !waitingFailures.isEmpty else { return }
+        commandFailure = waitingFailures.removeFirst()
     }
 
     /// What the workspace library has to say before anything else happens: that
@@ -1000,31 +1019,15 @@ final class AppModel {
     private func hearFromTheLibrary() {
         let store = workspaceStore
         if let unreadable = store.unreadable {
-            if let kept = unreadable.keptAt {
-                notice("Your Workspaces Were Set Aside",
-                       "MaximalTree couldn't read your workspaces, so it moved them, untouched, "
-                       + "to “\(kept.lastPathComponent)” in \(kept.deletingLastPathComponent().path) "
-                       + "and started a fresh one. A newer build may be able to read them: to put "
-                       + "them back, quit and rename that file to “workspaces.json”.",
-                       from: "workspace.load")
-            } else {
-                notice("Your Workspaces Couldn't Be Read",
-                       "MaximalTree couldn't read your workspaces or move them aside, so it is "
-                       + "leaving the file exactly as it is and won't save over it. Nothing you "
-                       + "change this session will be kept.",
-                       from: "workspace.load")
-            }
+            notice(.unreadable("Workspaces", "workspaces", file: store.fileURL,
+                               keptAt: unreadable.keptAt, source: "workspace.load"))
         }
         store.onSaveFailed = { [weak self] error in self?.reportSaveFailure(error) }
         if let error = store.saveError { reportSaveFailure(error) }
     }
 
     private func reportSaveFailure(_ error: Error) {
-        notice("Your Workspaces Weren't Saved",
-               "MaximalTree couldn't save your workspaces: \(error.localizedDescription) "
-               + "It tries again with every change; until one succeeds, what you change won't "
-               + "be there next time.",
-               from: "workspace.save")
+        notice(.notSaved("Workspaces", "workspaces", error: error, source: "workspace.save"))
     }
 
     /// Actions the host contributes itself — node manipulation that belongs to no
@@ -1047,6 +1050,9 @@ final class AppModel {
     func start() {
         guard store == nil else { return }
         hearFromTheLibrary()
+        // And from the plugins, which have their own files of the reader's to
+        // keep — whatever they said while loading is held until now.
+        pluginHost.registry.notices.listen { [weak self] notice in self?.notice(notice) }
         // Host-owned actions register first so they lead every action list.
         registerCoreActions(with: pluginHost.registry)
         registerCoreInspector(with: pluginHost.registry)

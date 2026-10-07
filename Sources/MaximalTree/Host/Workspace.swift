@@ -223,7 +223,7 @@ struct WorkspaceLibrary: Codable {
 @MainActor
 @Observable
 final class WorkspaceStore: PlacementHost {
-    private let fileURL: URL
+    let fileURL: URL
     private(set) var library: WorkspaceLibrary
 
     /// True only when no persisted state existed at all (very first launch). The

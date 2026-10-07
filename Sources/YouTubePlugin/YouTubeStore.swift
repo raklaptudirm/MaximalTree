@@ -76,9 +76,13 @@ final class YouTubeStore: @unchecked Sendable {
     private let feedsURL: URL
     /// False when the feeds file couldn't be read or moved aside.
     private var feedsWritable = true
+    /// What happened to a feeds file that was there but couldn't be read.
+    private(set) var feedsUnreadable: (keptAt: URL?, reason: String)?
     /// The last time the names didn't save, until they do.
     private var lastFeedsSaveError: (any Error)?
     var feedsSaveError: (any Error)? { lock.withLock { lastFeedsSaveError } }
+    /// Who hears about it when the names start failing to save.
+    private(set) var notices: Notices?
     /// Thumbnails read (or written) this run, so drawing a row is not a disk
     /// read each time. `nil` records one we have no image for.
     private var icons: [String: Data?] = [:]
@@ -105,6 +109,7 @@ final class YouTubeStore: @unchecked Sendable {
             if !feedNames.isEmpty { writeFeeds() }
         case .unreadable(let keptAt, let reason):
             feedsWritable = keptAt != nil
+            feedsUnreadable = (keptAt, reason)
             NSLog("[YouTubePlugin] feed names unreadable (\(reason)); "
                   + (keptAt.map { "kept at \($0.path)" } ?? "left in place, not saving over it"))
         }
@@ -268,6 +273,25 @@ final class YouTubeStore: @unchecked Sendable {
         try? data.write(to: directory.appendingPathComponent("known.json"), options: .atomic)
     }
 
+    /// Tell the reader what became of the names they gave their feeds: now, if
+    /// the file couldn't be read or the first save failed, and from then on
+    /// whenever saving starts to fail.
+    func report(to notices: Notices) {
+        let failed = lock.withLock { () -> (any Error)? in
+            self.notices = notices
+            return lastFeedsSaveError
+        }
+        if let feedsUnreadable {
+            notices.post(.unreadable("YouTube Feed Names", "YouTube feed names", file: feedsURL,
+                                     keptAt: feedsUnreadable.keptAt, source: "youtube.feeds"))
+        }
+        if let failed { notices.post(Self.notSaved(failed)) }
+    }
+
+    private static func notSaved(_ error: any Error) -> Notice {
+        .notSaved("YouTube Feed Names", "YouTube feed names", error: error, source: "youtube.feeds")
+    }
+
     private func writeFeeds() {
         guard feedsWritable else { return }
         let names = lock.withLock { feedNames }
@@ -275,8 +299,13 @@ final class YouTubeStore: @unchecked Sendable {
             try UserDataFile.write(names, to: feedsURL)
             lock.withLock { lastFeedsSaveError = nil }
         } catch {
-            lock.withLock { lastFeedsSaveError = error }
             NSLog("[YouTubePlugin] feed names not saved: \(error.localizedDescription)")
+            // Said once per run of failures, not once for every change after it.
+            let notices = lock.withLock { () -> Notices? in
+                defer { lastFeedsSaveError = error }
+                return lastFeedsSaveError == nil ? self.notices : nil
+            }
+            notices?.post(Self.notSaved(error))
         }
     }
 }

@@ -220,6 +220,8 @@ final class BookmarkStore: @unchecked Sendable {
     /// The last save that failed, until one succeeds.
     private var lastSaveError: (any Error)?
     var saveError: (any Error)? { lock.withLock { lastSaveError } }
+    /// Who hears about a save that starts failing — see `report(to:)`.
+    private(set) var notices: Notices?
 
     init(fileURL: URL? = nil) {
         let url = fileURL ?? WebStorage.directory().appendingPathComponent("web-bookmarks.json")
@@ -258,33 +260,63 @@ final class BookmarkStore: @unchecked Sendable {
     /// Add (or retitle) a bookmark. Newest first; idempotent per URL.
     func add(url: String, title: String) {
         guard let canonical = NodeID(url)?.uri else { return }
-        lock.lock()
-        defer { lock.unlock() }
-        if let index = bookmarks.firstIndex(where: { $0.url == canonical }) {
-            bookmarks[index].title = title
-        } else {
-            bookmarks.insert(Bookmark(url: canonical, title: title, added: Date()), at: 0)
+        change {
+            if let index = bookmarks.firstIndex(where: { $0.url == canonical }) {
+                bookmarks[index].title = title
+            } else {
+                bookmarks.insert(Bookmark(url: canonical, title: title, added: Date()), at: 0)
+            }
         }
-        persist()
     }
 
     func remove(url: String) {
         guard let canonical = NodeID(url)?.uri else { return }
-        lock.lock()
-        defer { lock.unlock() }
-        bookmarks.removeAll { $0.url == canonical }
-        persist()
+        change { bookmarks.removeAll { $0.url == canonical } }
     }
 
-    /// Caller must hold `lock`.
-    private func persist() {
-        guard mayWrite else { return }
+    /// Tell the reader what became of their bookmarks: now, if the file
+    /// couldn't be read or the first save failed, and from then on whenever
+    /// saving starts to fail.
+    func report(to notices: Notices) {
+        let failed = lock.withLock { () -> (any Error)? in
+            self.notices = notices
+            return lastSaveError
+        }
+        if let unreadable {
+            notices.post(.unreadable("Bookmarks", "bookmarks", file: fileURL,
+                                     keptAt: unreadable.keptAt, source: "web.bookmarks"))
+        }
+        if let failed { notices.post(Self.notSaved(failed)) }
+    }
+
+    private static func notSaved(_ error: any Error) -> Notice {
+        .notSaved("Bookmarks", "bookmarks", error: error, source: "web.bookmarks")
+    }
+
+    /// Make a change and save it, and say so if this is the save that started
+    /// failing — once, rather than once for every change after it. Said
+    /// outside the lock: whoever hears it may well ask for the bookmarks.
+    private func change(_ body: () -> Void) {
+        let (failed, notices) = lock.withLock { () -> ((any Error)?, Notices?) in
+            body()
+            return (persist(), self.notices)
+        }
+        if let failed, let notices { notices.post(Self.notSaved(failed)) }
+    }
+
+    /// Caller must hold `lock`. The error if this save is the first of a run
+    /// of failures.
+    private func persist() -> (any Error)? {
+        guard mayWrite else { return nil }
         do {
             try UserDataFile.write(bookmarks, to: fileURL)
             lastSaveError = nil
+            return nil
         } catch {
+            let first = lastSaveError == nil
             lastSaveError = error
             NSLog("[WebPlugin] bookmarks not saved: \(error.localizedDescription)")
+            return first ? error : nil
         }
     }
 }

@@ -90,6 +90,8 @@ Sources/
     KeyMode.swift               #   the app's one mode (normal/insert/visual)
     UserDataFile.swift          #   reading and writing the reader's own data:
                                 #   unreadable files are set aside, never replaced
+    Notice.swift                #   Notice/Notices: telling the reader what no command
+                                #   failed to do (CoreRegistry.notices)
     Finder.swift                #   FinderSource/FinderItem (a searchable list)
     FeedMerge.swift             #   k-way merge over paged sources (aggregator feeds)
     ChangeStream.swift          #   ChangeStreamingProvider + FileTreeWatcher (FSEvents)
@@ -939,7 +941,12 @@ committed and builds aren't byte-for-byte reproducible across machines.
   only the reader has — is read and written through `UserDataFile`: a file that is
   there but can't be read is moved aside (`workspaces.unreadable-<date>.json`) and
   reported, never replaced, and one that can't even be moved is never saved over. A
-  failed save is reported rather than discarded. Everything re-fetchable can stay
+  failed save is reported rather than discarded — once per run of failures, not once
+  per change. A plugin reports through `registry.notices`, with `Notice.unreadable`
+  and `Notice.notSaved` so every file says it the same way; it keeps the `Notices`,
+  because a save fails long after `register(with:)`. Whatever is posted before the
+  host listens is held, and the host shows notices one at a time, in order, so two
+  at once don't replace each other. Everything re-fetchable can stay
   behind `try?` — but don't put the two in one file, or the cache's carelessness
   becomes the data's. (Feed names lived in YouTube's cache file until they had to
   move out for exactly that reason.) Before this, an unreadable library was

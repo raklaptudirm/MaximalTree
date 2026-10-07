@@ -16,6 +16,9 @@ final class Registry: PluginRegistry {
     /// Handed to plugins during registration; populated once every plugin has loaded.
     let hostBroker = HostBroker()
     var broker: NodeBroker { hostBroker }
+    /// Plugins post to it from the start; the host listens once it has a
+    /// window to say things in, and hears what was held until then.
+    let notices = Notices()
 
     /// The plugin currently being loaded, so its contributions can be
     /// attributed without every plugin having to name itself. Nil while the

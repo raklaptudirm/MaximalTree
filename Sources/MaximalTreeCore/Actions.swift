@@ -275,6 +275,10 @@ public protocol CoreRegistry: AnyObject {
     /// Ask other plugins' providers for nodes. Store it on your provider if you need
     /// to compose foreign nodes: `register(provider: MyProvider(broker: registry.broker))`.
     var broker: NodeBroker { get }
+    /// Where to tell the reader something no command failed to do — a file of
+    /// theirs that couldn't be read, a save that didn't happen. Hold on to it:
+    /// most of what there is to say is said later than `register(with:)`.
+    var notices: Notices { get }
 
     func register(provider: NodeProvider)
     func register(children: ChildContribution)

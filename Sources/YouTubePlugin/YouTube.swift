@@ -21,6 +21,7 @@ final class YouTubePlugin: NSObject, Plugin {
         let provider = YouTubeProvider(broker: registry.broker)
         Self.provider = provider
         registry.register(provider: provider)
+        YouTubeStore.shared.report(to: registry.notices)
 
         registry.registerCanvas(forType: TypeID("youtube.video")) { id, _ in
             AnyView(YouTubeVideoCanvas(url: YouTubeRef(uri: id.uri)?.webURL))

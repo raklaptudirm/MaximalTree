@@ -272,3 +272,152 @@ extension BookmarkKeepingTests {
         #expect(FileManager.default.fileExists(atPath: folder.file("feeds.json").path))
     }
 }
+
+// MARK: - Telling the reader
+
+/// Everything posted to `notices`, held or live, in the order it arrived.
+@MainActor
+private final class Heard {
+    private(set) var notices: [Notice] = []
+    init(_ notices: Notices) { notices.listen { [unowned self] in self.notices.append($0) } }
+}
+
+@MainActor
+@Suite struct NoticeTests {
+    /// A store says its piece while it is being opened, which is before
+    /// anyone is listening. Held, not dropped.
+    @Test func whatIsSaidBeforeTheHostListensIsHeld() {
+        let notices = Notices()
+        notices.post(Notice(title: "One", message: "", source: "a"))
+        notices.post(Notice(title: "Two", message: "", source: "b"))
+        #expect(Heard(notices).notices.map(\.title) == ["One", "Two"])
+    }
+
+    @Test func whatIsSaidAfterwardsArrivesAtOnce() {
+        let notices = Notices()
+        let heard = Heard(notices)
+        notices.post(Notice(title: "Later", message: "", source: "a"))
+        #expect(heard.notices.map(\.title) == ["Later"])
+    }
+
+    /// Two at once, as on a launch where nothing can be read: the second
+    /// waits its turn rather than replacing the first.
+    @Test func aSecondNoticeWaitsForTheFirstToBeDismissed() async throws {
+        let folder = try Folder()
+        let file = folder.file("workspaces.json")
+        try unreadable.write(to: file)
+        let model = AppModel(host: HostContext(), workspaceFile: file)
+        model.start()
+
+        model.pluginHost.registry.notices.post(Notice(title: "Second", message: "", source: "test"))
+        #expect(model.commandFailure?.title == "Your Workspaces Were Set Aside")
+
+        model.dismissCommandFailure()
+        for _ in 0..<200 where model.commandFailure == nil { await Task.yield() }
+        #expect(model.commandFailure?.title == "Second", "the second notice was lost")
+
+        model.dismissCommandFailure()
+        for _ in 0..<20 { await Task.yield() }
+        #expect(model.commandFailure == nil)
+    }
+}
+
+@MainActor
+@Suite struct UserDataNoticeTests {
+    @Test func unreadableBookmarksAreToldWhereTheyWent() throws {
+        let folder = try Folder()
+        let file = folder.file("web-bookmarks.json")
+        try unreadable.write(to: file)
+        let store = BookmarkStore(fileURL: file)
+        let notices = Notices()
+        let heard = Heard(notices)
+
+        store.report(to: notices)
+
+        let kept = try #require(store.unreadable?.keptAt)
+        #expect(heard.notices.map(\.title) == ["Your Bookmarks Were Set Aside"])
+        #expect(heard.notices.first?.message.contains(kept.lastPathComponent) == true,
+                "it didn't say where they went")
+        #expect(heard.notices.first?.message.contains("“web-bookmarks.json”") == true,
+                "it didn't say what to rename it back to")
+    }
+
+    @Test func bookmarksThatCouldNotBeMovedSaySo() throws {
+        let folder = try Folder()
+        let file = folder.file("web-bookmarks.json")
+        try unreadable.write(to: file)
+        let store = folder.readOnly { BookmarkStore(fileURL: file) }
+        let notices = Notices()
+        let heard = Heard(notices)
+
+        store.report(to: notices)
+
+        #expect(heard.notices.map(\.title) == ["Your Bookmarks Couldn't Be Read"])
+    }
+
+    @Test func bookmarksThatReadFineSayNothing() throws {
+        let folder = try Folder()
+        let notices = Notices()
+        let heard = Heard(notices)
+        BookmarkStore(fileURL: folder.file("web-bookmarks.json")).report(to: notices)
+        #expect(heard.notices.isEmpty)
+    }
+
+    /// Once when saving starts to fail, not once for every bookmark after
+    /// it; and again if it fails after having worked.
+    @Test func aFailingBookmarkSaveIsToldOncePerRunOfFailures() throws {
+        let folder = try Folder()
+        let store = BookmarkStore(fileURL: folder.file("web-bookmarks.json"))
+        let notices = Notices()
+        let heard = Heard(notices)
+        store.report(to: notices)
+
+        folder.readOnly {
+            store.add(url: "https://example.com/1", title: "One")
+            store.add(url: "https://example.com/2", title: "Two")
+        }
+        #expect(heard.notices.map(\.title) == ["Your Bookmarks Weren't Saved"])
+
+        store.add(url: "https://example.com/3", title: "Three")
+        folder.readOnly { store.remove(url: "https://example.com/3") }
+        #expect(heard.notices.count == 2, "a failure after a success went unsaid")
+    }
+
+    @Test func unreadableFeedNamesAreToldWhereTheyWent() throws {
+        let folder = try Folder()
+        try unreadable.write(to: folder.file("feeds.json"))
+        let store = YouTubeStore(directory: folder.url)
+        let notices = Notices()
+        let heard = Heard(notices)
+
+        store.report(to: notices)
+
+        let kept = try #require(store.feedsUnreadable?.keptAt)
+        #expect(heard.notices.map(\.title) == ["Your YouTube Feed Names Were Set Aside"])
+        #expect(heard.notices.first?.message.contains(kept.lastPathComponent) == true)
+    }
+
+    @Test func aFailingFeedNameSaveIsToldOncePerRunOfFailures() throws {
+        let folder = try Folder()
+        let store = YouTubeStore(directory: folder.url)
+        let notices = Notices()
+        let heard = Heard(notices)
+        store.report(to: notices)
+
+        folder.readOnly {
+            store.remember(feedName: "Music", for: UUID())
+            store.remember(feedName: "Talks", for: UUID())
+        }
+        #expect(heard.notices.map(\.title) == ["Your YouTube Feed Names Weren't Saved"])
+    }
+
+    /// The plugins hand their stores the host's channel when they register —
+    /// without it, everything above is said to nobody.
+    @Test func thePluginsPassTheHostsChannelOn() {
+        let registry = Registry()
+        WebPlugin().register(with: registry)
+        YouTubePlugin().register(with: registry)
+        #expect(BookmarkStore.shared.notices === registry.notices)
+        #expect(YouTubeStore.shared.notices === registry.notices)
+    }
+}
