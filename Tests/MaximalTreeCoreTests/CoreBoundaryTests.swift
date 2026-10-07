@@ -52,13 +52,15 @@ import Foundation
 
     /// Every plugin's `Core` folder: what it may import is the SDK and what
     /// the core itself may, plus UniformTypeIdentifiers — a file's type is not
-    /// a UI concern, even if it is an Apple one.
+    /// a UI concern, even if it is an Apple one — and a plugin's own native
+    /// library, which Package.swift links as the Mac build does.
     @Test func noPluginCoreImportsAnythingThatDraws() throws {
         let cores = try Self.pluginCores()
         #expect(!cores.isEmpty, "found no plugin cores")
         for core in cores {
             let offences = try offences(in: core, allowed: [
                 "Foundation", "Observation", "CoreServices", "UniformTypeIdentifiers", "MaximalTreeKit",
+                "TypstFFI",
             ])
             #expect(offences.isEmpty, "\(core) imports what only a UI has: \(offences)")
         }

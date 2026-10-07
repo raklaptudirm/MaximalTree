@@ -1380,3 +1380,46 @@ struct TinymistLiveTests {
         #expect(!TypstSourceStyle.source.autosaves)
     }
 }
+
+/// What a host with no window gets from typst: documents' structure, the
+/// agenda, and notes made and opened. The Mac adds how a document is shown.
+@MainActor
+@Suite struct TypstSplitTests {
+    @Test func theCoreHalfIsStructureAndNotes() {
+        let core = CoreContributions()
+        TypstCore.register(with: core)
+        #expect(core.providers.contains { $0.schemes.contains("typst") })
+        #expect(core.childContributions.count == 1)
+        #expect(Set(core.actions.map(\.id))
+                == ["typst.notesFolder", "typst.preview", "typst.newNote", "typst.dailyNote"])
+    }
+
+    /// A shell showing the agenda hears when its folder changes — told, since
+    /// the core has no idea what is on screen.
+    @Test func anAgendaFolderThatChangesSaysSo() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("agenda-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let told = Told()
+        let provider = TypstProvider(onAgendaChanged: { told.mark() })
+        let root = try #require(NodeID(TypstRef.agenda(dir: dir.resolvingSymlinksInPath().path).uri))
+        let stream = try #require(provider.changes(under: root))
+        let consumer = Task { for await _ in stream {} }
+        defer { consumer.cancel() }
+
+        // Written until heard: FSEvents takes a moment to start listening.
+        await waitUntil("the agenda's change was never passed on") {
+            try? "- [ ] a task".write(to: dir.appendingPathComponent("note.typ"),
+                                      atomically: true, encoding: .utf8)
+            return told.marked
+        }
+    }
+
+    private final class Told: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        var marked: Bool { lock.withLock { value } }
+        func mark() { lock.withLock { value = true } }
+    }
+}

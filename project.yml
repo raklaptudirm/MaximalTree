@@ -402,23 +402,19 @@ targets:
     platform: macOS
     # Compiles the plugin sources directly so provider logic stays unit-testable
     # without dlopen. The host skips loading the .bundle under XCTest to avoid a
-    # duplicate principal class in-process. TypstPlugin contributes only its
-    # view-free core files (engine, LSP, structure) — the canvases stay out.
+    # duplicate principal class in-process. TypstPlugin contributes its Core
+    # folder and a few view-free files (LSP, UI state) — the canvases stay out.
     sources:
       - Tests/MaximalTreeTests
       - Sources/FileSystemPlugin
       - Sources/GitPlugin
       - Sources/TextEditorPlugin
-      - path: Sources/TypstPlugin/TypstCore.swift
-      - path: Sources/TypstPlugin/TypstEngine.swift
+      - Sources/TypstPlugin/Core
       - path: Sources/TypstPlugin/TypstLSP.swift
-      - path: Sources/TypstPlugin/TypstPackages.swift
-      - path: Sources/TypstPlugin/TypstProject.swift
       - path: Sources/TypstPlugin/PDFAppearance.swift
       - path: Sources/TypstPlugin/TypstServices.swift
       - path: Sources/TypstPlugin/TypstUIState.swift
       - path: Sources/TypstPlugin/TypstDocument.swift
-      - path: Sources/TypstPlugin/TypstProvider.swift
       - path: Sources/TypstPlugin/ProseStyle.swift
       - Sources/WebPlugin
       - Sources/TerminalPlugin

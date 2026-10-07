@@ -37,6 +37,15 @@ let package = Package(
                 path: "Sources/GitPlugin/Core"),
         .target(name: "ICloud", dependencies: ["MaximalTreeKit"],
                 path: "Sources/ICloudPlugin/Core"),
+        // Typst's engine is a Rust library, built by cargo as the Mac app
+        // builds (see project.yml); this links the same one.
+        .systemLibrary(name: "TypstFFI", path: "Vendor/typst-ffi/include"),
+        .target(name: "Typst", dependencies: ["MaximalTreeKit", "TypstFFI"],
+                path: "Sources/TypstPlugin/Core",
+                linkerSettings: [
+                    .unsafeFlags(["-L", Context.packageDirectory + "/Vendor/typst-ffi/target/release"]),
+                    .linkedLibrary("typst_ffi"),
+                ]),
         .target(name: "Web", dependencies: ["MaximalTreeKit"],
                 path: "Sources/WebPlugin/Core"),
         .target(name: "YouTube", dependencies: ["MaximalTreeKit"],
@@ -46,7 +55,7 @@ let package = Package(
         // place a reference to a view would fail to compile.
         .testTarget(name: "MaximalTreeCoreTests",
                     dependencies: ["MaximalTreeKit", "MaximalTreeHost",
-                                   "FileSystem", "Git", "ICloud", "Web", "YouTube"],
+                                   "FileSystem", "Git", "ICloud", "Typst", "Web", "YouTube"],
                     path: "Tests/MaximalTreeCoreTests"),
     ]
 )

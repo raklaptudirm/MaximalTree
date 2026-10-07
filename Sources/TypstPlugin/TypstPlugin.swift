@@ -20,15 +20,12 @@ final class TypstPlugin: NSObject, Plugin {
     override init() { super.init() }
 
     func register(with registry: PluginRegistry) {
-        // Before anything can compile: @preview packages are downloaded on
-        // demand, and the engine can only do that through the host.
-        TypstPackages.install()
-
-        // Make `@local/mtnotes` importable before any compile can need it.
-        Task.detached(priority: .utility) {
-            do { try TypstNotes.installPackage() }
-            catch { NSLog("[TypstPlugin] package install failed: \(error.localizedDescription)") }
-        }
+        TypstCore.installPackages()
+        // The agenda on screen redraws when its folder changes, through the
+        // same nonce the Refresh action bumps.
+        TypstCore.register(with: registry, onAgendaChanged: {
+            Task { @MainActor in TypstUIState.shared.agendaRefresh += 1 }
+        })
 
         registry.register(canvas: CanvasContribution(
             priority: 150,     // above TextEditor (100): .typ is text, but ours is better
@@ -51,21 +48,6 @@ final class TypstPlugin: NSObject, Plugin {
                                      SurfaceKey("z o", "typst.proseSize.smaller"),
                                      SurfaceKey("z 0", "typst.proseSize.reset")],
             make: { id, host in AnyView(TypstCanvas(nodeID: id).environment(host)) }
-        ))
-
-        // Structure: sections/tasks under .typ files, and the mountable agenda.
-        registry.register(provider: TypstProvider())
-        registry.register(children: ChildContribution(
-            matches: { node in
-                node.id.scheme == "file" && node.id.uri.lowercased().hasSuffix(".typ")
-            },
-            children: { id in
-                guard let url = URL(string: id.uri) else { return [] }
-                let items = TypstProvider.outline(ofFileAt: url)
-                return TypstStructure.directChildren(ofSectionAt: nil, in: items).map {
-                    TypstProvider.node(for: $0, file: url, items: items)
-                }
-            }
         ))
 
         // Sections and tasks are *phony* nodes (NodeAnchor): the host resolves
@@ -97,20 +79,6 @@ final class TypstPlugin: NSObject, Plugin {
             make: { id, host in AnyView(TypstDocumentInspector(nodeID: id).environment(host)) }
         ))
 
-        registry.register(action: Action(
-            id: "typst.notesFolder",
-            title: "Use as Typst Notes Folder",
-            systemImage: "calendar.badge.plus",
-            appliesTo: .type(.directory),
-            scope: .container,
-            run: { ctx in
-                guard let dir = ctx.selection.first, dir.scheme == "file",
-                      let url = URL(string: dir.uri) else { return }
-                // Mounts the agenda as a workspace root — the folder *is* the config.
-                ctx.mount(TypstRef.agenda(dir: url.path).uri)
-            }
-        ))
-
         // The canvas is content-only: what used to be mode switching is these
         // two actions, plus "Show Pages" above. They no longer share a shape —
         // one sets how the source is written, the other also puts the pages
@@ -119,11 +87,11 @@ final class TypstPlugin: NSObject, Plugin {
             id: "typst.prose",
             title: "Typst: Prose",
             systemImage: "square.and.pencil",
-            appliesTo: .custom { Self.typFileURL(in: $0) != nil },
+            appliesTo: .custom { TypstCore.typFileURL(in: $0) != nil },
             shortcut: KeyChord("1", option: true, command: true),
             scope: .document,
             run: { ctx in
-                TypstUIState.shared.setSourceStyle(.prose, for: Self.typFileURL(in: ctx))
+                TypstUIState.shared.setSourceStyle(.prose, for: TypstCore.typFileURL(in: ctx))
             }
         ))
 
@@ -131,11 +99,11 @@ final class TypstPlugin: NSObject, Plugin {
             id: "typst.typeset",
             title: "Typst: Typeset",
             systemImage: "doc.richtext",
-            appliesTo: .custom { Self.typFileURL(in: $0) != nil },
+            appliesTo: .custom { TypstCore.typFileURL(in: $0) != nil },
             shortcut: KeyChord("2", option: true, command: true),
             scope: .document,
             run: { ctx in
-                guard let url = Self.typFileURL(in: ctx) else { return }
+                guard let url = TypstCore.typFileURL(in: ctx) else { return }
                 TypstUIState.shared.setSourceStyle(.source, for: url)
                 // Typesetting means seeing what you are typesetting: the pages
                 // go in the pane next door, reusing one that already has them.
@@ -180,26 +148,11 @@ final class TypstPlugin: NSObject, Plugin {
                 id: "typst.export.\(format.rawValue)",
                 title: "Export as \(format.title)",
                 systemImage: "square.and.arrow.up",
-                appliesTo: .custom { Self.typFileURL(in: $0) != nil },
+                appliesTo: .custom { TypstCore.typFileURL(in: $0) != nil },
                 scope: .document,
                 run: { ctx in Self.export(format, in: ctx) }
             ))
         }
-
-        registry.register(action: Action(
-            id: "typst.preview",
-            title: "Show Pages",
-            systemImage: "book",
-            appliesTo: .custom { Self.typFileURL(in: $0) != nil },
-            // Where Read mode's key went: it opens the document's pages,
-            // which is what reading it was.
-            shortcut: KeyChord("3", option: true, command: true),
-            scope: .document,
-            run: { ctx in
-                guard let url = Self.typFileURL(in: ctx) else { return }
-                ctx.host.openURI(TypstRef.preview(file: url.path).uri)
-            }
-        ))
 
         registry.register(action: Action(
             id: "typst.agenda.refresh",
@@ -213,33 +166,6 @@ final class TypstPlugin: NSObject, Plugin {
                 for id in ctx.targets { ctx.notify([.childrenChanged(id)]) }
             }
         ))
-
-        registry.register(action: Action(
-            id: "typst.newNote",
-            title: "New Typst Note",
-            systemImage: "square.and.pencil",
-            appliesTo: .type(.directory),
-            scope: .container,
-            run: { ctx in Self.createNote(in: ctx, daily: false) }
-        ))
-        registry.register(action: Action(
-            id: "typst.dailyNote",
-            title: "Today's Daily Note",
-            systemImage: "calendar",
-            appliesTo: .type(.directory),
-            scope: .container,
-            run: { ctx in Self.createNote(in: ctx, daily: true) }
-        ))
-    }
-
-    /// The `.typ` file the action context points at (selection first, then
-    /// focus — phony-node opens resolve both to the real file node).
-    @MainActor
-    static func typFileURL(in ctx: ActionContext) -> URL? {
-        guard let id = ctx.selection.first ?? ctx.focused,
-              id.scheme == "file", id.uri.lowercased().hasSuffix(".typ")
-        else { return nil }
-        return URL(string: id.uri)
     }
 
     /// Whether the context is a document currently being written — which is
@@ -247,7 +173,7 @@ final class TypstPlugin: NSObject, Plugin {
     /// only one where changing them is an operation that does anything.
     @MainActor
     static func isWriting(_ ctx: ActionContext) -> Bool {
-        guard let url = typFileURL(in: ctx) else { return false }
+        guard let url = TypstCore.typFileURL(in: ctx) else { return false }
         return TypstUIState.shared.sourceStyle(for: url) == .prose
     }
 
@@ -255,7 +181,7 @@ final class TypstPlugin: NSObject, Plugin {
     /// current; in Typeset, ⌘S first).
     @MainActor
     static func export(_ format: TypstEngine.ExportFormat, in ctx: ActionContext) {
-        guard let url = typFileURL(in: ctx),
+        guard let url = TypstCore.typFileURL(in: ctx),
               let source = try? String(contentsOf: url, encoding: .utf8) else { return }
         // The same scope the preview compiles in. Without it the project root
         // is the document's own directory, and anything the document reaches
@@ -294,26 +220,6 @@ final class TypstPlugin: NSObject, Plugin {
         }
     }
 
-    /// Create (or, for the daily note, reuse) a templated note in the selected
-    /// directory, tell the host, and open it.
-    @MainActor
-    private static func createNote(in ctx: ActionContext, daily: Bool) {
-        guard let dir = ctx.selection.first, dir.scheme == "file",
-              let dirURL = URL(string: dir.uri) else { return }
-        let noteURL = daily ? TypstNotes.dailyNoteURL(in: dirURL)
-                            : TypstNotes.newNoteURL(in: dirURL)
-        if !FileManager.default.fileExists(atPath: noteURL.path) {
-            let template = daily ? TypstNotes.dailyNoteTemplate()
-                                 : TypstNotes.noteTemplate(title: "Untitled")
-            do { try template.write(to: noteURL, atomically: true, encoding: .utf8) }
-            catch {
-                NSLog("[TypstPlugin] note creation failed: \(error.localizedDescription)")
-                return
-            }
-            ctx.notify([.childrenChanged(dir)])
-        }
-        ctx.host.openURI(noteURL.absoluteString)
-    }
 }
 
 // MARK: - Mode
