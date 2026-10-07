@@ -113,9 +113,26 @@ import Foundation
 @Suite struct WebRecordTests {
     private func page(_ uri: String) throws -> NodeID { try #require(NodeID(uri)) }
 
+    /// The provider the Mac plugin registers — told where open pages are,
+    /// which the core's own default can't be.
+    private func provider() throws -> NodeProvider {
+        let registry = Registry()
+        WebPlugin().register(with: registry)
+        return try #require(registry.providers.first { $0.schemes.contains("https") })
+    }
+
+    /// With no window there are no open pages, and the core says so: a page
+    /// is named after its URL.
+    @Test func withNoShellAPageIsNamedAfterItsURL() async throws {
+        let id = try page("https://example.com/named")
+        WebSessionStore.shared.session(for: id).title = "Named — Example"
+        let node = try #require(await WebProvider().node(for: id))
+        #expect(node.label == WebProvider.label(for: try #require(URL(string: id.uri))))
+    }
+
     @Test func aPageWithNoSessionIsNamedAfterItsURL() async throws {
         let id = try page("https://example.com/things")
-        let node = try #require(await WebProvider().node(for: id))
+        let node = try #require(await try provider().node(for: id))
         #expect(node.label == WebProvider.label(for: try #require(URL(string: id.uri))))
     }
 
@@ -123,7 +140,7 @@ import Foundation
         let id = try page("https://example.com/things")
         WebSessionStore.shared.session(for: id).title = "Things — Example"
 
-        let node = try #require(await WebProvider().node(for: id))
+        let node = try #require(await try provider().node(for: id))
         #expect(node.label == "Things — Example")
     }
 
@@ -133,7 +150,7 @@ import Foundation
         let id = try page("https://example.com/quiet")
         WebSessionStore.shared.session(for: id).title = ""
 
-        let node = try #require(await WebProvider().node(for: id))
+        let node = try #require(await try provider().node(for: id))
         #expect(node.label == WebProvider.label(for: try #require(URL(string: id.uri))))
     }
 
@@ -141,7 +158,7 @@ import Foundation
     /// same rule the action predicates follow.
     @Test func askingWhatAPageIsDoesNotStartASession() async throws {
         let id = try page("https://example.com/untouched")
-        _ = await WebProvider().node(for: id)
+        _ = await try provider().node(for: id)
         #expect(WebSessionStore.shared.existingSession(for: id) == nil)
     }
 
@@ -159,5 +176,23 @@ import Foundation
 
         let node = try #require(await WebProvider().node(for: try page("https://example.com/a")))
         #expect(node.icon?.imageData == png)
+    }
+}
+
+/// What a host with no window gets from the web plugin: pages and bookmarks,
+/// and what can be done with no page open. The Mac adds the rest.
+@MainActor
+@Suite struct WebSplitTests {
+    @Test func theCoreHalfIsWhatNeedsNoOpenPage() {
+        let core = CoreContributions()
+        WebCore.register(with: core)
+        #expect(core.providers.contains { $0.schemes.contains("https") })
+        #expect(core.finders.map(\.id) == ["web.bookmarks"])
+        #expect(Set(core.actions.map(\.id)) == ["web.newPage", "web.unbookmark", "web.showBookmarks"])
+
+        let mac = Registry()
+        WebPlugin().register(with: mac)
+        #expect(Set(core.actions.map(\.id)).isSubset(of: mac.actions.map(\.id)))
+        #expect(mac.actions.contains { $0.id == "web.reload" })
     }
 }

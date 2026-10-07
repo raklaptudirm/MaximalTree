@@ -33,11 +33,13 @@ let package = Package(
         // under the bundle's own module name, so neither half needs an #if.
         .target(name: "ICloud", dependencies: ["MaximalTreeKit"],
                 path: "Sources/ICloudPlugin/Core"),
+        .target(name: "Web", dependencies: ["MaximalTreeKit"],
+                path: "Sources/WebPlugin/Core"),
 
         // On everything above, so `swift test` builds it all: alone is the only
         // place a reference to a view would fail to compile.
         .testTarget(name: "MaximalTreeCoreTests",
-                    dependencies: ["MaximalTreeKit", "MaximalTreeHost", "ICloud"],
+                    dependencies: ["MaximalTreeKit", "MaximalTreeHost", "ICloud", "Web"],
                     path: "Tests/MaximalTreeCoreTests"),
     ]
 )

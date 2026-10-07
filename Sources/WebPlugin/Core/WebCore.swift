@@ -110,6 +110,15 @@ final class FaviconStore: @unchecked Sendable {
 struct WebProvider: NodeProvider {
     let schemes: Set<String> = ["http", "https", "web"]
 
+    /// What an open page calls itself, if it is open — the shell's to say,
+    /// since only a shell has pages open. With none, a page is named after
+    /// its URL, which is all a host with no window can know.
+    private let liveTitle: @Sendable (NodeID) async -> String?
+
+    init(liveTitle: @escaping @Sendable (NodeID) async -> String? = { _ in nil }) {
+        self.liveTitle = liveTitle
+    }
+
     static let bookmarksURI = "web://bookmarks"
     static var bookmarksID: NodeID { NodeID(canonical: bookmarksURI) }
 
@@ -140,7 +149,7 @@ struct WebProvider: NodeProvider {
         // than telling the graph what to store. So the sidebar, the tab and
         // the subtitle all get the same answer, whether or not the canvas
         // that noticed is on screen.
-        let live = await MainActor.run { WebSessionStore.shared.existingSession(for: id)?.title }
+        let live = await liveTitle(id)
         let label = live.flatMap { $0.isEmpty ? nil : $0 } ?? WebProvider.label(for: url)
         return Node(id: id, type: TypeID("web.page"), label: label,
                     icon: WebProvider.icon(for: url))

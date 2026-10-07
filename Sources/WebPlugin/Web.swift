@@ -232,9 +232,12 @@ final class WebPlugin: NSObject, Plugin {
     override init() { super.init() }
 
     func register(with registry: PluginRegistry) {
-        registry.register(provider: WebProvider())
+        // An open page's title is what it is called, and only this shell has
+        // pages open — so the core's provider is told where to look.
+        WebCore.register(with: registry, provider: WebProvider(liveTitle: { id in
+            await MainActor.run { WebSessionStore.shared.existingSession(for: id)?.title }
+        }))
         WebKeys.register(with: registry)
-        BookmarkStore.shared.report(to: registry.notices)
 
         registry.register(canvas: CanvasContribution(
             priority: 0,
@@ -247,35 +250,6 @@ final class WebPlugin: NSObject, Plugin {
         registry.register(inspector: InspectorContribution(
             matches: { $0.type == TypeID("web.page") },
             make: { id, host in AnyView(WebInspector(nodeID: id).environment(host)) }
-        ))
-
-        // Opening a page is a mount: the start page joins the sidebar as a root,
-        // and the address bar / ⌘L take it anywhere from there.
-        // Bookmarks are a list worth searching, so the finder can offer them
-        // beside files and everything else — the plugin that owns them says so.
-        registry.register(finder: FinderSource(
-            id: "web.bookmarks", title: "Bookmark", prompt: "Open a bookmark…",
-            systemImage: "bookmark", weight: 14
-        ) {
-            BookmarkStore.shared.all().map { bookmark in
-                FinderItem(id: "bookmark:\(bookmark.url)",
-                           title: bookmark.title.isEmpty ? bookmark.url : bookmark.title,
-                           subtitle: URL(string: bookmark.url)?.host(),
-                           systemImage: "bookmark",
-                           effect: .open(bookmark.url))
-            }
-        })
-
-        registry.register(action: Action(
-            id: "web.newPage",
-            title: "New Web Page",
-            systemImage: "globe",
-            shortcut: KeyChord("n", command: true, shift: true),
-            scope: .workspace,
-            run: { ctx in
-                ctx.mount(WebProvider.homepage)
-                ctx.host.openURI(WebProvider.homepage)
-            }
         ))
 
         registry.register(action: Action(
@@ -309,32 +283,6 @@ final class WebPlugin: NSObject, Plugin {
                                  .childrenChanged(WebProvider.bookmarksID)])
             }
         ))
-        registry.register(action: Action(
-            id: "web.unbookmark",
-            title: "Remove Bookmark",
-            systemImage: "star.slash",
-            appliesTo: .custom { ctx in
-                guard let id = ctx.targets.first else { return false }
-                return BookmarkStore.shared.contains(id.uri)
-            },
-            scope: .document,
-            run: { ctx in
-                for id in ctx.targets { BookmarkStore.shared.remove(url: id.uri) }
-                ctx.notify([.modified(WebProvider.bookmarksID),
-                                 .childrenChanged(WebProvider.bookmarksID)])
-            }
-        ))
-        registry.register(action: Action(
-            id: "web.showBookmarks",
-            title: "Show Bookmarks",
-            systemImage: "star.fill",
-            scope: .workspace,
-            run: { ctx in
-                ctx.mount(WebProvider.bookmarksURI)
-                ctx.host.openURI(WebProvider.bookmarksURI)
-            }
-        ))
-
         // Navigation acts on the live session, so — like the typst buffer ops —
         // it reaches the session through the shared store. Back/forward stay
         // unshortcut to avoid colliding with the host's history nav (⌘[ / ⌘]).
