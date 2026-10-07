@@ -82,7 +82,7 @@ import Foundation
                         type: TypeID("nobody.owns.this"), label: "Thing")
         host._ingest(node)
 
-        let sections = try #require(model.store?.inspectors(for: node))
+        let sections = model.pluginHost.registry.inspectors(for: node, in: model.host)
         #expect(!sections.isEmpty, "a node with no plugin section shows nothing at all")
         #expect(sections.allSatisfy { $0.id == node.id })
     }
@@ -95,7 +95,7 @@ import Foundation
                         type: TypeID("file.item"), label: "a.txt")
         host._ingest(file)
 
-        let sections = try #require(model.store?.inspectors(for: file))
+        let sections = model.pluginHost.registry.inspectors(for: file, in: model.host)
         #expect(sections.count >= 2, "the file plugin's own section is missing")
         #expect(sections.first?.contribution.priority == 1000,
                 "a plugin section came before the node's own identity")
@@ -174,7 +174,7 @@ import Foundation
         // The inspector shows what it is from both sides: git's section and
         // the filesystem's, each rendered for its own identity.
         let node = try #require(host.node(repo))
-        let sections = try #require(model.store?.inspectors(for: node))
+        let sections = model.pluginHost.registry.inspectors(for: node, in: model.host)
         #expect(sections.contains { $0.id == repo }, "no git section")
         #expect(sections.contains { $0.id == identity }, "no filesystem section")
     }

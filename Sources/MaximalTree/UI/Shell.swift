@@ -198,7 +198,7 @@ struct InspectorPane: View {
 
     var body: some View {
         if let id = subject, let node = host.node(id) {
-            let sections = model.store?.inspectors(for: node) ?? []
+            let sections = model.pluginHost.registry.inspectors(for: node, in: model.host)
             if sections.isEmpty {
                 ContentUnavailableView("No Inspector", systemImage: "sidebar.right")
             } else {

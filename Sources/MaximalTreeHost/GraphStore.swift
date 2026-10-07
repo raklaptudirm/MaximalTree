@@ -1,17 +1,20 @@
 import Foundation
 @_spi(Host) import MaximalTreeKit
 
-/// Concrete registry the host hands to each plugin's `register(with:)`. Collects
-/// contributions into lookup tables the shell and store consume.
+/// What plugins contributed that has nothing to do with drawing — providers,
+/// actions, commands, finder lists — kept as the lookup tables the store reads.
+///
+/// The half of the registry that runs wherever the core does. A shell
+/// subclasses it to keep what it draws with as well (the Mac app's `Registry`),
+/// and hands plugins the whole; the store only ever sees this half.
 @MainActor
-final class Registry: PluginRegistry {
+class CoreContributions: CoreRegistry {
     private(set) var providers: [NodeProvider] = []
-    private(set) var canvases: [CanvasContribution] = []
-    private(set) var inspectors: [InspectorContribution] = []
     private(set) var childContributions: [ChildContribution] = []
     private(set) var actions: [Action] = []
     private(set) var finders: [FinderSource] = []
-    private(set) var surfaceKeys: [SurfaceKeys] = []
+
+    init() {}
 
     /// Handed to plugins during registration; populated once every plugin has loaded.
     let hostBroker = HostBroker()
@@ -34,10 +37,7 @@ final class Registry: PluginRegistry {
             for scheme in provider.schemes { ownersByScheme[scheme] = registeringOwner }
         }
     }
-    func register(canvas: CanvasContribution) { canvases.append(canvas) }
     func register(finder: FinderSource) { finders.append(finder) }
-    func register(surfaceKeys keys: SurfaceKeys) { surfaceKeys.append(keys) }
-    func register(inspector: InspectorContribution) { inspectors.append(inspector) }
     func register(children: ChildContribution) { childContributions.append(children) }
     /// One action per id. A later registration replaces an earlier one.
     ///
@@ -98,7 +98,7 @@ protocol PlacementHost: AnyObject {
 final class GraphStore: GraphBackend {
     let context: HostContext
     let nav: NavigationModel
-    let registry: Registry
+    let registry: CoreContributions
 
     // In-flight de-duplication. Kept here (not on HostContext) precisely because
     // GraphStore is not @Observable — touching it during a SwiftUI body is safe.
@@ -146,42 +146,15 @@ final class GraphStore: GraphBackend {
     /// node's children are its provider's.
     weak var placements: PlacementHost?
 
-    init(context: HostContext, registry: Registry, nav: NavigationModel) {
+    init(context: HostContext, registry: CoreContributions, nav: NavigationModel) {
         self.context = context
         self.registry = registry
         self.nav = nav
         context.backend = self
     }
 
-    /// Highest-priority canvas whose matcher accepts the node.
-    func canvas(for node: Node) -> CanvasContribution? {
-        registry.canvases.filter { $0.matches(node) }.max { $0.priority < $1.priority }
-    }
-
-    /// All matching inspector sections, most-specific (highest priority) first.
-    /// Inspector sections for a node *and* for everything else it is, each
-    /// paired with the identity it should be rendered for — the FileSystem
-    /// section of a git repo has to be handed the directory's id, not the
-    /// repo's, or it will describe a node it can't read.
-    func inspectors(for node: Node) -> [(contribution: InspectorContribution, id: NodeID)] {
-        var sections = registry.inspectors
-            .filter { $0.matches(node) }
-            .sorted { $0.priority > $1.priority }
-            .map { (contribution: $0, id: node.id) }
-
-        for identity in node.identities {
-            guard let other = context.node(identity) else { continue }
-            sections += registry.inspectors
-                .filter { $0.matches(other) }
-                .sorted { $0.priority > $1.priority }
-                .map { (contribution: $0, id: identity) }
-        }
-        return sections
-    }
-
     var actions: [Action] { registry.actions }
     var finders: [FinderSource] { registry.finders }
-    var surfaceKeys: [SurfaceKeys] { registry.surfaceKeys }
 
     private func provider(for id: NodeID) -> NodeProvider? {
         guard let scheme = id.scheme else { return nil }

@@ -269,7 +269,7 @@ struct PaneView: View {
     @ViewBuilder
     private var content: some View {
         if let id = model.displayedNode(in: pane) {
-            if let node = host.node(id), let canvas = model.store?.canvas(for: node) {
+            if let node = host.node(id), let canvas = model.pluginHost.registry.canvas(for: node) {
                 PreparedCanvas(node: id, canvas: canvas)
             } else if host.childStyle(of: id) == .contents {
                 // A container whose whole job is to be gone into. It has no

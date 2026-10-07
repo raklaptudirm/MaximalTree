@@ -1,12 +1,8 @@
 import Testing
 import Foundation
-// Built by both runners: on its own by `swift test`, where the core is its own
-// module, and in the app's suite, where it is part of MaximalTreeKit.
-#if canImport(MaximalTreeCore)
-@testable import MaximalTreeCore
-#else
+// Built by both runners — `swift test` and the app's suite — and MaximalTreeKit
+// in both: the core alone in one, the whole SDK in the other.
 @testable import MaximalTreeKit
-#endif
 
 /// A command that needs an argument no context could supply — which is the whole
 /// reason commands exist.

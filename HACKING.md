@@ -101,14 +101,25 @@ Sources/
     IconView.swift              #   NodeIconView + tint→Color (shared by host + plugins)
     Interface.swift             #   SurfaceKey/SurfaceKeys, Canvas/Inspector
                                 #   contributions, ShellRegistry, PluginRegistry, Plugin
-  MaximalTree/                  # the host app
+  MaximalTreeHost/              # the host's engine: no UI. Compiled into the Mac app;
+                                # Package.swift builds it alone, which proves it
+    GraphStore.swift            #   CoreContributions (the registry's core half),
+                                #   GraphStore (provider routing, loads, writes)
+    Workspace.swift             #   the library + placements per workspace
+    Placements.swift            #   the parent→children table
+    UndoHistory.swift           #   per-workspace snapshots of placements
+    CommandQueue.swift          #   commands that suspend, one at a time
+    HostBroker.swift            #   NodeBroker over every provider
+    NavigationModel.swift       #   tabs, history, what is open
+    ActionTargets.swift         #   a node as each identity it is
+    ActionOrganizer.swift       #   actions grouped for menus
+    Collections.swift           #   the collection:// provider
+    FileOpening.swift, FinderFiles.swift
+  MaximalTree/                  # the Mac app: the shell around the engine
     App.swift                   #   @main, AppModel wiring
-    Host/                       #   Registry, GraphStore, HostBroker, NavigationModel,
-                                #   PluginHost; Placements (the parent→children table),
-                                #   Workspace (the library + placements per workspace),
-                                #   UndoHistory, CommandQueue, ActionTargets (a node as
-                                #   each identity it is), ActionOrganizer (menus),
-                                #   Collections, FinderSources/FinderFiles, FileOpening
+    Host/                       #   Registry (CoreContributions + what this shell
+                                #   draws with: canvases, inspectors, surface keys),
+                                #   PluginHost (loads the bundles), FinderSources
     UI/                         #   Shell (window, columns, zen, prompts),
                                 #   PaneTree (tabs/splits/panes — the arrangement
                                 #   layer; see its header), SidebarModel (pure row
@@ -160,10 +171,10 @@ Sources/
     ICloud.swift                #   show/mount actions, download + evict
 Vendor/typst-ffi/               # Rust staticlib: typst compiler/parser/renderers (C ABI)
 Vendor/highlight-js/            # highlight.min.js (BSD-3) — ~190 grammars, run in-process
-Tests/MaximalTreeTests/         # swift-testing suite, run inside the app (956 tests)
+Tests/MaximalTreeTests/         # swift-testing suite, run inside the app (~970 tests)
 Tests/MaximalTreeCoreTests/     # the core's own tests — run by `swift test` *and* by the
                                 # app's suite; CoreBoundaryTests keeps UI out of the core
-Package.swift                   # builds Sources/MaximalTreeCore alone; not the app
+Package.swift                   # builds Sources/MaximalTreeCore alone, as MaximalTreeKit
 ```
 
 The generated `MaximalTree.xcodeproj` is **not** committed — regenerate it (below).
@@ -199,9 +210,9 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test
 ```
 
 A test of core behaviour belongs in `Tests/MaximalTreeCoreTests` when it needs nothing
-but core types: both runners pick it up. Import with
-`#if canImport(MaximalTreeCore) … #else … MaximalTreeKit #endif`, since the core is its
-own module under `swift test` and part of `MaximalTreeKit` in the app.
+but core types: both runners pick it up. It imports `MaximalTreeKit` either way —
+`Package.swift` gives the core that name, so under `swift test` the SDK is simply its
+core, and nothing has to be conditional.
 
 Or just open `MaximalTree.xcodeproj` in Xcode and ⌘R / ⌘U.
 
@@ -899,8 +910,12 @@ builds on its own**: `Sources/MaximalTreeCore` holds everything with no UI, and
 the one `MaximalTreeKit` framework. The no-UI rule is enforced by `CoreBoundaryTests`
 rather than by a module boundary — a separate `MaximalTreeCore` framework was tried,
 and made the app idle at 100% CPU in a window-toolbar relayout loop that was never
-traced, so the Mac build stays one module. What remains is moving the host's model
-code out of the app target, splitting the plugins, and only then proving it off macOS
+traced, so the Mac build stays one module. **The host's engine is out of the app
+too**: `Sources/MaximalTreeHost` holds the host's model code — workspaces, placements,
+undo, the graph store, command dispatch — compiled into the Mac app as before, and
+built alone by `Package.swift`, where a reference to one of the app's views fails to
+compile. What remains is splitting `AppModel`, whose model logic still lives in the
+app, then splitting the plugins, and only then proving it off macOS
 with an iOS build, `swift test` on Linux, and a headless CLI host. Three constraints
 found while planning, worth knowing before starting:
 

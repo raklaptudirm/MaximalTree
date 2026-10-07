@@ -293,7 +293,12 @@ targets:
   MaximalTree:
     type: application
     platform: macOS
-    sources: [Sources/MaximalTree]
+    # The host's engine — workspaces, placements, undo, the graph store,
+    # command dispatch — is compiled into the app rather than built as a
+    # framework of its own: it has one client per shell, and a second framework
+    # beside MaximalTreeKit is what made the app idle at 100% CPU (see HACKING).
+    # Package.swift builds the same folder alone, which is what proves it UI-free.
+    sources: [Sources/MaximalTree, Sources/MaximalTreeHost]
     dependencies:
       - target: MaximalTreeKit
       - target: MaximalEditorKit      # embedded once; editor plugins resolve to it

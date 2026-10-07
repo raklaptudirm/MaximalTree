@@ -115,11 +115,11 @@ extension AppModel {
                 .filter { $0.surface == wanted }.flatMap(\.keys)
         case .pane:
             // A canvas's keys ride on the contribution that drew it, and
-            // resolving which one that is needs the store.
+            // resolving which one that is needs the node's record.
             // No store yet, or no record for the node yet: not an empty set of
             // keys, an unanswerable question.
-            guard let store, let record = node.flatMap({ host.node($0) }) else { return nil }
-            return store.canvas(for: record)?.keys ?? []
+            guard store != nil, let record = node.flatMap({ host.node($0) }) else { return nil }
+            return pluginHost.registry.canvas(for: record)?.keys ?? []
         }
     }
 

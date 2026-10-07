@@ -2,7 +2,7 @@ import SwiftUI
 
 // The SwiftUI half of the SDK. On macOS it compiles into the one MaximalTreeKit
 // framework together with Sources/MaximalTreeCore; Package.swift builds that
-// folder alone, with no UI anywhere, as MaximalTreeCore.
+// folder alone, with no UI anywhere, as a MaximalTreeKit that is only the core.
 
 // MARK: - Keys
 
