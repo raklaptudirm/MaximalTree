@@ -30,7 +30,7 @@ import Foundation
         let directory = sources(folder)
         let files = try FileManager.default.contentsOfDirectory(atPath: directory.path)
             .filter { $0.hasSuffix(".swift") }
-        #expect(files.count > 5, "found no sources at \(directory.path)")
+        #expect(!files.isEmpty, "found no sources at \(directory.path)")
 
         var offences: [String] = []
         for file in files {
@@ -48,6 +48,43 @@ import Foundation
         let offences = try offences(in: "MaximalTreeCore",
                                     allowed: ["Foundation", "Observation", "CoreServices"])
         #expect(offences.isEmpty, "the core imports what only a UI has: \(offences)")
+    }
+
+    /// Every plugin's `Core` folder: what it may import is the SDK and what
+    /// the core itself may, plus UniformTypeIdentifiers — a file's type is not
+    /// a UI concern, even if it is an Apple one.
+    @Test func noPluginCoreImportsAnythingThatDraws() throws {
+        let cores = try Self.pluginCores()
+        #expect(!cores.isEmpty, "found no plugin cores")
+        for core in cores {
+            let offences = try offences(in: core, allowed: [
+                "Foundation", "Observation", "CoreServices", "UniformTypeIdentifiers", "MaximalTreeKit",
+            ])
+            #expect(offences.isEmpty, "\(core) imports what only a UI has: \(offences)")
+        }
+    }
+
+    /// And every one is built alone by Package.swift — the build that would
+    /// fail to compile a reference to one of the plugin's own views. A core
+    /// folder it doesn't know about is a core folder nothing checks.
+    @Test func everyPluginCoreIsBuiltAlone() throws {
+        let manifest = try String(contentsOf: sources("..").appendingPathComponent("Package.swift"),
+                                  encoding: .utf8)
+        for core in try Self.pluginCores() {
+            #expect(manifest.contains("\"Sources/\(core)\""), "Package.swift doesn't build \(core)")
+        }
+    }
+
+    /// `<Plugin>/Core` for each plugin that has one, relative to Sources.
+    private static func pluginCores() throws -> [String] {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources", isDirectory: true)
+        return try FileManager.default.contentsOfDirectory(atPath: root.path)
+            .filter { $0.hasSuffix("Plugin") }
+            .map { "\($0)/Core" }
+            .filter { FileManager.default.fileExists(atPath: root.appendingPathComponent($0).path) }
+            .sorted()
     }
 
     @Test func theHostEngineImportsNothingThatDraws() throws {

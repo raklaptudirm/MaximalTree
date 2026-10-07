@@ -1,8 +1,8 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
-// The SDK's core, and the host's engine, alone: nodes, providers, commands, the
-// graph, workspaces. No UI.
+// The SDK's core, the host's engine and the plugins' core halves, alone: nodes,
+// providers, commands, the graph, workspaces. No UI.
 //
 // The Mac app does not build through this — it compiles Sources/MaximalTreeCore
 // into its MaximalTreeKit framework along with the SwiftUI half (see project.yml).
@@ -27,9 +27,17 @@ let package = Package(
         // same folder into itself; building it here is what proves it needs no UI.
         .target(name: "MaximalTreeHost", dependencies: ["MaximalTreeKit"],
                 path: "Sources/MaximalTreeHost"),
-        // On the engine too, so `swift test` builds it: alone is the only place
-        // a reference to one of the app's views would fail to compile.
-        .testTarget(name: "MaximalTreeCoreTests", dependencies: ["MaximalTreeKit", "MaximalTreeHost"],
+
+        // Each plugin's core half: what it does with no window. On the Mac the
+        // plugin's bundle compiles its whole folder; here only the Core folder,
+        // under the bundle's own module name, so neither half needs an #if.
+        .target(name: "ICloud", dependencies: ["MaximalTreeKit"],
+                path: "Sources/ICloudPlugin/Core"),
+
+        // On everything above, so `swift test` builds it all: alone is the only
+        // place a reference to a view would fail to compile.
+        .testTarget(name: "MaximalTreeCoreTests",
+                    dependencies: ["MaximalTreeKit", "MaximalTreeHost", "ICloud"],
                     path: "Tests/MaximalTreeCoreTests"),
     ]
 )

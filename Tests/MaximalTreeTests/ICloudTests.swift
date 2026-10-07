@@ -188,9 +188,9 @@ private final class Drive: @unchecked Sendable {
         let recorder = Drive()
         recorder.apps = ["com~apple~Pages": "Pages"]
         let drive = drive(root, recorder)
-        #expect(try ICloudPlugin.address(of: root.appendingPathComponent("Notes"), in: drive).uri
+        #expect(try ICloudCore.address(of: root.appendingPathComponent("Notes"), in: drive).uri
                 == "icloud://drive/Notes")
-        #expect(try ICloudPlugin.address(of: containers(root).appendingPathComponent("com~apple~Pages/Documents"),
+        #expect(try ICloudCore.address(of: containers(root).appendingPathComponent("com~apple~Pages/Documents"),
                                          in: drive).uri == "icloud://app/com~apple~Pages")
     }
 
@@ -199,14 +199,14 @@ private final class Drive: @unchecked Sendable {
     @Test func aFolderElsewhereIsRefusedWithAReason() throws {
         let root = try makeRoot()
         let drive = drive(root)
-        #expect(throws: ICloudPlugin.NotInICloud.self) {
-            _ = try ICloudPlugin.address(of: URL(fileURLWithPath: NSTemporaryDirectory()), in: drive)
+        #expect(throws: ICloudCore.NotInICloud.self) {
+            _ = try ICloudCore.address(of: URL(fileURLWithPath: NSTemporaryDirectory()), in: drive)
         }
-        #expect(throws: ICloudPlugin.NotInICloud.self) {
-            _ = try ICloudPlugin.address(of: containers(root).appendingPathComponent("com~apple~mail/Documents"),
+        #expect(throws: ICloudCore.NotInICloud.self) {
+            _ = try ICloudCore.address(of: containers(root).appendingPathComponent("com~apple~mail/Documents"),
                                          in: drive)
         }
-        let reason = ICloudPlugin.NotInICloud(url: URL(fileURLWithPath: "/tmp/Stuff")).errorDescription ?? ""
+        let reason = ICloudCore.NotInICloud(url: URL(fileURLWithPath: "/tmp/Stuff")).errorDescription ?? ""
         #expect(reason.contains("Stuff") && reason.contains("Mount Root"))
     }
 
@@ -259,6 +259,19 @@ private final class Drive: @unchecked Sendable {
         return action.appliesTo.matches(context([try item("icloud://drive/a", state)]))
     }
 
+    /// A host with no window gets the drive and everything that needs no
+    /// panel; the Mac adds mounting a folder chosen in one.
+    @Test func theCoreHalfIsEverythingButThePanel() throws {
+        let core = CoreContributions()
+        ICloudCore.register(with: core, drive: ICloudPlugin.drive)
+        #expect(core.providers.contains { $0.schemes.contains("icloud") })
+        #expect(Set(core.actions.map(\.id)) == ["icloud.show", "icloud.download", "icloud.evict"])
+
+        let mac = Registry()
+        ICloudPlugin().register(with: mac)
+        #expect(Set(mac.actions.map(\.id)).subtracting(core.actions.map(\.id)) == ["icloud.mountFolder"])
+    }
+
     @Test func downloadingIsOfferedOnlyForWhatIsNotHereYet() throws {
         #expect(try offers("icloud.download", .inCloud))
         #expect(try offers("icloud.download", .behind))
@@ -279,8 +292,8 @@ private final class Drive: @unchecked Sendable {
     @Test func aFileThatIsNotInICloudGetsNeither() throws {
         let local = Node(id: try id("file:///tmp/a.txt"), type: .file)
         let mixed = context([try item("icloud://drive/a", .inCloud), local])
-        #expect(!ICloudPlugin.all(mixed, in: [.inCloud, .behind]))
-        #expect(!ICloudPlugin.all(context([]), in: [.inCloud]))
+        #expect(!ICloudCore.all(mixed, in: [.inCloud, .behind]))
+        #expect(!ICloudCore.all(context([]), in: [.inCloud]))
     }
 
     @Test func eachTargetIsHandedToICloud() throws {
@@ -290,7 +303,7 @@ private final class Drive: @unchecked Sendable {
         let ctx = context([try item("icloud://drive/plan.txt", .inCloud),
                            try item("icloud://drive/Notes/a%20b.txt", .inCloud)])
 
-        try ICloudPlugin.each(ctx, drive: drive, with: drive.download)
+        try ICloudCore.each(ctx, drive: drive, with: drive.download)
         #expect(recorder.downloads == ["plan.txt", "a b.txt"])
     }
 
@@ -301,7 +314,7 @@ private final class Drive: @unchecked Sendable {
         let drive = drive(try makeRoot(), recorder)
         let ctx = context([try item("icloud://drive/plan.txt", .inCloud)])
         #expect(throws: Drive.Refused.self) {
-            try ICloudPlugin.each(ctx, drive: drive, with: drive.download)
+            try ICloudCore.each(ctx, drive: drive, with: drive.download)
         }
     }
 
