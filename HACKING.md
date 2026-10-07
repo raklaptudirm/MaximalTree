@@ -105,6 +105,9 @@ Sources/
                                 # Package.swift builds it alone, which proves it
     GraphStore.swift            #   CoreContributions (the registry's core half),
                                 #   GraphStore (provider routing, loads, writes)
+    HostEngine.swift            #   the host with no window: the library, the graph,
+                                #   switching workspace, collections, undo; HostShell
+                                #   is all a window tells it or hears from it
     Dispatcher.swift            #   what applies, running it, failures and notices;
                                 #   the shell only says what a key points at
     Workspace.swift             #   the library + placements per workspace
@@ -118,7 +121,8 @@ Sources/
     Collections.swift           #   the collection:// provider
     FileOpening.swift, FinderFiles.swift
   MaximalTree/                  # the Mac app: the shell around the engine
-    App.swift                   #   @main, AppModel wiring
+    App.swift                   #   @main; AppModel — the window around a HostEngine:
+                                #   sidebar, finder, chrome, keys, loading the bundles
     Host/                       #   Registry (CoreContributions + what this shell
                                 #   draws with: canvases, inspectors, surface keys),
                                 #   PluginHost (loads the bundles), FinderSources
@@ -916,8 +920,9 @@ traced, so the Mac build stays one module. **The host's engine is out of the app
 too**: `Sources/MaximalTreeHost` holds the host's model code — workspaces, placements,
 undo, the graph store, command dispatch — compiled into the Mac app as before, and
 built alone by `Package.swift`, where a reference to one of the app's views fails to
-compile. What remains is splitting `AppModel` — dispatch is out (`Dispatcher`), the
-workspace library's wiring is not — then splitting the plugins, and only then proving it off macOS
+compile. `AppModel` is split the same way: `HostEngine` is the host with no window,
+and `AppModel` is the Mac window around one, talking to it through `HostShell`. What
+remains is splitting the plugins, and only then proving it off macOS
 with an iOS build, `swift test` on Linux, and a headless CLI host. Three constraints
 found while planning, worth knowing before starting:
 
@@ -999,8 +1004,9 @@ Known gaps, roughly in order:
 - **Typst follow-ups** — tinymist hover/go-to-definition, snippet tab-stops, and
   a rename event doesn't yet remap a file's `typst://` section nodes in history.
 - **A second shell** — the hard prerequisites are done (in-process compiler, no CLI
-  dependencies, cross-platform editor engine). What remains is the core extraction and
-  the platform work; see [Other shells](#other-shells).
+  dependencies, cross-platform editor engine). The core and the host's
+  engine build without UI; what remains is splitting the plugins and the platform
+  work; see [Other shells](#other-shells).
 - **Smaller**: richer inspector composition, multi-select in the directory grid.
 - **The host's own views write directly** — `NodeInspector` and `SidebarTree` call
   `host.apply` for rename and drag-to-move, which [Who may write](#who-may-write)
