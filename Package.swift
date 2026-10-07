@@ -33,6 +33,8 @@ let package = Package(
         // under the bundle's own module name, so neither half needs an #if.
         .target(name: "FileSystem", dependencies: ["MaximalTreeKit"],
                 path: "Sources/FileSystemPlugin/Core"),
+        .target(name: "Git", dependencies: ["MaximalTreeKit"],
+                path: "Sources/GitPlugin/Core"),
         .target(name: "ICloud", dependencies: ["MaximalTreeKit"],
                 path: "Sources/ICloudPlugin/Core"),
         .target(name: "Web", dependencies: ["MaximalTreeKit"],
@@ -44,7 +46,7 @@ let package = Package(
         // place a reference to a view would fail to compile.
         .testTarget(name: "MaximalTreeCoreTests",
                     dependencies: ["MaximalTreeKit", "MaximalTreeHost",
-                                   "FileSystem", "ICloud", "Web", "YouTube"],
+                                   "FileSystem", "Git", "ICloud", "Web", "YouTube"],
                     path: "Tests/MaximalTreeCoreTests"),
     ]
 )

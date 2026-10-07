@@ -117,3 +117,21 @@ import Foundation
         #expect(files.contains { $0.label == "a.txt" })
     }
 }
+
+/// What a host with no window gets from git: repositories as nodes, and a
+/// folder opened as the repository it is. The repository's own actions and
+/// canvases are still the Mac's.
+@MainActor
+@Suite struct GitSplitTests {
+    @Test func theCoreHalfIsTheRepositoryAsNodes() {
+        let core = CoreContributions()
+        GitCore.register(with: core)
+        #expect(core.providers.contains { $0.schemes.contains("git") })
+        #expect(core.actions.map(\.id) == ["git.open"])
+
+        let mac = Registry()
+        GitPlugin().register(with: mac)
+        #expect(mac.actions.contains { $0.id == "git.open" })
+        #expect(mac.actions.contains { $0.id == "git.commit" })
+    }
+}
