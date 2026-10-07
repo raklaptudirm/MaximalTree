@@ -105,6 +105,8 @@ Sources/
                                 # Package.swift builds it alone, which proves it
     GraphStore.swift            #   CoreContributions (the registry's core half),
                                 #   GraphStore (provider routing, loads, writes)
+    Dispatcher.swift            #   what applies, running it, failures and notices;
+                                #   the shell only says what a key points at
     Workspace.swift             #   the library + placements per workspace
     Placements.swift            #   the parent→children table
     UndoHistory.swift           #   per-workspace snapshots of placements
@@ -914,8 +916,8 @@ traced, so the Mac build stays one module. **The host's engine is out of the app
 too**: `Sources/MaximalTreeHost` holds the host's model code — workspaces, placements,
 undo, the graph store, command dispatch — compiled into the Mac app as before, and
 built alone by `Package.swift`, where a reference to one of the app's views fails to
-compile. What remains is splitting `AppModel`, whose model logic still lives in the
-app, then splitting the plugins, and only then proving it off macOS
+compile. What remains is splitting `AppModel` — dispatch is out (`Dispatcher`), the
+workspace library's wiring is not — then splitting the plugins, and only then proving it off macOS
 with an iOS build, `swift test` on Linux, and a headless CLI host. Three constraints
 found while planning, worth knowing before starting:
 

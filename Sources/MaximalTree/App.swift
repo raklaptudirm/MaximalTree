@@ -157,7 +157,7 @@ struct MaximalTreeApp: App {
 /// Owns the objects the shell reaches for; `host` is the observable one plugins see.
 @MainActor
 @Observable
-final class AppModel {
+final class AppModel: KeyTargeting {
     let host: HostContext
     let navigation = NavigationModel()
     /// Sidebar UI state (expansion, selection anchor) — session-scoped, owned
@@ -168,29 +168,18 @@ final class AppModel {
     // Not private: under XCTest the plugin bundles aren't dlopened (their
     // sources are compiled into the test target instead), so a test that wants
     // the real registry has to populate it itself.
-    let pluginHost = PluginHost()
+    let pluginHost: PluginHost
     /// Where the workspace library lives. Injectable so a test drives the
     /// real model without writing into the user's own workspaces.
     let workspaceStore: WorkspaceStore
     private(set) var store: GraphStore?
 
-    /// Commands that might suspend, one at a time — see `CommandQueue`.
-    let commandQueue = CommandQueue()
-    /// Commands invoked from a surface that haven't finished, failures
-    /// reported included. Zero means everything asked for so far has been
-    /// done or said — what a test waits for instead of a guessed delay.
-    @ObservationIgnored var commandsRunning = 0
-
-    /// The last command that failed, until the reader waves it away.
-    ///
-    /// A key or a menu item has nowhere to put an error: whoever pressed it
-    /// asked for something to happen, not for an answer, so the host is the
-    /// one that has to say it didn't.
-    private(set) var commandFailure: CommandFailure?
-    /// What else is waiting to be said, in the order it came. Two things can
-    /// go wrong at once — on a launch where nothing can be read, everything
-    /// does — and the second must not quietly replace the first.
-    @ObservationIgnored private var waitingFailures: [CommandFailure] = []
+    /// Running what is asked for, and saying when it didn't work — the
+    /// engine's; this window only says what a key press is pointing at.
+    let dispatch: Dispatcher
+    /// The failure or notice in front of the reader — see `Dispatcher.failure`.
+    var commandFailure: CommandFailure? { dispatch.failure }
+    var commandsRunning: Int { dispatch.running }
 
     /// The finder: fuzzy search over everything the app knows about.
     var finderVisible = false
@@ -486,6 +475,10 @@ final class AppModel {
     init(host: HostContext, workspaceFile: URL? = nil) {
         self.host = host
         self.workspaceStore = WorkspaceStore(fileURL: workspaceFile ?? Self.isolatedLibraryUnderTest())
+        let plugins = PluginHost()
+        self.pluginHost = plugins
+        self.dispatch = Dispatcher(host: host, registry: plugins.registry)
+        dispatch.keyTargeting = self
     }
 
     /// Somewhere to keep the library while the test runner is using the app.
@@ -876,55 +869,16 @@ final class AppModel {
     }
 
 
-    /// Actions (from any plugin) that apply to `targets`, defaulting to the current
-    /// selection. One registry feeds the menu bar, the palette, the sidebar context
-    /// menu, and the inspector.
+    // What applies and running it are the dispatcher's; these say it from here.
     func applicableActions(for targets: [NodeID]? = nil) -> [Action] {
-        (store?.actions ?? []).filter { context(for: $0, targets: targets) != nil }
+        dispatch.applicableActions(for: targets)
     }
-
-    /// The context an action would run with, or nil if it doesn't apply.
-    ///
-    /// The one place that asks "does this apply, and to what?". Everything
-    /// else — the list of what's applicable, whether a menu item is greyed
-    /// out, running one by id, running one from a menu — is that question
-    /// asked once and answered differently. It used to be four copies of the
-    /// same loop, which is three places for the answer to drift.
-    private func context(for action: Action, targets: [NodeID]?,
-                         count: Int = 1) -> ActionContext? {
-        targetVariants(for: targets)
-            .first { action.appliesTo.matches(ActionContext(host: host, targets: $0, count: count)) }
-            .map { ActionContext(host: host, targets: $0, count: count) }
+    func actionGroups(for surface: ActionSurfaces, targets: [NodeID]? = nil) -> [ActionGroup] {
+        dispatch.actionGroups(for: surface, targets: targets)
     }
-
-    /// The nodes as clicked, and as each identity they also are — so a git
-    /// repository is offered to the file actions as the directory it is.
-    private func targetVariants(for targets: [NodeID]?) -> [[NodeID]] {
-        let resolved = targets ?? host.selection
-        return ActionTargets.variants(for: resolved) { host.node($0)?.identities ?? [] }
-    }
-
-    /// The applicable actions a surface should show, in sections — see
-    /// `ActionOrganizer` for what decides the order.
-    func actionGroups(for surface: ActionSurfaces,
-                      targets: [NodeID]? = nil) -> [ActionGroup] {
-        let node = targets?.first ?? host.focusedNode
-        return ActionOrganizer.groups(applicableActions(for: targets), for: surface,
-                                      preferredOwner: store?.registry.owner(of: node))
-    }
-
-    /// Run an action against the identity that understands it — the same one
-    /// that made it applicable in the first place.
-    /// One registered action by id, for the surfaces that place a particular
-    /// operation deliberately rather than listing whatever applies.
-    func action(_ id: String) -> Action? {
-        store?.actions.first { $0.id == id }
-    }
-
-    /// Whether this action can be run against what is in front of you — what
-    /// greys out a menu item, and what keeps the finder from offering it.
+    func action(_ id: String) -> Action? { dispatch.action(id) }
     func canRun(_ action: Action, targets: [NodeID]? = nil) -> Bool {
-        context(for: action, targets: targets) != nil
+        dispatch.canRun(action, targets: targets)
     }
 
     /// Run an action from a surface that lists them — a menu, the finder.
@@ -937,88 +891,22 @@ final class AppModel {
         closeFinder()
     }
 
-    /// Invoke an action against the first set of targets it accepts.
-    ///
-    /// A node is offered as each identity it also is (see `targetVariants`), so
-    /// a git repository can be handed to an action written for directories.
     func perform(_ action: Action, targets: [NodeID]? = nil, count: Int = 1) {
-        invoke(action.command,
-               in: context(for: action, targets: targets, count: count)
-                   ?? ActionContext(host: host, targets: targets, count: count))
+        dispatch.perform(action, targets: targets, count: count)
     }
-
-    /// Run a command from a surface — a key, a menu, the palette.
-    ///
-    /// Nothing is handed back, because nothing asked for anything back, and a
-    /// failure goes to the reader rather than to the caller. One that finishes
-    /// where it stands does so; one that might take time takes its turn.
     func invoke(_ command: AnyCommand, in context: ActionContext) {
-        let input = NodeTargets(nodes: context.targets, count: context.count)
-        do {
-            if try command.runImmediately(input, in: context) != nil { return }
-        } catch {
-            report(error, from: command.id)
-            return
-        }
-        commandsRunning += 1
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer { commandsRunning -= 1 }
-            do {
-                _ = try await commandQueue.serialized { try await command.run(input, in: context) }
-            } catch {
-                report(error, from: command.id)
-            }
-        }
+        dispatch.invoke(command, in: context)
     }
-
-    /// Run a command by id and wait for its answer — the door for a caller
-    /// that wants the result, and takes the failure with it.
+    func runCommand(_ id: String, count: Int = 1) { dispatch.runCommand(id, count: count) }
+    func runCommand(_ id: String, with argument: CommandValue) {
+        dispatch.runCommand(id, with: argument)
+    }
     func run(commandID id: String, input: Any) async throws -> Any {
-        guard let command = store?.registry.command(id) else {
-            throw CommandError.noSuchCommand(command: id)
-        }
-        let context = action(id).flatMap { self.context(for: $0, targets: nil) }
-            ?? ActionContext(host: host, targets: nil)
-        if let answer = try command.runImmediately(input, in: context) { return answer }
-        return try await commandQueue.serialized { try await command.run(input, in: context) }
+        try await dispatch.run(commandID: id, input: input)
     }
-
-    /// What the reader is told, in the order of who took the trouble to say it.
-    ///
-    /// A command's own `LocalizedError` comes first, because a plugin that
-    /// wrote a sentence for this moment meant it to be read. `String(describing:)`
-    /// is the floor, and it shows: `refused("no such channel")` is a Swift
-    /// value, not something to put in front of anybody. Anything reaching that
-    /// floor is a command that should have described itself.
-    func report(_ error: Error, from command: String) {
-        let message = (error as? CommandError)?.description
-            ?? (error as? LocalizedError)?.errorDescription
-            ?? String(describing: error)
-        show(CommandFailure(command: command, message: message))
-    }
-
-    func dismissCommandFailure() {
-        commandFailure = nil
-        guard !waitingFailures.isEmpty else { return }
-        // On the next turn rather than this one, so the alert being dismissed
-        // is taken down before the next is put up in its place.
-        Task { @MainActor [weak self] in self?.showWaiting() }
-    }
-
-    /// Say something about the reader's data that no command failed to do.
-    func notice(_ notice: Notice) {
-        show(CommandFailure(title: notice.title, command: notice.source, message: notice.message))
-    }
-
-    private func show(_ failure: CommandFailure) {
-        if commandFailure == nil { commandFailure = failure } else { waitingFailures.append(failure) }
-    }
-
-    private func showWaiting() {
-        guard commandFailure == nil, !waitingFailures.isEmpty else { return }
-        commandFailure = waitingFailures.removeFirst()
-    }
+    func report(_ error: Error, from command: String) { dispatch.report(error, from: command) }
+    func notice(_ notice: Notice) { dispatch.notice(notice) }
+    func dismissCommandFailure() { dispatch.dismissFailure() }
 
     /// What the workspace library has to say before anything else happens: that
     /// it couldn't be read and was kept aside, or that it can't be saved.

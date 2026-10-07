@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import MaximalTreeKit
+@_spi(Host) @testable import MaximalTreeKit
 @testable import MaximalTree
 
 /// What happened, in the order it happened.
@@ -295,3 +295,49 @@ private struct Explains: Command {
         }
     }
 }
+
+/// What a key acts on is the shell's to say and the dispatcher's to honour: a
+/// key pressed in a pane acts on what that pane shows, not on whatever is
+/// selected in the tree.
+@MainActor
+@Suite struct KeyTargetTests {
+    private final class Pointing: KeyTargeting {
+        var targets: [NodeID]?
+        func keyTargets() -> [NodeID]? { targets }
+    }
+
+    @Test func aKeyActsOnWhatTheShellSaysItPointsAt() throws {
+        let host = HostContext()
+        let registry = CoreContributions()
+        let dispatch = Dispatcher(host: host, registry: registry)
+        let pointing = Pointing()
+        dispatch.keyTargeting = pointing
+        let seen = Seen()
+        registry.register(action: Action(id: "test.see", title: "See") { ctx in
+            seen.record(context: ctx)
+        })
+        let shown = try #require(NodeID("file:///shown"))
+        let selected = try #require(NodeID("file:///selected"))
+        host._setSelection([selected])
+
+        pointing.targets = [shown]
+        dispatch.runCommand("test.see")
+        #expect(seen.contexts == [[shown]], "it acted on the selection instead")
+
+        // Nothing in particular — the sidebar, the inspector: the selection.
+        pointing.targets = nil
+        dispatch.runCommand("test.see")
+        #expect(seen.contexts.last == [selected])
+    }
+
+    /// And the window is what the app's dispatcher asks.
+    @Test func theAppSaysWhatItsKeysPointAt() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("keys-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let model = AppModel(host: HostContext(),
+                             workspaceFile: dir.appendingPathComponent("workspaces.json"))
+        #expect(model.dispatch.keyTargeting === model)
+    }
+}
+

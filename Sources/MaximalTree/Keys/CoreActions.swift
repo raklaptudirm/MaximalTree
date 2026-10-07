@@ -123,48 +123,6 @@ extension AppModel {
         }
     }
 
-    /// Run an operation by id with an argument that arrived as data — what a
-    /// finder item carries, and what a keymap or a script will carry.
-    ///
-    /// Applicability is not asked here: a command reached this way names what
-    /// it acts on rather than taking whatever is in front of the reader, so
-    /// there is no selection for a predicate to have an opinion about.
-    func runCommand(_ id: String, with argument: CommandValue) {
-        guard let command = store?.registry.command(id) else { return }
-        let context = ActionContext(host: host, targets: keyTargets())
-        commandsRunning += 1
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer { commandsRunning -= 1 }
-            do {
-                _ = try await commandQueue.serialized {
-                    try await command.run(value: argument, in: context)
-                }
-            } catch {
-                report(error, from: id)
-            }
-        }
-    }
-
-    /// Run an operation by id, from a key or from a plugin.
-    ///
-    /// Applicable ones only, so a key bound to something that doesn't apply
-    /// here does nothing rather than something surprising — which is also how
-    /// the explorer motions stay the sidebar's own.
-    func runCommand(_ id: String, count: Int = 1) {
-        let targets = keyTargets()
-        if let action = action(id) {
-            guard canRun(action, targets: targets) else { return }
-            perform(action, targets: targets, count: count)
-            return
-        }
-        // A command registered without presentation: nothing lists it, so
-        // there is no predicate to ask — being invoked by id is the whole of
-        // how it is reached.
-        guard let command = store?.registry.command(id) else { return }
-        invoke(command, in: ActionContext(host: host, targets: targets, count: count))
-    }
-
     /// What a key press acts on.
     ///
     /// The surface holding the keyboard says what "this" means. A pane means
@@ -174,7 +132,7 @@ extension AppModel {
     /// Without this a key pressed in a terminal acted on whatever happened to
     /// be selected in the tree — a different node, or none — which is why a
     /// canvas could only ever have implemented its own keys.
-    private func keyTargets() -> [NodeID]? {
+    func keyTargets() -> [NodeID]? {
         switch keyboardSurface() {
         case .pane: return focusedPaneNode().map { [$0] }
         // The highlighted row, not the library holding it. Otherwise every
