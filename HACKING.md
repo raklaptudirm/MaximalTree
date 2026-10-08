@@ -108,6 +108,8 @@ Sources/
     HostEngine.swift            #   the host with no window: the library, the graph,
                                 #   switching workspace, collections, undo; HostShell
                                 #   is all a window tells it or hears from it
+    HeadlessHost.swift          #   the engine as something to ask: ls, show,
+                                #   actions, run — what mtree (and a server) use
     Dispatcher.swift            #   what applies, running it, failures and notices;
                                 #   the shell only says what a key points at
     Workspace.swift             #   the library + placements per workspace
@@ -190,6 +192,7 @@ Sources/
     ICloud.swift                #   the plugin: mounting a folder chosen in a panel
   TerminalPlugin/               # libghostty terminals — no core: a session *is* a
                                 # Ghostty surface, so there is nothing to run headless
+  mtree/                        # the host with no window, from a shell (Package.swift only)
 Vendor/typst-ffi/               # Rust staticlib: typst compiler/parser/renderers (C ABI)
 Vendor/highlight-js/            # highlight.min.js (BSD-3) — ~190 grammars, run in-process
 Tests/MaximalTreeTests/         # swift-testing suite, run inside the app (~970 tests)
@@ -237,6 +240,21 @@ in `Vendor/typst-ffi`, which any Xcode build does). **CI** (`.github/workflows/c
 runs exactly that on Linux and macOS for every push; the app itself isn't built there.
 A failing step publishes its errors as annotations; the full log is `gh run view
 --log-failed` (gh is in nixpkgs).
+
+**`mtree`** is the same engine and plugin cores with no window, from a shell — what a
+server will be, minus the network:
+
+```bash
+swift run mtree ls file://$PWD/Sources          # what is under a node
+swift run mtree show file://$PWD/Package.swift  # what a node is
+swift run mtree actions file://$PWD/Sources     # what can be done to it
+swift run mtree run file.newFolder file:///tmp  # do it
+```
+
+It keeps its own workspace library (`--library`, or `$MTREE_LIBRARY`), never the app's;
+what plugins keep — bookmarks, feed names — is shared with the app. A plugin reaches it
+by being in the list in `Sources/mtree/MTree.swift`, through its public
+`<Name>Core.register(with:)`.
 
 **What differs on Linux**, so the next file doesn't trip on it: `URLSession` and
 `XMLParser` are in `FoundationNetworking` and `FoundationXML`; `@Observable` needs an
@@ -971,8 +989,9 @@ text editor, which is only a canvas. Git's repository actions are still the shel
 they report failures into the repository canvas, and where a failed `git` goes without
 one is a decision for a shell that has none. **It runs on Linux**: CI builds all of it
 and runs its tests there on every push (see [Building and running](#building-and-running)).
-What remains is an iOS build and a headless CLI host. Three constraints found while
-planning, worth knowing before starting:
+**And it runs headless**: `mtree` is a `HeadlessHost` — a `HostEngine` and every plugin
+core, with no window — that CI drives on both platforms. What remains is an iOS build.
+Three constraints found while planning, worth knowing before starting:
 
 - the core has to stay a **dynamic** framework on Apple platforms (see Conventions);
 - `Vendor/typst-ffi` must be cross-compiled before anything typst runs on iOS, so the
@@ -1053,8 +1072,8 @@ Known gaps, roughly in order:
   a rename event doesn't yet remap a file's `typst://` section nodes in history.
 - **A second shell** — the hard prerequisites are done (in-process compiler, no CLI
   dependencies, cross-platform editor engine). The core, the host's
-  engine and the plugins' cores build without UI, and on Linux; what remains is an
-  iOS build and a headless host; see [Other shells](#other-shells).
+  engine and the plugins' cores build without UI, and on Linux, and run headless
+  (`mtree`); what remains is an iOS build; see [Other shells](#other-shells).
 - **Smaller**: richer inspector composition, multi-select in the directory grid.
 - **The host's own views write directly** — `NodeInspector` and `SidebarTree` call
   `host.apply` for rename and drag-to-move, which [Who may write](#who-may-write)

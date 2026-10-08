@@ -51,6 +51,7 @@ let package = Package(
     platforms: [.macOS(.v14), .iOS(.v17)],
     products: [
         .library(name: "MaximalTreeKit", targets: ["MaximalTreeKit"]),
+        .executable(name: "mtree", targets: ["mtree"]),
     ],
     targets: [
         .target(name: "MaximalTreeKit", path: "Sources/MaximalTreeCore"),
@@ -66,6 +67,15 @@ let package = Package(
                     dependencies: ["MaximalTreeKit", "MaximalTreeHost"]
                         + pluginCores.filter { $0.type == .regular }.map { .target(name: $0.name) },
                     path: "Tests/MaximalTreeCoreTests"),
+        // MaximalTree with no window: the engine and every plugin core, asked
+        // from a shell. See Sources/mtree.
+        .executableTarget(name: "mtree",
+                          dependencies: ["MaximalTreeKit", "MaximalTreeHost"]
+                              + pluginCores.filter { $0.type == .regular }.map { .target(name: $0.name) },
+                          path: "Sources/mtree"),
+        // The engine driven the way that tool drives it, with real plugins.
+        .testTarget(name: "HeadlessTests", dependencies: ["MaximalTreeHost", "FileSystem"],
+                    path: "Tests/HeadlessTests"),
         // The plugins' cores, tested alone — for what differs by platform.
         // Not in the Mac app's suite, which has its own tests of all of this.
         .testTarget(name: "PluginCoreTests", dependencies: ["YouTube"],

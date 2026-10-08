@@ -9,12 +9,12 @@ import MaximalTreeKit
 /// What a host with no window registers, and the first thing the Mac plugin
 /// does. How a document is shown — prose or source, which typeface, how big —
 /// and exporting it through a save panel are the shell's.
-enum TypstCore {
+public enum TypstCore {
     /// - Parameter onAgendaChanged: told when a watched agenda's files change,
     ///   so a shell showing it can redraw.
     @MainActor
-    static func register(with registry: CoreRegistry,
-                         onAgendaChanged: @escaping @Sendable () -> Void = {}) {
+    public static func register(with registry: CoreRegistry,
+                                onAgendaChanged: @escaping @Sendable () -> Void = {}) {
         // Structure: sections/tasks under .typ files, and the mountable agenda.
         registry.register(provider: TypstProvider(onAgendaChanged: onAgendaChanged))
         registry.register(children: ChildContribution(
@@ -82,7 +82,7 @@ enum TypstCore {
     /// through the host — and `@local/mtnotes` has to be installed where typst
     /// looks for it. Apart from `register`, which says what the plugin is and
     /// writes nothing anywhere.
-    static func installPackages() {
+    public static func installPackages() {
         TypstPackages.install()
         Task.detached(priority: .utility) {
             do { try TypstNotes.installPackage() }

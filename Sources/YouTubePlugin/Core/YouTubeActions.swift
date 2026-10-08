@@ -9,11 +9,16 @@ import MaximalTreeKit
 /// What a host with no window registers, and the first thing the Mac plugin
 /// does. Asking the reader — what to search for, which channel — is the
 /// shell's, and so are the player and the comments beside it.
-enum YouTubeCore {
-    /// Registers the provider and hands it back, so the shell's actions and
-    /// inspector resolve channels with the same cache the tree reads from.
+public enum YouTubeCore {
+    @MainActor
+    public static func register(with registry: CoreRegistry) {
+        registerProvider(with: registry)
+    }
+
+    /// The same, handing the provider back, so a shell's actions and inspector
+    /// resolve channels with the same cache the tree reads from.
     @MainActor @discardableResult
-    static func register(with registry: CoreRegistry) -> YouTubeProvider {
+    static func registerProvider(with registry: CoreRegistry) -> YouTubeProvider {
         let provider = YouTubeProvider(broker: registry.broker)
         registry.register(provider: provider)
         YouTubeStore.shared.report(to: registry.notices)

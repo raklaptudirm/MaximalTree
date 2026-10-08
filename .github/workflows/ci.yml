@@ -1,5 +1,6 @@
-# What builds without the Mac app: the SDK's core, the host's engine, and each
-# plugin's core half — on Linux and on macOS, through Package.swift.
+# What builds without the Mac app: the SDK's core, the host's engine, each
+# plugin's core half and mtree, the host with no window — on Linux and on
+# macOS, through Package.swift.
 #
 # Not the app itself. That needs Xcode's beta, XcodeGen, and libghostty built
 # from source with Zig (Scripts/build-ghostty.sh); it is checked locally, by
@@ -52,12 +53,21 @@ jobs:
         shell: bash
         run: set -o pipefail; swift test 2>&1 | tee swift.log
 
+      # The tool itself, from a shell: the engine and every plugin core,
+      # listing this checkout.
+      - name: mtree, from a shell
+        shell: bash
+        run: |
+          set -o pipefail
+          swift run mtree --library "$RUNNER_TEMP/library.json" ls "file://$PWD/Sources" 2>&1 | tee mtree.log
+          grep -q "MaximalTreeHost/" mtree.log
+
       # The logs are only for people signed in to GitHub; annotations are for
       # anyone, the API included. So a failure says what failed in those.
       - name: Say what failed
         if: failure()
         shell: bash
-        run: .github/report-failure.sh cargo.log swift.log
+        run: .github/report-failure.sh cargo.log swift.log mtree.log
 
   macos:
     name: Core on macOS
@@ -84,9 +94,18 @@ jobs:
         shell: bash
         run: set -o pipefail; swift test 2>&1 | tee swift.log
 
+      # The tool itself, from a shell: the engine and every plugin core,
+      # listing this checkout.
+      - name: mtree, from a shell
+        shell: bash
+        run: |
+          set -o pipefail
+          swift run mtree --library "$RUNNER_TEMP/library.json" ls "file://$PWD/Sources" 2>&1 | tee mtree.log
+          grep -q "MaximalTreeHost/" mtree.log
+
       # The logs are only for people signed in to GitHub; annotations are for
       # anyone, the API included. So a failure says what failed in those.
       - name: Say what failed
         if: failure()
         shell: bash
-        run: .github/report-failure.sh cargo.log swift.log
+        run: .github/report-failure.sh cargo.log swift.log mtree.log

@@ -162,6 +162,10 @@ final class GraphStore: GraphBackend {
         return registry.providers.first { $0.schemes.contains(scheme) }
     }
 
+    /// The node `uri` names, as its provider canonicalizes it — or nil when no
+    /// provider serves that scheme, or it doesn't recognise the address.
+    func resolve(_ uri: String) -> NodeID? { provider(forURI: uri)?.resolve(uri) }
+
     private func provider(forURI uri: String) -> NodeProvider? {
         guard let id = NodeID(uri), let scheme = id.scheme else { return nil }
         return registry.providers.first { $0.schemes.contains(scheme) }

@@ -9,9 +9,17 @@ import MaximalTreeKit
 /// does. Everything that reaches into a live page — back, reload, bookmarking
 /// it under the title it gives itself — is the shell's, since only a shell has
 /// a page open.
-enum WebCore {
+public enum WebCore {
+    /// The core half alone: pages named after their URLs, since nothing here
+    /// has a page open.
     @MainActor
-    static func register(with registry: CoreRegistry, provider: WebProvider = WebProvider()) {
+    public static func register(with registry: CoreRegistry) {
+        register(with: registry, provider: WebProvider())
+    }
+
+    /// With a provider a shell has told where its open pages are.
+    @MainActor
+    static func register(with registry: CoreRegistry, provider: WebProvider) {
         registry.register(provider: provider)
         BookmarkStore.shared.report(to: registry.notices)
 

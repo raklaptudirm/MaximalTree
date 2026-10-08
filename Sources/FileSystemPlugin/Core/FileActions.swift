@@ -37,9 +37,9 @@ func targetDirectory(_ ctx: ActionContext) -> NodeID? {
 /// The file system's half that needs no window: the provider, and the actions
 /// above. What a host with no window registers, and the first thing the Mac
 /// plugin does.
-enum FileSystemCore {
+public enum FileSystemCore {
     @MainActor
-    static func register(with registry: CoreRegistry) {
+    public static func register(with registry: CoreRegistry) {
         registry.register(provider: FileSystemProvider())
 
         registry.register(action: Action(

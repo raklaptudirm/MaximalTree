@@ -18,7 +18,7 @@ final class YouTubePlugin: NSObject, Plugin {
     private nonisolated(unsafe) static var provider: YouTubeProvider?
 
     func register(with registry: PluginRegistry) {
-        let provider = YouTubeCore.register(with: registry)
+        let provider = YouTubeCore.registerProvider(with: registry)
         Self.provider = provider
 
         registry.registerCanvas(forType: TypeID("youtube.video")) { id, _ in

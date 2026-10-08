@@ -7,7 +7,13 @@ import MaximalTreeKit
 ///
 /// What a host with no window registers, and the first thing the Mac plugin
 /// does. Choosing a folder to mount needs a panel, so that is the shell's.
-enum ICloudCore {
+public enum ICloudCore {
+    /// The core half over this device's own iCloud Drive.
+    @MainActor
+    public static func register(with registry: CoreRegistry) {
+        register(with: registry, drive: .live)
+    }
+
     @MainActor
     static func register(with registry: CoreRegistry, drive: ICloudDrive) {
         registry.register(provider: ICloudProvider(drive: drive, broker: registry.broker))

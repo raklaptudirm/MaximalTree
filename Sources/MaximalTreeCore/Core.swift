@@ -116,6 +116,9 @@ public struct Attributes: Hashable, Sendable {
     }
 
     public var isEmpty: Bool { storage.isEmpty }
+    /// Which attributes there are — for whatever shows all of them, rather
+    /// than asking for the ones it knows.
+    public var keys: [String] { storage.keys.sorted() }
 
     /// Take everything in `other`, replacing what is already here.
     ///

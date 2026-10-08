@@ -452,9 +452,9 @@ struct GitProvider: NodeProvider {
 /// shell's: they report into the repository canvas and take the commit message
 /// from its editor, and where a failed `git` says so without a canvas is a
 /// question for when there is a shell without one.
-enum GitCore {
+public enum GitCore {
     @MainActor
-    static func register(with registry: CoreRegistry) {
+    public static func register(with registry: CoreRegistry) {
         registry.register(provider: GitProvider(broker: registry.broker))
 
         // Cross-plugin integration: offer to open a filesystem directory that is a
