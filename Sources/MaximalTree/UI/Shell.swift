@@ -41,27 +41,12 @@ struct ContentView: View {
             SidebarTree()
                 .background(SurfaceAccessor(.sidebar))
                 .navigationSplitViewColumnWidth(min: 180, ideal: 240)
-                .toolbar {
-                    ToolbarItem {
-                        Menu {
-                            WorkspaceMenuItems(model: model, showShortcuts: false)
-                        } label: {
-                            Label(model.activeWorkspaceName, systemImage: "square.stack.3d.up")
-                        }
-                        .help("Switch workspace")
-                    }
-                    ToolbarItem {
-                        Menu {
-                            // The same operations the menu bar and the finder
-                            // offer, by the same names.
-                            ActionItem(model: model, id: "workspace.addFolder")
-                            ActionItem(model: model, id: "collection.new")
-                        } label: {
-                            Label("Add", systemImage: "plus")
-                        }
-                        .help("Mount a root, or add an organizing folder")
-                    }
-                }
+                // No buttons in the window's toolbar: switching workspace
+                // (`SPC w w`), mounting a root (`SPC n r`), a new collection
+                // (`SPC w f`) and the side panes (`SPC s E`, `SPC s I`) are
+                // keys, and in the menu bar. The title — the workspace — and
+                // its subtitle are what the toolbar is for.
+                .toolbar(removing: .sidebarToggle)
         } detail: {
             VStack(spacing: 0) {
                 if !host.isZenMode {
@@ -94,14 +79,6 @@ struct ContentView: View {
                     // and tear down the markers focus is derived from.
                     .overlay { SurfaceFocusRing(surface: .inspector) }
                     .inspectorColumnWidth(min: 200, ideal: 260, max: 420)
-            }
-            .toolbar {
-                ToolbarItem {
-                    Button { model.inspectorVisible.toggle() } label: {
-                        Label("Inspector", systemImage: "sidebar.trailing")
-                    }
-                    .help("Toggle inspector")
-                }
             }
         }
         // The window title belongs to the workspace; the focused node rides in the

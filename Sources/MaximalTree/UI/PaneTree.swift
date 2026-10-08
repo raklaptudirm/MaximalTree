@@ -19,6 +19,10 @@ import MaximalTreeKit
 
 // MARK: - Tab strip (top of the canvas column)
 
+/// The tabs, and the mode the keys are in — and nothing to press. Going back
+/// and forward, splitting, closing a pane or a tab and opening a new one are
+/// all keys (`C-o`/`C-i`, `SPC s v`/`s`/`d`, `SPC t d`, `SPC t N`) and in the
+/// menu bar, so buttons for them were only ever a second way to do each.
 struct TabStrip: View {
     @Environment(AppModel.self) private var model
     @Environment(HostContext.self) private var host
@@ -26,15 +30,6 @@ struct TabStrip: View {
     var body: some View {
         let nav = model.navigation
         HStack(spacing: 6) {
-            Button { model.goBack() } label: { Image(systemName: "chevron.left") }
-                .disabled(!nav.canGoBack)
-                .help("Back")
-            Button { model.goForward() } label: { Image(systemName: "chevron.right") }
-                .disabled(!nav.canGoForward)
-                .help("Forward")
-
-            Divider().frame(height: 16)
-
             // A horizontal ScrollView will happily take every point of vertical space
             // it's offered — pin it, or the strip eats the canvas.
             ScrollView(.horizontal, showsIndicators: false) {
@@ -43,9 +38,7 @@ struct TabStrip: View {
                         TabChip(title: title(of: tab),
                                 provisional: !tab.isPinned,
                                 active: i == nav.activeIndex,
-                                closable: nav.tabs.count > 1,
-                                select: { model.selectTab(i) },
-                                close: { model.closeTab(tab.id) })
+                                select: { model.selectTab(i) })
                     }
                 }
             }
@@ -53,28 +46,11 @@ struct TabStrip: View {
 
             Spacer(minLength: 0)
 
-            // Status, not a control — so it sits ahead of the buttons, with a
-            // rule between. In the strip rather than the toolbar because an
-            // NSToolbar item wraps arbitrary content in a glass container it
-            // won't size to, and the label spilled out of it.
+            // In the strip rather than the toolbar because an NSToolbar item
+            // wraps arbitrary content in a glass container it won't size to,
+            // and the label spilled out of it.
             KeyModeIndicator()
-            Divider().frame(height: 16)
-
-            Button { model.splitPaneRight() } label: { Image(systemName: "rectangle.split.2x1") }
-                .help("Split Right")
-            Button { model.splitPaneDown() } label: { Image(systemName: "rectangle.split.1x2") }
-                .help("Split Down")
-            if model.navigation.canClosePane {
-                Button { model.closeActivePane() } label: { Image(systemName: "xmark.rectangle") }
-                    .help("Close Pane")
-            }
-
-            Divider().frame(height: 16)
-
-            Button { model.newTab() } label: { Image(systemName: "plus") }
-                .help("New Tab")
         }
-        .buttonStyle(.borderless)
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .fixedSize(horizontal: false, vertical: true)   // never grow vertically
@@ -91,29 +67,18 @@ private struct TabChip: View {
     /// have spelled this for years.
     var provisional: Bool = false
     let active: Bool
-    let closable: Bool
     let select: () -> Void
-    let close: () -> Void
 
     var body: some View {
-        HStack(spacing: 4) {
-            Text(title).lineLimit(1).font(.callout)
-                .italic(provisional)
-            if closable {
-                Button(action: close) {
-                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
-                }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .frame(maxWidth: 170)
-        .background(active ? Color.accentColor.opacity(0.22) : Color.secondary.opacity(0.10),
-                    in: RoundedRectangle(cornerRadius: 6))
-        .contentShape(Rectangle())
-        .onTapGesture(perform: select)
+        Text(title).lineLimit(1).font(.callout)
+            .italic(provisional)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .frame(maxWidth: 170)
+            .background(active ? Color.accentColor.opacity(0.22) : Color.secondary.opacity(0.10),
+                        in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+            .onTapGesture(perform: select)
     }
 }
 

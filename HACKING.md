@@ -510,7 +510,7 @@ A **workspace** is a named arrangement of nodes — what is mounted and what was
 inside what (see [Placements](#placements-what-is-inside-what)) — host-owned and
 persisted as an app-managed library (`workspaces.json` in Application Support; the
 pre-workspaces single `workspace.json` migrates automatically). At least one workspace always exists, and
-exactly one is active. Switching (toolbar menu, or the Workspace menu with ⌘⌥1–9)
+exactly one is active. Switching (`SPC w w`, or the Workspace menu with ⌘⌥1–9)
 saves nothing and restores everything: tabs, history, focus, and selection reset;
 node caches are kept because `NodeID`s stay valid across workspaces. Mount/unmount
 persists into the active workspace automatically, no matter who initiated it (UI or a
@@ -833,6 +833,12 @@ anything you register is bindable to a key and callable by name the day it ships
 node — the node-scoped finder lists `.node`, `.container` and `.document`, not
 `.workspace`. `surfaces: [.palette]` keeps an operation out of the menus while leaving
 it searchable, which is what the host's forty-odd motions use.
+
+**Design rule: the host's chrome has no buttons for what a key does.** The tab strip is
+the tabs and the mode; the window's toolbar is the workspace's name. Back and forward,
+splits, tabs, workspaces and the side panes are keys and menu items, and a button for
+any of them is a second way to do it that the keyboard user never sees and the mouse
+user is better served by the menu for.
 
 **Design rule: canvases are content.** Don't put headers, toolbars, or control
 strips on a canvas — the node's label is already in the window subtitle, tab, and
