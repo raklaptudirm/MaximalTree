@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking   // URLSession, outside Apple's Foundation
+#endif
 
 // YouTube's own web client talks to a private JSON API — InnerTube — and this
 // is the part of it a reader needs: searching, and listing what a channel

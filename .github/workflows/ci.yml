@@ -1,0 +1,71 @@
+# What builds without the Mac app: the SDK's core, the host's engine, and each
+# plugin's core half — on Linux and on macOS, through Package.swift.
+#
+# Not the app itself. That needs Xcode's beta, XcodeGen, and libghostty built
+# from source with Zig (Scripts/build-ghostty.sh); it is checked locally, by
+# the suite in MaximalTree.xcodeproj.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A newer push to the same branch makes the older run moot.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Core on Linux
+    runs-on: ubuntu-latest
+    # The official toolchain image. Unpinned while the minimum Swift the code
+    # needs is being found out; pin it once a version is known to pass.
+    container: swift:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          apt-get update -q && apt-get install -yq curl
+          curl --proto '=https' -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # The typst engine is the slow part, and changes least.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            Vendor/typst-ffi/target
+          key: typst-ffi-${{ runner.os }}-${{ hashFiles('Vendor/typst-ffi/Cargo.lock', 'Vendor/typst-ffi/src/**') }}
+          restore-keys: typst-ffi-${{ runner.os }}-
+
+      - name: Build the typst engine
+        working-directory: Vendor/typst-ffi
+        run: cargo build --release
+
+      - run: swift --version
+      - run: swift test
+
+  macos:
+    name: Core on macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            Vendor/typst-ffi/target
+          key: typst-ffi-${{ runner.os }}-${{ hashFiles('Vendor/typst-ffi/Cargo.lock', 'Vendor/typst-ffi/src/**') }}
+          restore-keys: typst-ffi-${{ runner.os }}-
+
+      # The same build the Xcode project's script phase runs.
+      - name: Build the typst engine
+        working-directory: Vendor/typst-ffi
+        run: cargo build --release
+
+      - run: swift --version
+      - run: swift test

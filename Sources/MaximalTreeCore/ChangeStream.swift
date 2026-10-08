@@ -98,4 +98,26 @@ public final class FileTreeWatcher: @unchecked Sendable {
     deinit { stop() }
 }
 
+#else
+
+// MARK: - File tree watcher (none)
+
+/// Where there is no FSEvents, nothing is watched: `init` fails, which is what
+/// a provider already handles for a path that can't be watched — its stream
+/// finishes at once, and the tree is brought up to date by refreshing instead.
+/// A real one (inotify on Linux) is for when a host runs there for real.
+public final class FileTreeWatcher: @unchecked Sendable {
+    public struct Event: Sendable {
+        public let path: String
+        public let mustRescanSubtree: Bool
+    }
+
+    public init?(path: String, latency: TimeInterval = 0.5,
+                 onEvents: @escaping @Sendable ([Event]) -> Void) {
+        return nil
+    }
+
+    public func stop() {}
+}
+
 #endif

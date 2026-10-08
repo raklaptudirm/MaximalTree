@@ -1,5 +1,7 @@
 import Foundation
+#if canImport(UniformTypeIdentifiers)
 import UniformTypeIdentifiers
+#endif
 import MaximalTreeKit
 
 // File-scheme identity helpers. Kept in the plugin — the host core never assumes
@@ -56,17 +58,24 @@ struct FileSystemProvider: NodeProvider {
     static func node(url: URL, id: NodeID, isDir: Bool) -> Node {
         let name = url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
         var attrs = Attributes()
-        var contentType: UTType?
+        var typeIcon: NodeIcon?
         var anchor: NodeAnchor?
-        if let vals = try? url.resourceValues(
-            forKeys: [.fileSizeKey, .contentModificationDateKey, .contentTypeKey,
-                      .isSymbolicLinkKey]) {
+        var keys: Set<URLResourceKey> = [.fileSizeKey, .contentModificationDateKey, .isSymbolicLinkKey]
+        // What kind of file it is, where the system can say: Apple's type tree.
+        // Elsewhere a file is known by its extension alone, which the language
+        // icons below already read.
+        #if canImport(UniformTypeIdentifiers)
+        keys.insert(.contentTypeKey)
+        #endif
+        if let vals = try? url.resourceValues(forKeys: keys) {
             if let size = vals.fileSize { attrs["size"] = .int(size) }
             if let mod = vals.contentModificationDate { attrs["modified"] = .date(mod) }
+            #if canImport(UniformTypeIdentifiers)
             if let type = vals.contentType {
                 attrs["uti"] = .string(type.identifier)
-                contentType = type
+                typeIcon = icon(for: type)
             }
+            #endif
             // A symlink IS a pointer to another file — phony: opening it opens
             // the destination's node (one identity per real file), the link
             // stays selected in the sidebar.
@@ -81,12 +90,25 @@ struct FileSystemProvider: NodeProvider {
                     type: isDir ? directoryType : fileType,
                     label: name,
                     icon: isDir ? NodeIcon("folder.fill", tint: .blue)
-                                : (languageIcon(for: url) ?? icon(for: contentType)),
+                                : (languageIcon(for: url) ?? typeIcon ?? NodeIcon("doc", tint: .secondary)),
                     attributes: attrs,
                     hasChildren: isDir,
                     anchor: anchor)
     }
 
+    #if os(macOS)
+    static let hasTrash = true
+    static func trash(_ url: URL, with fm: FileManager) throws {
+        try fm.trashItem(at: url, resultingItemURL: nil)
+    }
+    #else
+    static let hasTrash = false
+    static func trash(_ url: URL, with fm: FileManager) throws {
+        throw CocoaError(.featureUnsupported)
+    }
+    #endif
+
+    #if canImport(UniformTypeIdentifiers)
     /// Content-type-aware icons, so the sidebar reads at a glance.
     static func icon(for uti: UTType?) -> NodeIcon {
         guard let uti else { return NodeIcon("doc", tint: .secondary) }
@@ -100,6 +122,7 @@ struct FileSystemProvider: NodeProvider {
         if uti.conforms(to: .archive)    { return NodeIcon("shippingbox", tint: .orange) }
         return NodeIcon("doc", tint: .secondary)
     }
+    #endif
 
     static func readChildren(url: URL) -> Page<Node> {
         guard let entries = try? FileManager.default.contentsOfDirectory(
@@ -139,7 +162,9 @@ extension FileSystemProvider: MutatingNodeProvider {
     func supports(_ mutation: GraphMutation) -> Bool {
         switch mutation {
         case .rename(let id, _): return id.fileURL != nil
-        case .delete(let ids): return !ids.isEmpty && ids.allSatisfy { $0.fileURL != nil }
+        // Deleting here means the Trash, which can be undone; where there is
+        // no Trash, nothing is offered rather than deleting for good.
+        case .delete(let ids): return Self.hasTrash && !ids.isEmpty && ids.allSatisfy { $0.fileURL != nil }
         case .move(let ids, let dest):
             guard !ids.isEmpty, ids.allSatisfy({ $0.fileURL != nil }),
                   let destURL = dest.fileURL else { return false }
@@ -194,7 +219,7 @@ extension FileSystemProvider: MutatingNodeProvider {
             for id in ids {
                 guard let url = id.fileURL else { continue }
                 do {
-                    try fm.trashItem(at: url, resultingItemURL: nil)   // reversible
+                    try Self.trash(url, with: fm)   // reversible
                     changes.append(.removed(id))
                     if let parent = NodeID(fileURL: url.deletingLastPathComponent()) {
                         changes.append(.childrenChanged(parent))

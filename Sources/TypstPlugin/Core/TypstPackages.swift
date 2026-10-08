@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking   // URLSession, outside Apple's Foundation
+#endif
 import TypstFFI
 
 /// Fetches typst packages for the compiler.

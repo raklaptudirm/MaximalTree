@@ -1,5 +1,4 @@
 import Foundation
-import UniformTypeIdentifiers
 import MaximalTreeKit
 
 // Icons for source, config, and document files.
