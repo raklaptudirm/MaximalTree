@@ -66,5 +66,9 @@ let package = Package(
                     dependencies: ["MaximalTreeKit", "MaximalTreeHost"]
                         + pluginCores.filter { $0.type == .regular }.map { .target(name: $0.name) },
                     path: "Tests/MaximalTreeCoreTests"),
+        // The plugins' cores, tested alone — for what differs by platform.
+        // Not in the Mac app's suite, which has its own tests of all of this.
+        .testTarget(name: "PluginCoreTests", dependencies: ["YouTube"],
+                    path: "Tests/PluginCoreTests"),
     ] + pluginCores
 )

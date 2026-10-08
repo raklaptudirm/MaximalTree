@@ -426,11 +426,29 @@ enum JSONValue: Equatable, Sendable {
             // Before `Bool`, and asking the number itself what it is: 0 and 1
             // bridge to Bool happily, so matching that first read every reply
             // level, index and count of one as true or false.
-            self = CFGetTypeID(number) == CFBooleanGetTypeID()
-                ? .bool(number.boolValue) : .number(number.doubleValue)
+            self = Self.isFlag(number) ? .bool(number.boolValue) : .number(number.doubleValue)
+        // Where nothing bridges to NSNumber, JSONSerialization's own values
+        // arrive as themselves — and then a Bool is only ever a JSON flag.
+        case let flag as Bool:
+            self = .bool(flag)
+        case let integer as Int:
+            self = .number(Double(integer))
+        case let real as Double:
+            self = .number(real)
         default:
             self = .null
         }
+    }
+
+    /// Whether a parsed number is really `true` or `false`. On Apple platforms
+    /// a JSON flag is the CFBoolean singleton; elsewhere it is made as a `char`
+    /// — which no JSON number ever is.
+    private static func isFlag(_ number: NSNumber) -> Bool {
+        #if canImport(Darwin)
+        CFGetTypeID(number) == CFBooleanGetTypeID()
+        #else
+        String(cString: number.objCType) == "c"
+        #endif
     }
 
     subscript(key: String) -> JSONValue {
