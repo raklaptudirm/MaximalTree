@@ -17,13 +17,14 @@ final class TextEditorPlugin: NSObject, Plugin {
 
     func register(with registry: PluginRegistry) {
         EditorKeys.register(with: registry)
+        Self.registerViewActions(with: registry)
         registry.register(canvas: CanvasContribution(
             priority: 100,                       // beats FileSystem's Quick Look (0)
             matches: Self.handlesAsText(_:),
             // First open pays the highlighter's JS load behind the host's
             // loading indicator, not inside the first paint.
             prepare: { _ in await SyntaxTokenizer.warmUp() },
-            keys: EditorKeys.keys,
+            keys: EditorKeys.keys + Self.viewKeys,
             make: { id, host in AnyView(TextEditorCanvas(nodeID: id).environment(host)) }
         ))
     }
@@ -37,6 +38,51 @@ final class TextEditorPlugin: NSObject, Plugin {
     /// and extensionless files (Makefile, Dockerfile) have no type at all. So we
     /// also claim anything the editor has a grammar for: if we can highlight it,
     /// we can edit it.
+    /// `z` is where a surface keeps how it looks, here as in the typst canvas,
+    /// the page and the terminal: bigger, smaller, back to standard, and
+    /// whether long lines wrap. Per language — see `EditorPreferences`.
+    static let viewKeys: [SurfaceKey] = [
+        SurfaceKey("z i", "code.size.bigger"),
+        SurfaceKey("z o", "code.size.smaller"),
+        SurfaceKey("z 0", "code.size.reset"),
+        SurfaceKey("z w", "code.wrap"),
+    ]
+
+    @MainActor
+    static func registerViewActions(with registry: PluginRegistry) {
+        func register(_ id: String, _ title: String, _ image: String,
+                      _ change: @escaping @MainActor @Sendable (String?) -> Void) {
+            registry.register(action: Action(
+                id: id, title: title, systemImage: image,
+                appliesTo: .custom { editedFile(in: $0) != nil }, scope: .document
+            ) { ctx in
+                guard let file = editedFile(in: ctx) else { return }
+                change(EditorLanguage.id(for: file))
+            })
+        }
+        register("code.size.bigger", "Bigger Code Text", "textformat.size.larger") {
+            EditorPreferences.shared.stepSize(by: 1, for: $0)
+        }
+        register("code.size.smaller", "Smaller Code Text", "textformat.size.smaller") {
+            EditorPreferences.shared.stepSize(by: -1, for: $0)
+        }
+        register("code.size.reset", "Standard Code Text Size", "textformat.size") {
+            EditorPreferences.shared.resetSize(for: $0)
+        }
+        register("code.wrap", "Wrap Long Lines", "text.word.spacing") {
+            EditorPreferences.shared.toggleWrap(for: $0)
+        }
+    }
+
+    /// The file an action is about — what the pane shows, or what is
+    /// selected — if it is one this editor opens.
+    @MainActor
+    static func editedFile(in ctx: ActionContext) -> URL? {
+        guard let target = ctx.focused ?? ctx.selection.first,
+              let node = ctx.host.node(target), handlesAsText(node) else { return nil }
+        return URL(string: target.uri)
+    }
+
     static func handlesAsText(_ node: Node) -> Bool {
         // Directories are containers, never documents — and a directory named
         // `foo.d` would otherwise look like a D source file.
@@ -66,6 +112,9 @@ struct TextEditorCanvas: View {
     /// The file's contents when it changed on disk under unsaved edits. The
     /// reader has to pick a side before this clears.
     @State private var conflict: String?
+    /// How this file indents — its project's `.editorconfig`, or its
+    /// language's habit. Read with the file.
+    @State private var indentation = Indentation(width: 4, tabs: false)
 
     private var dirty: Bool { text != savedText }
 
@@ -84,7 +133,9 @@ struct TextEditorCanvas: View {
                 ContentUnavailableView("Can't Open", systemImage: "exclamationmark.triangle",
                                        description: Text(loadError))
             } else {
-                MaximalEditor(text: $text, fileURL: fileURL, style: .code(),
+                MaximalEditor(text: $text, fileURL: fileURL,
+                              style: EditorPreferences.shared.codeStyle(for: fileURL,
+                                                                        indentation: indentation),
                               tokenizer: fileURL.flatMap(SyntaxTokenizer.init(fileURL:)))
                     .id(nodeID)      // per-document identity: switching files rebuilds
                     .clipped()       // AppKit-backed: keep it inside our layout
@@ -134,11 +185,12 @@ struct TextEditorCanvas: View {
         do {
             // Off-main: a large file must not stall the app loop while the
             // ProgressView above is showing.
-            let contents = try await Task.detached(priority: .userInitiated) {
-                try String(contentsOf: url, encoding: .utf8)
+            let (contents, indentation) = try await Task.detached(priority: .userInitiated) {
+                (try String(contentsOf: url, encoding: .utf8), Indentation.of(url))
             }.value
             text = contents
             savedText = contents
+            self.indentation = indentation
         } catch {
             text = ""
             savedText = ""

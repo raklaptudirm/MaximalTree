@@ -958,6 +958,17 @@ and everything degrades to "no completions" when the binary is absent. Install
 tinymist (`brew install tinymist` / `nix profile install nixpkgs#tinymist`) and
 completions — plus the gated live tests — light up with no configuration.
 
+**Editing code.** Normal mode is select-then-act (`EditEngine`, tested without a view):
+`>`/`<` shift the selected lines, `g c` comments them (`EditorLanguage.commentSyntax`),
+`m m` jumps to the matching bracket, `u`/`C-r` undo and redo through the view's own
+history. What *typing* does is `Typing`'s — rules the text view asks before its own
+input methods: Return keeps (and after an opener deepens) the indent and opens a block
+between a pair, brackets and quotes pair, a closer finds its level, backspace takes an
+empty pair or a whole indent, Tab is one indent. All but the indent are for code only
+(`EditorStyle.editsCode`). How code is shown is `EditorPreferences` — size and
+wrapping per language, `z i`/`z o`/`z 0`/`z w` in the code canvas — and how a file
+indents is `Indentation.of(url)`: its `.editorconfig`, else its language's habit.
+
 ### The editor on other platforms
 
 The editor itself is ready for iOS: the same engine behind the same seam, with a UIKit
