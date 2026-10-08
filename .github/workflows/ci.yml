@@ -20,9 +20,8 @@ jobs:
   linux:
     name: Core on Linux
     runs-on: ubuntu-latest
-    # The official toolchain image. Unpinned while the minimum Swift the code
-    # needs is being found out; pin it once a version is known to pass.
-    container: swift:latest
+    # The official toolchain image, at the version CI first passed with.
+    container: swift:6.4
     steps:
       - uses: actions/checkout@v4
 

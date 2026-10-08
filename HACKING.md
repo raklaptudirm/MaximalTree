@@ -230,6 +230,22 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test
 ```
 
+`swift test` builds what `Package.swift` knows — the SDK's core, the host's engine and
+every plugin's `Core/` — and runs `Tests/MaximalTreeCoreTests` and
+`Tests/PluginCoreTests`. It needs the typst engine built first (`cargo build --release`
+in `Vendor/typst-ffi`, which any Xcode build does). **CI** (`.github/workflows/ci.yml`)
+runs exactly that on Linux and macOS for every push; the app itself isn't built there.
+A failing step publishes its errors as annotations; the full log is `gh run view
+--log-failed` (gh is in nixpkgs).
+
+**What differs on Linux**, so the next file doesn't trip on it: `URLSession` and
+`XMLParser` are in `FoundationNetworking` and `FoundationXML`; `@Observable` needs an
+explicit `import Observation`; there is no CoreFoundation, no `UniformTypeIdentifiers`,
+no Trash and no `RelativeDateTimeFormatter`; and `FileTreeWatcher` never starts (there is
+no FSEvents), so providers fall back to refreshing. Swift before 6.4 also reads a bare
+property name inside `let x = lock.withLock { x }` as the local being declared — write
+`self.x`.
+
 A test of core behaviour belongs in `Tests/MaximalTreeCoreTests` when it needs nothing
 but core types: both runners pick it up. It imports `MaximalTreeKit` either way —
 `Package.swift` gives the core that name, so under `swift test` the SDK is simply its
@@ -953,9 +969,10 @@ plugins are split too**: each has a `Core/` that `Package.swift` builds alone (t
 links the same cargo-built engine) — except the terminal, which is libghostty, and the
 text editor, which is only a canvas. Git's repository actions are still the shell's:
 they report failures into the repository canvas, and where a failed `git` goes without
-one is a decision for a shell that has none. What remains is proving it off macOS
-with an iOS build, `swift test` on Linux, and a headless CLI host. Three constraints
-found while planning, worth knowing before starting:
+one is a decision for a shell that has none. **It runs on Linux**: CI builds all of it
+and runs its tests there on every push (see [Building and running](#building-and-running)).
+What remains is an iOS build and a headless CLI host. Three constraints found while
+planning, worth knowing before starting:
 
 - the core has to stay a **dynamic** framework on Apple platforms (see Conventions);
 - `Vendor/typst-ffi` must be cross-compiled before anything typst runs on iOS, so the
@@ -1036,8 +1053,8 @@ Known gaps, roughly in order:
   a rename event doesn't yet remap a file's `typst://` section nodes in history.
 - **A second shell** — the hard prerequisites are done (in-process compiler, no CLI
   dependencies, cross-platform editor engine). The core, the host's
-  engine and the plugins' cores build without UI; what remains is the platform work;
-  see [Other shells](#other-shells).
+  engine and the plugins' cores build without UI, and on Linux; what remains is an
+  iOS build and a headless host; see [Other shells](#other-shells).
 - **Smaller**: richer inspector composition, multi-select in the directory grid.
 - **The host's own views write directly** — `NodeInspector` and `SidebarTree` call
   `host.apply` for rename and drag-to-move, which [Who may write](#who-may-write)
