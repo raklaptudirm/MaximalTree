@@ -412,7 +412,6 @@ targets:
       - Sources/GitPlugin
       - Sources/TextEditorPlugin
       - Sources/TypstPlugin/Core
-      - path: Sources/TypstPlugin/TypstLSP.swift
       - path: Sources/TypstPlugin/PDFAppearance.swift
       - path: Sources/TypstPlugin/TypstServices.swift
       - path: Sources/TypstPlugin/TypstUIState.swift

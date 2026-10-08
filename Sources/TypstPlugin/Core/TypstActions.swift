@@ -17,6 +17,14 @@ public enum TypstCore {
                                 onAgendaChanged: @escaping @Sendable () -> Void = {}) {
         // Structure: sections/tasks under .typ files, and the mountable agenda.
         registry.register(provider: TypstProvider(onAgendaChanged: onAgendaChanged))
+        // Completions from tinymist, when it is installed — through the same
+        // client every other language's server goes through.
+        #if os(macOS) || os(Linux)
+        if let tinymist = LanguageServerConfig.known.first(where: { $0.name == "tinymist" })
+            .flatMap(LanguageServer.init) {
+            registry.register(languageService: tinymist)
+        }
+        #endif
         registry.register(children: ChildContribution(
             matches: { node in
                 node.id.scheme == "file" && node.id.uri.lowercased().hasSuffix(".typ")

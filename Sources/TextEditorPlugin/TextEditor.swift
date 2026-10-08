@@ -16,6 +16,7 @@ final class TextEditorPlugin: NSObject, Plugin {
     override init() { super.init() }
 
     func register(with registry: PluginRegistry) {
+        TextEditorCore.register(with: registry)
         EditorKeys.register(with: registry)
         Self.registerViewActions(with: registry)
         registry.register(canvas: CanvasContribution(
@@ -136,7 +137,8 @@ struct TextEditorCanvas: View {
                 MaximalEditor(text: $text, fileURL: fileURL,
                               style: EditorPreferences.shared.codeStyle(for: fileURL,
                                                                         indentation: indentation),
-                              tokenizer: fileURL.flatMap(SyntaxTokenizer.init(fileURL:)))
+                              tokenizer: fileURL.flatMap(SyntaxTokenizer.init(fileURL:)),
+                              completionProvider: completions)
                     .id(nodeID)      // per-document identity: switching files rebuilds
                     .clipped()       // AppKit-backed: keep it inside our layout
             }
@@ -177,6 +179,12 @@ struct TextEditorCanvas: View {
     private var fileURL: URL? {
         guard nodeID.scheme == "file" else { return nil }
         return URL(string: nodeID.uri)
+    }
+
+    /// Completions from whatever knows this file's language, if anything does.
+    private var completions: EditorCompletionProvider? {
+        guard let url = fileURL, let service = host.languageService(for: url) else { return nil }
+        return LanguageServiceCompletions(service: service, url: url)
     }
 
     private func load() async {

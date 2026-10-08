@@ -290,6 +290,10 @@ public protocol CoreRegistry: AnyObject {
     func register(command: AnyCommand)
     /// A list the finder can search — see `FinderSource`.
     func register(finder: FinderSource)
+    /// What a language knows about its code — see `LanguageService`. Asked in
+    /// the order registered, so a plugin's own service for its language comes
+    /// before a general one that also serves it.
+    func register(languageService: LanguageService)
 }
 
 public extension CoreRegistry {

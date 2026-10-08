@@ -174,7 +174,12 @@ struct TypstCanvas: View {
                 : .code(size: fontSize, wrapLines: true, indentSpaces: 2),
             tokenizer: tokenizer,
             mathRenderer: TypstMathRenderer.shared,
-            completionProvider: fileURL.map(TypstCompletionProvider.init),
+            // In prose, only where code starts: after `#` or `@`.
+            completionProvider: fileURL.flatMap { url in
+                host.languageService(for: url).map {
+                    LanguageServiceCompletions(service: $0, url: url, trigger: .sigils(["#", "@"]))
+                }
+            },
             controller: editor
         )
         .id(nodeID)

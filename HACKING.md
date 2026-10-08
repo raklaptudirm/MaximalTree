@@ -88,6 +88,9 @@ Sources/
     KeyChord.swift              #   one press, in Emacs notation — a keymap's
                                 #   vocabulary and an action's key equivalent alike
     KeyMode.swift               #   the app's one mode (normal/insert/visual)
+    LanguageService.swift       #   what a language knows: completions, hover,
+                                #   definition, symbols, rename, diagnostics
+    LanguageServer.swift        #   the LSP client that answers it, per project root
     UserDataFile.swift          #   reading and writing the reader's own data:
                                 #   unreadable files are set aside, never replaced
     Notice.swift                #   Notice/Notices: telling the reader what no command
@@ -153,7 +156,8 @@ Sources/
     Core/FileIcons.swift        #   per-language icons (symbol = kind, tint = language)
     FileSystem.swift            #   the plugin: canvases, copy path/reveal/open with
     FileViews.swift             #   canvas (Quick Look) + inspector (editable)
-  TextEditorPlugin/             # reference cross-plugin renderer — a canvas only, no core
+  TextEditorPlugin/             # reference cross-plugin renderer
+    Core/TextEditorCore.swift   #   every installed language server, registered
     TextEditor.swift            #   syntax-highlighted editor over filesystem files
   TypstPlugin/                  # the flagship: typst as a daily driver
     Core/TypstCore.swift        #   diagnostics, notes pkg, TypstRef URIs,
@@ -161,7 +165,6 @@ Sources/
     Core/TypstEngine.swift      #   in-process compiler facade: compile, export, math
     Core/TypstProvider.swift    #   section/task/agenda nodes (phony)
     Core/TypstActions.swift     #   TypstCore: registration, notes, installPackages
-    TypstLSP.swift              #   minimal JSON-RPC client for tinymist completions
     TypstPlugin.swift           #   the plugin: canvases, modes, faces, export
     TypstAgenda.swift           #   agenda canvas + task inspector
     TypstCanvas.swift           #   Write/Typeset/Read canvas + inspector + preview
@@ -947,16 +950,22 @@ but still give each document a per-document `.id(...)` so undo and scroll state
 reset. Highlighting is painted as *rendering attributes*: display-only, never
 touching the text storage or the undo stack.
 
-Completions ride the engine's built-in window (Escape/F5): pass an
-`EditorCompletionProvider` and return `EditorCompletion`s (label, detail, insert
-text, optional UTF-16 replace range — otherwise the identifier being typed is
-replaced). The typst plugin's provider speaks LSP to
-**[tinymist](https://github.com/Myriad-Dreamin/tinymist)** via a small JSON-RPC
-stdio client (`TypstLSP.swift`): the server is discovered on well-known install
-paths (Homebrew/cargo/nix), documents are synced lazily right before each request,
-and everything degrades to "no completions" when the binary is absent. Install
-tinymist (`brew install tinymist` / `nix profile install nixpkgs#tinymist`) and
-completions — plus the gated live tests — light up with no configuration.
+**Language intelligence is contributed.** A plugin registers a `LanguageService` (in
+the SDK core: completions, hover, definition, references, symbols, formatting, rename,
+diagnostics — each with a default that answers nothing) with
+`CoreRegistry.register(languageService:)`, and a canvas asks its host for the one that
+serves a file: `host.languageService(for: url)`. `LanguageServer` is the general one —
+a Language Server Protocol client run over stdio, one process per project root (found
+from marker files like `Package.swift`), documents sent only when a question needs
+them, every answer degrading to "none" when the server is missing or slow. The servers
+it knows are `LanguageServerConfig.known` (sourcekit-lsp, tinymist, rust-analyzer,
+gopls, pyright, typescript-language-server, clangd), found on the search path and the
+places installers use. The text editor registers every one installed except tinymist,
+which typst registers; install a server and its language lights up. Completions reach
+the editor through `LanguageServiceCompletions`, and open by themselves where the
+provider's `EditorCompletionTrigger` says — after `.` or two letters in code, after
+`#`/`@` in typst prose. The protocol's parsing is tested in the core on both CI
+platforms, and against a real sourcekit-lsp there too.
 
 **Editing code.** Normal mode is select-then-act (`EditEngine`, tested without a view):
 `>`/`<` shift the selected lines, `g c` comments them (`EditorLanguage.commentSyntax`),
@@ -1014,8 +1023,8 @@ built alone by `Package.swift`, where a reference to one of the app's views fail
 compile. `AppModel` is split the same way: `HostEngine` is the host with no window,
 and `AppModel` is the Mac window around one, talking to it through `HostShell`. **The
 plugins are split too**: each has a `Core/` that `Package.swift` builds alone (typst's
-links the same cargo-built engine) — except the terminal, which is libghostty, and the
-text editor, which is only a canvas. **It runs on Linux**: CI builds all of it
+links the same cargo-built engine) — except the terminal, which is libghostty; the
+text editor's core is its language servers. **It runs on Linux**: CI builds all of it
 and runs its tests there on every push (see [Building and running](#building-and-running)).
 **And it runs headless**: `mtree` is a `HeadlessHost` — a `HostEngine` and every plugin
 core, with no window — that CI drives on both platforms. What remains is an iOS build.

@@ -255,6 +255,13 @@ public final class HostContext {
     /// the reported changes; failures are logged. Check `canApply` first for UI state.
     @_spi(Host) public func apply(_ mutation: GraphMutation) { backend?.apply(mutation) }
 
+    /// What a language knows about the file at `url` — completions, what a
+    /// symbol is, where it was defined — from whichever plugin registered a
+    /// service for it. Nil when none did.
+    public func languageService(for url: URL) -> LanguageService? {
+        backend?.languageService(for: url)
+    }
+
     /// Whether the owning provider can perform `mutation` right now (for enabling UI).
     public func canApply(_ mutation: GraphMutation) -> Bool { backend?.canApply(mutation) ?? false }
 
@@ -377,4 +384,10 @@ public protocol GraphBackend: AnyObject {
     func perform(actionID: String, count: Int)
     @MainActor func run(command id: String, input: Any) async throws -> Any
     func setKeyMode(_ mode: KeyMode)
+    /// What a language knows about the file at `url`, if anything does.
+    func languageService(for url: URL) -> LanguageService?
+}
+
+public extension GraphBackend {
+    func languageService(for url: URL) -> LanguageService? { nil }
 }

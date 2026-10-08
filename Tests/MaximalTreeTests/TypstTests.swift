@@ -762,56 +762,10 @@ import PDFKit
     }
 }
 
-/// The LSP client's pure parts — position mapping, snippet cleanup, response
-/// decoding — hermetic, no server needed.
-@Suite struct TinymistProtocolTests {
-    @Test func positionMappingRoundTrips() {
-        let text = "abc\ndef\ng" as NSString
-        let position = TinymistClient.position(ofOffset: 6, in: text)
-        #expect(position == TinymistClient.Position(line: 1, character: 2))
-        #expect(TinymistClient.offset(of: position, in: text) == 6)
-        #expect(TinymistClient.position(ofOffset: 0, in: text)
-                == TinymistClient.Position(line: 0, character: 0))
-        #expect(TinymistClient.offset(of: .init(line: 9, character: 9), in: text)
-                == text.length)   // clamped, never out of bounds
-    }
-
-    @Test func snippetSyntaxStripsToPlainText() {
-        #expect(TinymistClient.strippingSnippetSyntax("image(${1:path})") == "image(path)")
-        #expect(TinymistClient.strippingSnippetSyntax("strong[$1]$0") == "strong[]")
-        #expect(TinymistClient.strippingSnippetSyntax("plain") == "plain")
-    }
-
-    @Test func completionResponsesDecodeWithEditRanges() throws {
-        let json = """
-        {"jsonrpc":"2.0","id":1,"result":{"isIncomplete":false,"items":[
-          {"label":"image","kind":3,"detail":"insert an image",
-           "textEdit":{"range":{"start":{"line":0,"character":1},
-                                "end":{"line":0,"character":3}},
-                       "newText":"image(${1:path})"}},
-          {"label":"emph","kind":3,"insertText":"emph[$1]"}]}}
-        """
-        let completions = TinymistClient.parseCompletions(
-            from: Data(json.utf8), in: "#im" as NSString)
-        #expect(completions.count == 2)
-        let image = try #require(completions.first)
-        #expect(image.label == "image")
-        #expect(image.insertText == "image(path)")
-        #expect(image.replaceRange == NSRange(location: 1, length: 2))
-        #expect(completions[1].insertText == "emph[]")
-        #expect(completions[1].replaceRange == nil)
-    }
-
-    @Test func malformedResponsesYieldNothing() {
-        #expect(TinymistClient.parseCompletions(from: Data("junk".utf8),
-                                                in: "" as NSString).isEmpty)
-        #expect(TinymistClient.parseCompletions(from: Data(#"{"id":1,"result":null}"#.utf8),
-                                                in: "" as NSString).isEmpty)
-    }
-}
-
-/// Live tests against a real tinymist; skipped on machines without it.
-@Suite(.enabled(if: TinymistClient.isAvailable))
+/// Completions from a real tinymist, through the client every language's
+/// server goes through — what the typst canvas offers after `#`. Skipped on
+/// machines without it. The protocol's own parts are tested in the core.
+@Suite(.enabled(if: LanguageServerConfig.known.first { $0.name == "tinymist" }?.installedAt() != nil))
 struct TinymistLiveTests {
     @Test func serverCompletesTypstCalls() async throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -822,8 +776,10 @@ struct TinymistLiveTests {
         let text = "#im"
         try text.write(to: file, atomically: true, encoding: .utf8)
 
-        let completions = await TinymistClient.shared
-            .completions(fileURL: file, text: text, offset: text.count)
+        let tinymist = try #require(LanguageServerConfig.known.first { $0.name == "tinymist" }
+            .flatMap(LanguageServer.init))
+        let completions = await tinymist.completions(in: CodeDocument(url: file, text: text),
+                                                     at: (text as NSString).length)
         #expect(completions.contains { $0.label.hasPrefix("im") },
                 "expected image/import among \(completions.prefix(5).map(\.label))")
     }

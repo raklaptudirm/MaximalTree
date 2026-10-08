@@ -1169,7 +1169,7 @@ public struct MaximalEditor: NSViewRepresentable {
             let ns = (textView.text ?? "") as NSString
             let caret = min(textView.textSelection.location, ns.length)
             guard textView.textSelection.length == 0,
-                  Self.isCompletableContext(at: caret, in: ns) else {
+                  completionProvider?.trigger.fires(at: caret, in: ns) == true else {
                 textView.cancelComplete(nil)   // no-op when nothing is showing
                 return
             }
@@ -1180,21 +1180,6 @@ public struct MaximalEditor: NSViewRepresentable {
             }
         }
 
-        /// True when the caret sits in (or right after) a sigil-introduced run:
-        /// identifier characters (plus `.` for field access) preceded by `#`/`@`.
-        static func isCompletableContext(at offset: Int, in text: NSString) -> Bool {
-            var i = offset
-            while i > 0 {
-                guard let scalar = Unicode.Scalar(text.character(at: i - 1)) else { return false }
-                if CharacterSet.alphanumerics.contains(scalar)
-                    || scalar == "_" || scalar == "-" || scalar == "." {
-                    i -= 1
-                    continue
-                }
-                return scalar == "#" || scalar == "@"
-            }
-            return false
-        }
 
         public func textViewDidChangeSelection(_ notification: Notification) {
             guard !isPushingText, let textView else { return }

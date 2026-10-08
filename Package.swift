@@ -35,6 +35,8 @@ var pluginCores: [Target] = [
             ] + ["m", "dl", "pthread", "rt", "util"].map {
                 .linkedLibrary($0, .when(platforms: [.linux]))
             }),
+    .target(name: "TextEditor", dependencies: ["MaximalTreeKit"],
+            path: "Sources/TextEditorPlugin/Core"),
     .target(name: "Web", dependencies: ["MaximalTreeKit"],
             path: "Sources/WebPlugin/Core"),
     .target(name: "YouTube", dependencies: ["MaximalTreeKit"],

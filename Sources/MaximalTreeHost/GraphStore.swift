@@ -39,6 +39,15 @@ class CoreContributions: CoreRegistry {
         }
     }
     func register(finder: FinderSource) { finders.append(finder) }
+
+    private(set) var languageServices: [LanguageService] = []
+    func register(languageService: LanguageService) { languageServices.append(languageService) }
+
+    /// The service that answers for this file, if one does — the first
+    /// registered, so the most particular.
+    func languageService(for url: URL) -> LanguageService? {
+        languageServices.first { $0.serves(url) }
+    }
     func register(children: ChildContribution) { childContributions.append(children) }
     /// One action per id. A later registration replaces an earlier one.
     ///
@@ -156,6 +165,8 @@ final class GraphStore: GraphBackend {
 
     var actions: [Action] { registry.actions }
     var finders: [FinderSource] { registry.finders }
+
+    func languageService(for url: URL) -> LanguageService? { registry.languageService(for: url) }
 
     private func provider(for id: NodeID) -> NodeProvider? {
         guard let scheme = id.scheme else { return nil }
