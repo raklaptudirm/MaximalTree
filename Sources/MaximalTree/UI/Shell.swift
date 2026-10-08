@@ -41,16 +41,12 @@ struct ContentView: View {
             SidebarTree()
                 .background(SurfaceAccessor(.sidebar))
                 .navigationSplitViewColumnWidth(min: 180, ideal: 240)
-                // No buttons in the window's toolbar: switching workspace
-                // (`SPC w w`), mounting a root (`SPC n r`), a new collection
-                // (`SPC w f`) and the side panes (`SPC s E`, `SPC s I`) are
-                // keys, and in the menu bar. The title — the workspace — and
-                // its subtitle are what the toolbar is for.
-                .toolbar(removing: .sidebarToggle)
         } detail: {
             VStack(spacing: 0) {
                 if !host.isZenMode {
-                    TabStrip()
+                    // With the sidebar away, the window controls are drawn
+                    // over the strip's leading end.
+                    TabStrip(clearsWindowControls: columnVisibility == .detailOnly)
                     Divider()
                 }
                 // The column sits under the tab strip, not beside it: tabs
@@ -67,9 +63,9 @@ struct ContentView: View {
                     CanvasPane()
                 }
             }
-            // Zen: without this the hidden title bar leaves a 52pt dead strip —
-            // SwiftUI keeps laying the canvas out below the top safe area.
-            .ignoresSafeArea(.container, edges: host.isZenMode ? .top : [])
+            // To the very top: the window has no title bar, and without this
+            // SwiftUI keeps the space one would have taken as a dead strip.
+            .ignoresSafeArea(.container, edges: .top)
             .inspector(isPresented: $model.inspectorVisible) {
                 InspectorPane()
                     .background(SurfaceAccessor(.inspector))
@@ -81,13 +77,15 @@ struct ContentView: View {
                     .inspectorColumnWidth(min: 200, ideal: 260, max: 420)
             }
         }
-        // The window title belongs to the workspace; the focused node rides in the
-        // subtitle. Plugin canvases must not set navigationTitle (see HACKING.md).
+        // The title belongs to the workspace — for the Window menu and Mission
+        // Control, since there is no title bar to draw it in (see App.swift).
+        // Plugin canvases must not set navigationTitle (see HACKING.md).
         .navigationTitle(model.activeWorkspaceName)
-        .navigationSubtitle(host.focusedNode.flatMap { host.node($0)?.label } ?? "")
-        // Zen: the canvas, alone. Collapse both side panes and the toolbar;
-        // restore the inspector to how the user had it on the way out.
-        .toolbar(host.isZenMode ? .hidden : .automatic, for: .windowToolbar)
+        // No window toolbar: nothing is left for one to hold. Switching
+        // workspace (`SPC w w`), mounting a root (`SPC n r`), a new collection
+        // (`SPC w f`) and the side panes (`SPC s E`, `SPC s I`) are keys and in
+        // the menu bar, so nothing stands above the tab strip.
+        .toolbar(.hidden, for: .windowToolbar)
         .background(WindowAccessor {
             window = $0
             // Before anything asks this window to lay out three columns in it.
@@ -104,18 +102,9 @@ struct ContentView: View {
                     columnVisibility = .all
                 }
             }
-            // The empty title bar would linger as a dead strip. Extending
-            // content beneath it invites this OS's scroll-edge glass instead
-            // (a blurred band) — so don't: keep content below, and make the
-            // title-bar area *blend* — transparent, no separator, no toolbar,
-            // window background matching the canvas. It reads as padding.
-            if let window {
-                window.titleVisibility = zen ? .hidden : .visible
-                window.titlebarAppearsTransparent = zen
-                window.titlebarSeparatorStyle = zen ? .none : .automatic
-                window.toolbar?.isVisible = !zen
-                window.backgroundColor = zen ? .textBackgroundColor : .windowBackgroundColor
-            }
+            // The window has no title bar to dissolve; what is left is the
+            // window behind the canvas, which zen makes the canvas's own.
+            window?.backgroundColor = zen ? .textBackgroundColor : .windowBackgroundColor
         }
         .alert("New Workspace", isPresented: $model.showingCreateWorkspace) {
             TextField("Name", text: $workspaceNameDraft)

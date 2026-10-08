@@ -48,7 +48,7 @@ pluginCores.append(.target(name: "ICloud", dependencies: ["MaximalTreeKit"],
 
 let package = Package(
     name: "MaximalTree",
-    platforms: [.macOS(.v14), .iOS(.v17)],
+    platforms: [.macOS(.v15), .iOS(.v17)],
     products: [
         .library(name: "MaximalTreeKit", targets: ["MaximalTreeKit"]),
         .executable(name: "mtree", targets: ["mtree"]),

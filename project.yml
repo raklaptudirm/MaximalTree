@@ -2,7 +2,9 @@ name: MaximalTree
 options:
   bundleIdPrefix: com.maximaltree
   deploymentTarget:
-    macOS: "14.0"
+    # 15 for SwiftUI's window drag gesture: with no title bar, the tab strip
+    # is what moves the window.
+    macOS: "15.0"
   createIntermediateGroups: true
   groupSortPosition: top
 

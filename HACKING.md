@@ -801,7 +801,7 @@ views write ordinary strongly-typed SwiftUI. Pass `HostContext` into the environ
 your views can observe it.
 
 **Zen mode**: `HostContext.isZenMode` is true while the host shows the canvas alone
-(no sidebar, inspector, tab strip, or toolbar — toggled from the View menu, ⌃⌘Z).
+(no sidebar, inspector or tab strip — toggled from the View menu, ⌃⌘Z, or `SPC s z`).
 Canvases should observe it and shed their own chrome too: headers, status rows,
 anything that isn't the content. If a hidden control carried a keyboard shortcut,
 keep the shortcut alive with a zero-sized stand-in (see the typst canvas's ⌘S).
@@ -835,7 +835,9 @@ node — the node-scoped finder lists `.node`, `.container` and `.document`, not
 it searchable, which is what the host's forty-odd motions use.
 
 **Design rule: the host's chrome has no buttons for what a key does.** The tab strip is
-the tabs and the mode; the window's toolbar is the workspace's name. Back and forward,
+the tabs and the mode, and the window has no title bar or toolbar above it: the strip is
+the window's top edge, sits beside the window controls, and moves the window when its
+empty part is dragged (`WindowDragGesture`, hence macOS 15). Back and forward,
 splits, tabs, workspaces and the side panes are keys and menu items, and a button for
 any of them is a second way to do it that the keyboard user never sees and the mouse
 user is better served by the menu for.

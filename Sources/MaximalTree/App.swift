@@ -147,6 +147,10 @@ struct MaximalTreeApp: App {
         // killed the app on every File > New Window and every file opened from
         // the Finder. Opening wide enough to lay out is the whole fix.
         .defaultSize(width: 1200, height: 800)
+        // No title bar. The tab strip is the top of the window: it sits beside
+        // the window controls, and dragging its empty part moves the window.
+        // The title is still set — the Window menu and Mission Control read it.
+        .windowStyle(.hiddenTitleBar)
         .commands { AppCommands(model: model) }
 
 

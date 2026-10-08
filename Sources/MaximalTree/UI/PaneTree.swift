@@ -23,9 +23,18 @@ import MaximalTreeKit
 /// and forward, splitting, closing a pane or a tab and opening a new one are
 /// all keys (`C-o`/`C-i`, `SPC s v`/`s`/`d`, `SPC t d`, `SPC t N`) and in the
 /// menu bar, so buttons for them were only ever a second way to do each.
+///
+/// It is also the top of the window, which has no title bar: the window
+/// controls sit over its leading end when the sidebar is away, and its empty
+/// part moves the window the way a title bar would.
 struct TabStrip: View {
     @Environment(AppModel.self) private var model
     @Environment(HostContext.self) private var host
+    /// The window's own controls are drawn over this strip's leading end.
+    var clearsWindowControls = false
+
+    /// How much of the strip's leading end the window controls cover.
+    private static let windowControlsWidth: CGFloat = 72
 
     var body: some View {
         let nav = model.navigation
@@ -51,9 +60,30 @@ struct TabStrip: View {
             // and the label spilled out of it.
             KeyModeIndicator()
         }
-        .padding(.horizontal, 8)
+        .padding(.leading, clearsWindowControls ? Self.windowControlsWidth : 8)
+        .padding(.trailing, 8)
         .padding(.vertical, 5)
+        .frame(minHeight: 32)
         .fixedSize(horizontal: false, vertical: true)   // never grow vertically
+        // Where the title bar's job went: dragging the strip's empty part moves
+        // the window, and double-clicking it does what the reader set a title
+        // bar's double-click to do. Behind the tabs, so a tab keeps its click.
+        .background {
+            Color.clear
+                .contentShape(Rectangle())
+                .gesture(WindowDragGesture())
+                .onTapGesture(count: 2, perform: Self.titleBarDoubleClick)
+        }
+    }
+
+    /// Zoom, minimize, or nothing — System Settings' choice for a title bar.
+    private static func titleBarDoubleClick() {
+        guard let window = NSApp.keyWindow else { return }
+        switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
+        case "Minimize": window.performMiniaturize(nil)
+        case "None": break
+        default: window.performZoom(nil)
+        }
     }
 
     private func title(of tab: NavigationModel.Tab) -> String {
