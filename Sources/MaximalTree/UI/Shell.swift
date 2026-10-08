@@ -84,8 +84,11 @@ struct ContentView: View {
         // No window toolbar: nothing is left for one to hold. Switching
         // workspace (`SPC w w`), mounting a root (`SPC n r`), a new collection
         // (`SPC w f`) and the side panes (`SPC s E`, `SPC s I`) are keys and in
-        // the menu bar, so nothing stands above the tab strip.
-        .toolbar(.hidden, for: .windowToolbar)
+        // the menu bar, so nothing stands above the tab strip. Not by hiding
+        // the window toolbar, though: that takes the window's own controls
+        // with it. With no items and a hidden title bar there is no toolbar to
+        // hide; the system's sidebar toggle is the one item it would add.
+        .toolbar(removing: .sidebarToggle)
         .background(WindowAccessor {
             window = $0
             // Before anything asks this window to lay out three columns in it.
