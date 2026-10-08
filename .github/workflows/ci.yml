@@ -28,7 +28,9 @@ jobs:
 
       - name: Install Rust
         run: |
-          apt-get update -q && apt-get install -yq curl
+          # build-essential for `cc`: the image's Swift brings clang, but
+          # Rust links its build scripts with the system's C toolchain.
+          apt-get update -q && apt-get install -yq curl build-essential
           curl --proto '=https' -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 

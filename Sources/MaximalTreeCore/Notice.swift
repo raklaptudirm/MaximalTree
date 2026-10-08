@@ -35,9 +35,12 @@ public final class Notices: @unchecked Sendable {
     public init() {}
 
     public func post(_ notice: Notice) {
+        // `self.` throughout: the local below has the same name, and Swift
+        // before 6.4 reads a bare `listener` in here as that local, not yet
+        // declared, rather than the property.
         let listener = lock.withLock { () -> (@MainActor @Sendable (Notice) -> Void)? in
-            if listener == nil { held.append(notice) }
-            return listener
+            if self.listener == nil { held.append(notice) }
+            return self.listener
         }
         guard let listener else { return }
         if Thread.isMainThread {

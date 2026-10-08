@@ -27,7 +27,7 @@ final class HostBroker: NodeBroker, @unchecked Sendable {
     }
 
     func placedChildren(of uri: String) async -> [String] {
-        guard let placed = lock.withLock({ placed }) else { return [] }
+        guard let placed = lock.withLock({ self.placed }) else { return [] }
         return await placed(uri)
     }
 
