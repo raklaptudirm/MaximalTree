@@ -88,7 +88,9 @@ public struct EditorStyle: Equatable {
         self.rendersMarkup = rendersMarkup
     }
 
-    public static func code(size: CGFloat = 12, wrapLines: Bool = false,
+    /// 15 by default, the prose editor's standard: code is read as long as
+    /// prose is, and at 12 it was the one surface in the app you leaned in to.
+    public static func code(size: CGFloat = 15, wrapLines: Bool = false,
                             indentSpaces: Int = 4) -> EditorStyle {
         EditorStyle(design: .monospaced, size: size, lineSpacing: (size * 0.2).rounded(),
                     wrapLines: wrapLines, indentSpaces: indentSpaces)
