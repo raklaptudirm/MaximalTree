@@ -2,6 +2,7 @@ import Testing
 import Foundation
 @testable import MaximalTreeKit
 @testable import MaximalTree
+import MaximalEditorKit
 
 @Suite struct GitURITests {
     @Test func uriRoundTrips() {
@@ -118,20 +119,34 @@ import Foundation
     }
 }
 
-/// What a host with no window gets from git: repositories as nodes, and a
-/// folder opened as the repository it is. The repository's own actions and
-/// canvases are still the Mac's.
+/// What a host with no window gets from git: repositories as nodes, and every
+/// write that needs nothing but git. The Mac adds the canvases, the canvas's
+/// own keys, and the two writes that ask the reader first.
 @MainActor
 @Suite struct GitSplitTests {
-    @Test func theCoreHalfIsTheRepositoryAsNodes() {
+    @Test func theCoreHalfIsTheRepositoryAndItsWrites() {
         let core = CoreContributions()
         GitCore.register(with: core)
         #expect(core.providers.contains { $0.schemes.contains("git") })
-        #expect(core.actions.map(\.id) == ["git.open"])
+        #expect(Set(core.actions.map(\.id)) == [
+            "git.open", "git.stage", "git.unstage", "git.stageAll",
+            "git.fetch", "git.pull", "git.push", "git.checkout", "git.stash", "git.stashPop",
+        ])
+        // What a shell would ask the reader for, taken as arguments instead.
+        #expect(core.command(GitCommit.id) != nil)
+        #expect(core.command(GitDiscard.id) != nil)
 
         let mac = Registry()
         GitPlugin().register(with: mac)
-        #expect(mac.actions.contains { $0.id == "git.open" })
-        #expect(mac.actions.contains { $0.id == "git.commit" })
+        let added = Set(mac.actions.map(\.id)).subtracting(core.actions.map(\.id))
+        #expect(added.contains("git.commit"))
+        #expect(added.contains("git.discard"))
+        // The rest is the canvas's: its own keys, and the editor's for the
+        // message box in it.
+        let editor = Registry()
+        EditorKeys.register(with: editor)
+        #expect(added.isSubset(of: ["git.commit", "git.discard"]
+                               + GitActions.canvasCommands.map(\.id) + editor.actions.map(\.id)),
+                "the Mac added a write the core should have: \(added)")
     }
 }

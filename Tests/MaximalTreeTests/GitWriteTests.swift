@@ -235,3 +235,40 @@ import Foundation
         return dir
     }
 }
+
+/// Committing with a message given rather than typed — what the Mac's commit
+/// does with the canvas's, and anything else does with its own.
+@MainActor
+@Suite struct GitCommitCommandTests {
+    @Test func aCommitTakesTheMessageItIsGiven() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("commit-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Its own identity, and unsigned: whoever runs the tests may sign every
+        // commit, with a key the test process cannot reach.
+        for args in [["init", "-q"], ["config", "user.email", "t@e.com"], ["config", "user.name", "T"],
+                     ["config", "commit.gpgsign", "false"]] {
+            _ = Git.perform(dir.path, args)
+        }
+        try Data("x".utf8).write(to: dir.appendingPathComponent("a.txt"))
+        _ = Git.perform(dir.path, ["add", "-A"])
+
+        let context = ActionContext(host: HostContext(), targets: nil)
+        _ = try await GitCommit().run(.init(repo: dir.path, message: "  Said what it did  "), in: context)
+
+        #expect(Git.run(dir.path, ["log", "-1", "--format=%s"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines) == "Said what it did")
+    }
+
+    /// And a commit git refuses — nothing staged — is thrown, not swallowed.
+    @Test func aRefusedCommitIsThrown() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("commit-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        _ = Git.perform(dir.path, ["init", "-q"])
+        let context = ActionContext(host: HostContext(), targets: nil)
+        await #expect(throws: GitActions.Failed.self) {
+            _ = try await GitCommit().run(.init(repo: dir.path, message: "nothing"), in: context)
+        }
+    }
+}

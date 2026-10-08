@@ -445,13 +445,13 @@ struct GitProvider: NodeProvider {
 // MARK: - The core half
 
 /// Git's half that needs no window: repositories, branches, commits and the
-/// working copy as nodes, and opening a folder as the repository it is.
+/// working copy as nodes, opening a folder as the repository it is, and
+/// writing to it.
 ///
 /// What a host with no window registers, and the first thing the Mac plugin
-/// does. The repository's own actions — stage, commit, stash — are still the
-/// shell's: they report into the repository canvas and take the commit message
-/// from its editor, and where a failed `git` says so without a canvas is a
-/// question for when there is a shell without one.
+/// does. The repository's writes are here too (see `GitActions`): a failure
+/// is thrown, and reported by whatever host ran it. Committing takes its
+/// message as an argument here; the Mac's commit takes it from the canvas.
 public enum GitCore {
     @MainActor
     public static func register(with registry: CoreRegistry) {
@@ -472,6 +472,7 @@ public enum GitCore {
                 ctx.mount(GitRef(repo: path, kind: .repo).uri)
             }
         ))
+        GitActions.registerCore(with: registry)
     }
 
     private static func repoPath(for id: NodeID) -> String? {

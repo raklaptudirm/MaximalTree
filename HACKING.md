@@ -169,10 +169,12 @@ Sources/
     ProseStyle.swift            #   the typefaces and sizes Write mode offers
   GitPlugin/                    # reference non-file provider
     Core/GitProvider.swift      #   git:// URI model, git CLI, provider, branch anchors
+    Core/GitWrites.swift        #   stage/fetch/pull/push/checkout/stash, and
+                                #   commit and discard as commands; failures thrown
     Core/GitDiff.swift, GitStatus.swift
     Git.swift                   #   the plugin: canvases, inspector
-    GitActions.swift            #   stage/commit/stash… (still the shell's: they
-                                #   report into the repo canvas)
+    GitActions.swift            #   the canvas's keys and state, and the commit and
+                                #   discard that ask the reader first
     GitViews.swift              #   commit / list canvases + inspector
   WebPlugin/                    # reference AppKit-view canvas
     Core/WebCore.swift          #   http(s)+web:// provider, bookmark store (tested)
@@ -753,7 +755,9 @@ actions whose bodies need only the graph or the disk — in `Core/`, behind a
 need a panel, the pasteboard, Finder or a live view stay outside it, in the principal
 class, which calls the core's `register` first. When an action asks the reader
 something and then does something, split it there: the prompt is the shell's, the
-doing is the core's (`YouTubeCore.search`). When the core needs something only a shell
+doing is the core's (`YouTubeCore.search`). A write that fails *throws*, and the
+host reports it — the app in its alert, `mtree` on stderr — rather than the plugin
+keeping a failure for a canvas to show (git's writes are the reference). When the core needs something only a shell
 has, it is told rather than reaching for it (`WebProvider(liveTitle:)`,
 `TypstProvider(onAgendaChanged:)`). `CoreBoundaryTests` fails if a `Core/` imports UI
 or isn't built by `Package.swift`.
@@ -1000,9 +1004,7 @@ compile. `AppModel` is split the same way: `HostEngine` is the host with no wind
 and `AppModel` is the Mac window around one, talking to it through `HostShell`. **The
 plugins are split too**: each has a `Core/` that `Package.swift` builds alone (typst's
 links the same cargo-built engine) — except the terminal, which is libghostty, and the
-text editor, which is only a canvas. Git's repository actions are still the shell's:
-they report failures into the repository canvas, and where a failed `git` goes without
-one is a decision for a shell that has none. **It runs on Linux**: CI builds all of it
+text editor, which is only a canvas. **It runs on Linux**: CI builds all of it
 and runs its tests there on every push (see [Building and running](#building-and-running)).
 **And it runs headless**: `mtree` is a `HeadlessHost` — a `HostEngine` and every plugin
 core, with no window — that CI drives on both platforms. What remains is an iOS build.
@@ -1096,10 +1098,6 @@ Known gaps, roughly in order:
   applies, which is what `AppModel.applicableActions` already does.
 - **The terminal has no UI-free half** — sessions and the PTY are tangled with Ghostty,
   so it is the one plugin with nothing to put in a core.
-- **Git's repository actions are the shell's** — stage, commit, stash and the rest
-  report failures into the repository canvas and take the commit message from its
-  editor, so a host with no window can browse a repository but not change it. Moving
-  them means deciding where a failed `git` is reported without a canvas.
 - **The inspector has no keys** — every other surface declares some; it is the one
   place you still cannot reach from the keyboard alone.
 - **One shell window** — there is one `AppModel`, so a second window of the main

@@ -214,7 +214,6 @@ struct GitInspector: View {
                 if let status = gitString(node, "status") { LabeledContent("Status", value: status) }
             }
             RepositorySection(nodeID: nodeID)
-            GitFailureNotice()
         }
         .formStyle(.grouped)
     }
@@ -234,28 +233,6 @@ private func gitDate(_ node: Node?) -> String? {
     return nil
 }
 
-
-/// The last thing git refused to do.
-///
-/// A write can fail for reasons only git knows — nothing staged, a rejected
-/// push, a conflicted pull — and those messages are the whole of what makes
-/// the failure actionable. Without somewhere to put them the command simply
-/// appeared to do nothing.
-private struct GitFailureNotice: View {
-    @State private var state = GitUIState.shared
-
-    var body: some View {
-        if let failure = state.failure {
-            Section(failure.operation + " failed") {
-                Text(failure.message)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                Button("Dismiss") { state.clearFailure() }
-            }
-        }
-    }
-}
 
 /// Whether this node stands for the repository rather than one file in it.
 @MainActor

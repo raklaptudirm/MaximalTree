@@ -74,7 +74,7 @@ let package = Package(
                               + pluginCores.filter { $0.type == .regular }.map { .target(name: $0.name) },
                           path: "Sources/mtree"),
         // The engine driven the way that tool drives it, with real plugins.
-        .testTarget(name: "HeadlessTests", dependencies: ["MaximalTreeHost", "FileSystem"],
+        .testTarget(name: "HeadlessTests", dependencies: ["MaximalTreeHost", "FileSystem", "Git"],
                     path: "Tests/HeadlessTests"),
         // The plugins' cores, tested alone — for what differs by platform.
         // Not in the Mac app's suite, which has its own tests of all of this.

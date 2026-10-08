@@ -3,6 +3,7 @@ import Foundation
 @_spi(Host) import MaximalTreeKit
 @testable import MaximalTreeHost
 @testable import FileSystem
+@testable import Git
 
 /// The engine with no window, driven the way `mtree` drives it — through
 /// HeadlessHost, with the real file-system plugin — on every platform CI runs.
@@ -102,5 +103,53 @@ extension HeadlessHostTests {
 
         #expect(FileManager.default.fileExists(atPath: place.root.appendingPathComponent("b.txt").path))
         #expect(!FileManager.default.fileExists(atPath: place.root.appendingPathComponent("a.txt").path))
+    }
+}
+
+/// Git's writes with no window: they wait for git, and a refusal comes back
+/// to whoever asked — the reason they could move out of the repository canvas.
+@MainActor
+@Suite struct HeadlessGitTests {
+    private func git(_ args: [String], in dir: URL) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["git", "-C", dir.path] + args
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
+        return output
+    }
+
+    /// A repository with one new file, and a host over it.
+    private func repository() throws -> (dir: URL, host: HeadlessHost, uri: String) {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("headless-git-\(UUID().uuidString)", isDirectory: true)
+            .resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        _ = try git(["init", "-q"], in: dir)
+        try Data("hello".utf8).write(to: dir.appendingPathComponent("new.txt"))
+        let host = HeadlessHost(library: dir.appendingPathExtension("json")) { GitCore.register(with: $0) }
+        let uri = try #require(GitRef(repo: dir.path, kind: .repo).nodeID).uri
+        return (dir, host, uri)
+    }
+
+    @Test func stagingWaitsForGit() async throws {
+        let (dir, host, uri) = try repository()
+        try await host.run("git.stageAll", on: uri)
+        #expect(try git(["status", "--porcelain"], in: dir).hasPrefix("A  new.txt"))
+    }
+
+    /// No remote to pull from: git refuses, and the refusal is the answer.
+    @Test func whatGitRefusesIsSaid() async throws {
+        let (_, host, uri) = try repository()
+        do {
+            try await host.run("git.pull", on: uri)
+            Issue.record("a pull with no remote succeeded")
+        } catch let failure as HeadlessHost.Failure {
+            #expect(failure.description.hasPrefix("Pull failed: "), "\(failure)")
+        }
     }
 }
