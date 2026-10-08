@@ -59,7 +59,7 @@ import Foundation
         #expect(!cores.isEmpty, "found no plugin cores")
         for core in cores {
             let offences = try offences(in: core, allowed: [
-                "Foundation", "FoundationNetworking", "Observation", "CoreServices",
+                "Foundation", "FoundationNetworking", "FoundationXML", "Observation", "CoreServices",
                 "UniformTypeIdentifiers", "MaximalTreeKit", "TypstFFI",
             ])
             #expect(offences.isEmpty, "\(core) imports what only a UI has: \(offences)")

@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationXML)
+import FoundationXML   // XMLParser, outside Apple's Foundation
+#endif
 import MaximalTreeKit
 
 // The YouTube plugin's view-free core: what its URIs mean, reading a channel's
