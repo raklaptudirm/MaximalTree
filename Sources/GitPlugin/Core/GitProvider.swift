@@ -260,10 +260,9 @@ struct GitProvider: NodeProvider {
     static func logCommits(_ repo: String, skip: Int = 0, limit: Int = 50) -> Page<Node> {
         guard let out = Git.run(repo, ["log", "--skip", "\(skip)", "-n", "\(limit)",
                                        "--format=%H%x1f%an%x1f%aI%x1f%s%x1f%P"]) else { return Page(items: []) }
-        let iso = ISO8601DateFormatter()
         // Built once for the page rather than once per row, and locally rather
         // than statically: a formatter is not Sendable and this runs detached.
-        let relative = RelativeDateTimeFormatter()
+        let iso = ISO8601DateFormatter()
         let nodes = out.split(separator: "\n").compactMap { line -> Node? in
             let f = line.components(separatedBy: "\u{1f}")
             guard f.count >= 4 else { return nil }
@@ -281,7 +280,9 @@ struct GitProvider: NodeProvider {
             // them. See `attributes(of:)`.
             var subtitle = f[1]
             if let date = iso.date(from: f[2]) {
-                subtitle += " · " + relative.localizedString(for: date, relativeTo: .now)
+                // "3 days ago" — a format style, which every Foundation has, where
+                // RelativeDateTimeFormatter is Apple's alone.
+                subtitle += " · " + date.formatted(.relative(presentation: .numeric, unitsStyle: .wide))
             }
             return Node(id: id, type: TypeID("git.commit"),
                         label: "\(sha.prefix(7))  \(f[3])",
