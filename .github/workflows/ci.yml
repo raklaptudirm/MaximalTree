@@ -43,10 +43,20 @@ jobs:
 
       - name: Build the typst engine
         working-directory: Vendor/typst-ffi
-        run: cargo build --release
+        shell: bash
+        run: set -o pipefail; cargo build --release 2>&1 | tee "$GITHUB_WORKSPACE/cargo.log"
 
       - run: swift --version
-      - run: swift test
+      - name: swift test
+        shell: bash
+        run: set -o pipefail; swift test 2>&1 | tee swift.log
+
+      # The logs are only for people signed in to GitHub; annotations are for
+      # anyone, the API included. So a failure says what failed in those.
+      - name: Say what failed
+        if: failure()
+        shell: bash
+        run: .github/report-failure.sh cargo.log swift.log
 
   macos:
     name: Core on macOS
@@ -65,7 +75,17 @@ jobs:
       # The same build the Xcode project's script phase runs.
       - name: Build the typst engine
         working-directory: Vendor/typst-ffi
-        run: cargo build --release
+        shell: bash
+        run: set -o pipefail; cargo build --release 2>&1 | tee "$GITHUB_WORKSPACE/cargo.log"
 
       - run: swift --version
-      - run: swift test
+      - name: swift test
+        shell: bash
+        run: set -o pipefail; swift test 2>&1 | tee swift.log
+
+      # The logs are only for people signed in to GitHub; annotations are for
+      # anyone, the API included. So a failure says what failed in those.
+      - name: Say what failed
+        if: failure()
+        shell: bash
+        run: .github/report-failure.sh cargo.log swift.log
