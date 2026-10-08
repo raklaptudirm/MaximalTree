@@ -92,6 +92,10 @@ public enum EditCommand: String, Sendable, CaseIterable {
     case insertBefore, insertAfter, insertAtLineStart, insertAtLineEnd
     case openBelow, openAbove
     case extendSelection, collapseSelection
+
+    // Code: shifting lines, commenting them out, and the bracket that closes
+    // the one you are on.
+    case indent, outdent, toggleComment, matchBracket
 }
 
 public final class EditEngine {
@@ -112,6 +116,11 @@ public final class EditEngine {
     /// escape, a command, focus arriving — abandons a half-typed motion rather
     /// than letting it finish under rules it was never begun under.
     private var lastMode: EditMode = .normal
+
+    /// One level of indentation — the view sets it from its style.
+    public var indentUnit = "    "
+    /// How this file comments a line, or nil where it can't be.
+    public var commentSyntax: CommentSyntax?
 
     public init() {}
 
@@ -253,6 +262,14 @@ public final class EditEngine {
             return moved(to: count > 1 ? offset(ofLine: count - 1, in: ns)
                                        : lastLineStart(in: ns))
 
+        // The bracket that pairs with the one under the cursor, or with the
+        // first one after it on the line. A jump, so it moves rather than
+        // sweeps — and extends in select mode, which is how a block is taken.
+        case .matchBracket:
+            // No bracket to match is an answer too: stay where you are.
+            guard let target = matchingBracket(from: head, in: ns) else { return selection }
+            return moved(to: target)
+
         default:
             return nil
         }
@@ -349,6 +366,25 @@ public final class EditEngine {
             head = range.location
             return EditOutcome(selection: cursor(at: range.location, in: ns), mode: mode)
 
+        case .indent, .outdent, .toggleComment:
+            // On whole lines: every line the selection touches.
+            let lines = ns.lineRange(for: range)
+            let block = ns.substring(with: lines)
+            let changed: String?
+            switch command {
+            case .indent: changed = Self.shift(block, by: count, unit: indentUnit)
+            case .outdent: changed = Self.shift(block, by: -count, unit: indentUnit)
+            default: changed = commentSyntax.map { Self.toggleComment(block, syntax: $0) }
+            }
+            guard let changed, changed != block else {
+                return EditOutcome(selection: range, mode: mode)
+            }
+            // The same lines stay selected, so a second `>` shifts them again.
+            let after = NSRange(location: lines.location, length: (changed as NSString).length)
+            anchor = after.location
+            head = NSMaxRange(after)
+            return EditOutcome(edit: (lines, changed), selection: after, mode: mode)
+
         default:
             return nil
         }
@@ -418,3 +454,131 @@ extension MaximalEditor.EditorTextView {
     }
 }
 
+// MARK: - Code
+
+extension EditEngine {
+    /// Lines moved `levels` indents right (or left, when negative). Blank lines
+    /// stay blank, and a line can't go further left than its margin.
+    static func shift(_ block: String, by levels: Int, unit: String) -> String {
+        guard levels != 0 else { return block }
+        return mapLines(block) { line in
+            guard !line.allSatisfy(\.isWhitespace) else { return line }
+            if levels > 0 { return String(repeating: unit, count: levels) + line }
+            var rest = Substring(line)
+            for _ in 0..<(-levels) {
+                if rest.hasPrefix("\t") { rest = rest.dropFirst(); continue }
+                // Spaces, up to a unit's worth — a line indented by less than a
+                // unit comes out at the margin rather than staying put.
+                let width = unit == "\t" ? 4 : unit.count
+                let spaces = rest.prefix(width).prefix { $0 == " " }.count
+                guard spaces > 0 else { break }
+                rest = rest.dropFirst(spaces)
+            }
+            return String(rest)
+        }
+    }
+
+    /// Lines commented out, or put back if every one of them already was.
+    ///
+    /// A line comment goes at the shallowest indent among the lines, so a
+    /// commented block keeps its shape. Lines that are only whitespace are left
+    /// alone either way, as an editor's own comment command leaves them.
+    static func toggleComment(_ block: String, syntax: CommentSyntax) -> String {
+        switch syntax {
+        case .line(let marker):
+            let filled = lines(of: block).filter { !$0.allSatisfy(\.isWhitespace) }
+            guard !filled.isEmpty else { return block }
+            let commented = filled.allSatisfy {
+                $0.drop(while: { $0 == " " || $0 == "\t" }).hasPrefix(marker)
+            }
+            if commented {
+                return mapLines(block) { line in
+                    let indent = line.prefix { $0 == " " || $0 == "\t" }
+                    var rest = line.dropFirst(indent.count)
+                    guard rest.hasPrefix(marker) else { return line }
+                    rest = rest.dropFirst(marker.count)
+                    if rest.hasPrefix(" ") { rest = rest.dropFirst() }
+                    return String(indent) + rest
+                }
+            }
+            let margin = filled.map { $0.prefix { $0 == " " || $0 == "\t" }.count }.min() ?? 0
+            return mapLines(block) { line in
+                guard !line.allSatisfy(\.isWhitespace) else { return line }
+                return String(line.prefix(margin)) + marker + " " + String(line.dropFirst(margin))
+            }
+        case .block(let open, let close):
+            // Around everything between the first and last character that
+            // isn't whitespace, so the surrounding indent and newline stay.
+            guard let first = block.firstIndex(where: { !$0.isWhitespace }),
+                  let last = block.lastIndex(where: { !$0.isWhitespace }) else { return block }
+            let inside = block[first...last]
+            if inside.hasPrefix(open), inside.hasSuffix(close),
+               inside.count >= open.count + close.count {
+                var body = inside.dropFirst(open.count).dropLast(close.count)
+                if body.hasPrefix(" ") { body = body.dropFirst() }
+                if body.hasSuffix(" ") { body = body.dropLast() }
+                return String(block[..<first]) + body + String(block[block.index(after: last)...])
+            }
+            return String(block[..<first]) + open + " " + inside + " " + close
+                + String(block[block.index(after: last)...])
+        }
+    }
+
+    /// The text split after each newline, so joining puts it back exactly.
+    private static func lines(of block: String) -> [String] {
+        var result: [String] = []
+        var current = ""
+        for character in block {
+            if character == "\n" {
+                result.append(current)
+                current = ""
+            } else {
+                current.append(character)
+            }
+        }
+        if !current.isEmpty || block.isEmpty { result.append(current) }
+        return result
+    }
+
+    /// Each line of `block` transformed, newlines kept where they were.
+    private static func mapLines(_ block: String, _ transform: (String) -> String) -> String {
+        let endsWithNewline = block.hasSuffix("\n")
+        var parts = block.components(separatedBy: "\n")
+        if endsWithNewline { parts.removeLast() }
+        return parts.map(transform).joined(separator: "\n") + (endsWithNewline ? "\n" : "")
+    }
+
+    static let openers: [unichar: unichar] = [40: 41, 91: 93, 123: 125]    // ( [ {
+    static let closers: [unichar: unichar] = [41: 40, 93: 91, 125: 123]
+
+    /// Where the bracket pairing with the one at `offset` is — or, when there
+    /// is none at `offset`, with the first bracket after it on the same line.
+    /// Nesting is counted; strings and comments are not told apart.
+    func matchingBracket(from offset: Int, in ns: NSString) -> Int? {
+        var position = offset
+        let end = lineEnd(at: offset, in: ns)
+        while position < end {
+            let character = ns.character(at: position)
+            if Self.openers[character] != nil || Self.closers[character] != nil { break }
+            position += 1
+        }
+        guard position < ns.length else { return nil }
+        let start = ns.character(at: position)
+        if let close = Self.openers[start] {
+            var depth = 0
+            for index in position..<ns.length {
+                let character = ns.character(at: index)
+                if character == start { depth += 1 }
+                if character == close { depth -= 1; if depth == 0 { return index } }
+            }
+        } else if let open = Self.closers[start] {
+            var depth = 0
+            for index in stride(from: position, through: 0, by: -1) {
+                let character = ns.character(at: index)
+                if character == start { depth += 1 }
+                if character == open { depth -= 1; if depth == 0 { return index } }
+            }
+        }
+        return nil
+    }
+}

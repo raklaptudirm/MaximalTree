@@ -72,11 +72,26 @@ public struct EditorStyle: Equatable {
     /// bolded, `*strong*`/`_emphasis_` styled, `#align` bodies aligned, delimiters
     /// dimmed — instead of syntax colors. The WYSIWYG-ish prose experience.
     public var rendersMarkup: Bool
+    /// Indent with a tab rather than `indentSpaces` spaces — what a project's
+    /// `.editorconfig` says, or a language that insists (Go, Makefiles).
+    public var indentWithTabs: Bool
+    /// Whether this is code: brackets and quotes pair as they are typed. Prose
+    /// and a commit message are typed as text, where a `(` is just a `(`.
+    public var editsCode: Bool
+
+    /// One level of indentation, as typed.
+    public var indentUnit: String {
+        indentWithTabs ? "\t" : String(repeating: " ", count: max(indentSpaces, 1))
+    }
 
     public init(design: Design, size: CGFloat, lineSpacing: CGFloat = 0,
                 lineHeightMultiple: Double = 1,
-                wrapLines: Bool, indentSpaces: Int, showsLineNumbers: Bool = true,
-                rendersMarkup: Bool = false, centersColumn: Bool = false) {
+                wrapLines: Bool, indentSpaces: Int, indentWithTabs: Bool = false,
+                showsLineNumbers: Bool = true,
+                rendersMarkup: Bool = false, centersColumn: Bool = false,
+                editsCode: Bool = false) {
+        self.indentWithTabs = indentWithTabs
+        self.editsCode = editsCode
         self.centersColumn = centersColumn
         self.design = design
         self.size = size
@@ -91,9 +106,10 @@ public struct EditorStyle: Equatable {
     /// 15 by default, the prose editor's standard: code is read as long as
     /// prose is, and at 12 it was the one surface in the app you leaned in to.
     public static func code(size: CGFloat = 15, wrapLines: Bool = false,
-                            indentSpaces: Int = 4) -> EditorStyle {
+                            indentSpaces: Int = 4, indentWithTabs: Bool = false) -> EditorStyle {
         EditorStyle(design: .monospaced, size: size, lineSpacing: (size * 0.2).rounded(),
-                    wrapLines: wrapLines, indentSpaces: indentSpaces)
+                    wrapLines: wrapLines, indentSpaces: indentSpaces,
+                    indentWithTabs: indentWithTabs, editsCode: true)
     }
 
     /// A plain box of text: monospaced and wrapped, with no gutter and no
@@ -447,8 +463,8 @@ public struct MaximalEditor: NSViewRepresentable {
     @Environment(\.colorScheme) private var colorScheme
 
     /// - Parameters:
-    ///   - fileURL: Reserved for language detection/services; unused by the
-    ///     current engine except through `editorLanguageName(for:)`.
+    ///   - fileURL: What the text is, for what depends on the language — how
+    ///     a line is commented out (`g c`), and in time its language services.
     ///   - initialCursorLine: 1-based line the caret starts on.
     ///   - tokenizer: Custom highlighting, painted as rendering attributes.
     ///   - mathRenderer: When set (and the style renders markup), equations
@@ -485,6 +501,9 @@ public struct MaximalEditor: NSViewRepresentable {
         textView.textDelegate = context.coordinator
         context.coordinator.textView = textView
         (textView as? EditorTextView)?.modalEditing = modalEditing
+        // How a line is commented here, for `g c`: from what the file is.
+        (textView as? EditorTextView)?.editing.commentSyntax =
+            fileURL.flatMap(EditorLanguage.commentSyntax(for:))
         context.coordinator.isDark = colorScheme == .dark
         context.coordinator.lastStyle = style
         controller?.textView = textView
@@ -761,6 +780,7 @@ public struct MaximalEditor: NSViewRepresentable {
         textView.defaultParagraphStyle = style.paragraphStyle
         textView.widthTracksTextView = style.wrapLines
         (textView as? EditorTextView)?.lastAppliedStyleWraps = style.wrapLines
+        (textView as? EditorTextView)?.editing.indentUnit = style.indentUnit
         textView.showsLineNumbers = style.showsLineNumbers
         // Wrapped text has nowhere to go sideways, so it must not offer a
         // scroller for going there. It can still *overflow*: the reserved box

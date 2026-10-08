@@ -168,6 +168,7 @@ struct TypstCanvas: View {
         // that wraps (prose-like source).
         MaximalEditor(
             text: $text,
+            fileURL: fileURL,
             style: sourceStyle == .prose
                 ? proseStyle
                 : .code(size: fontSize, wrapLines: true, indentSpaces: 2),

@@ -265,6 +265,49 @@ public enum EditorLanguage {
         return key    // already canonical, or unknown — the highlighter rejects it
     }
 
+    /// How a line is commented out in a file, or nil when the language has no
+    /// comments (JSON, plain text) or isn't one we know.
+    public static func commentSyntax(for url: URL) -> CommentSyntax? {
+        // Typst has no highlight.js grammar, so it is known by extension.
+        if url.pathExtension.lowercased() == "typ" { return .line("//") }
+        return id(for: url).flatMap(commentSyntax(forLanguage:))
+    }
+
+    public static func commentSyntax(forLanguage id: String) -> CommentSyntax? {
+        if let line = lineComments[id] { return .line(line) }
+        if let block = blockComments[id] { return .block(block.open, block.close) }
+        return nil
+    }
+
+    /// Languages with a line comment, by its marker.
+    static let lineComments: [String: String] = {
+        var table: [String: String] = [:]
+        let slashes = ["c", "cpp", "objectivec", "swift", "javascript", "typescript", "java",
+                       "kotlin", "scala", "go", "rust", "csharp", "dart", "php", "groovy",
+                       "fsharp", "zig", "d", "glsl", "less", "scss", "protobuf", "gradle",
+                       "verilog", "solidity", "processing", "arduino", "typst"]
+        let hashes = ["python", "ruby", "bash", "shell", "perl", "r", "yaml", "toml", "elixir",
+                      "makefile", "dockerfile", "cmake", "nix", "julia", "coffeescript",
+                      "powershell", "crystal", "nim", "tcl", "nginx", "apache", "properties",
+                      "graphql", "awk", "fish"]
+        let dashes = ["lua", "sql", "haskell", "elm", "ada", "vhdl", "pgsql", "plsql"]
+        let semicolons = ["lisp", "scheme", "clojure", "ini", "x86asm", "armasm", "llvm"]
+        let percents = ["latex", "tex", "erlang", "matlab", "prolog"]
+        for (marker, ids) in [("//", slashes), ("#", hashes), ("--", dashes),
+                              (";", semicolons), ("%", percents)] {
+            for id in ids { table[id] = marker }
+        }
+        table["vim"] = "\""
+        table["vbnet"] = "'"
+        return table
+    }()
+
+    /// Languages with only a block comment.
+    static let blockComments: [String: (open: String, close: String)] = [
+        "xml": ("<!--", "-->"), "html": ("<!--", "-->"), "markdown": ("<!--", "-->"),
+        "css": ("/*", "*/"), "ocaml": ("(*", "*)"), "sml": ("(*", "*)"),
+    ]
+
     /// A human label for a language id (`cpp` → `C++`).
     public static func displayName(for id: String) -> String {
         displayNames[id] ?? id.capitalized
@@ -275,4 +318,12 @@ public enum EditorLanguage {
 /// unknown types. For header badges and inspectors.
 public func editorLanguageName(for url: URL) -> String? {
     EditorLanguage.id(for: url).map(EditorLanguage.displayName(for:))
+}
+
+/// How a language comments a line out.
+public enum CommentSyntax: Equatable, Sendable {
+    /// A marker that runs to the end of the line: `//`, `#`, `--`.
+    case line(String)
+    /// A pair around what is commented: `<!--` and `-->`, `/*` and `*/`.
+    case block(String, String)
 }

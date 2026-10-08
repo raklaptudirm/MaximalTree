@@ -544,3 +544,116 @@ import Foundation
                     == NSRange(location: 0, length: 5))
     }
 }
+
+// MARK: - Code: indenting, commenting, brackets
+
+extension EditingTests {
+    /// `>` shifts every line the selection touches, keeps them selected so a
+    /// second press shifts again, and leaves blank lines blank.
+    @Test func indentShiftsTheSelectedLines() {
+        let buffer = Buffer("a\n\nb\n", at: 0)
+        buffer.selection = NSRange(location: 0, length: 5)     // all three lines
+        buffer.press(">")
+        #expect(buffer.text == "    a\n\n    b\n")
+        #expect(buffer.selected == "    a\n\n    b\n")
+        buffer.press(">")
+        #expect(buffer.text == "        a\n\n        b\n")
+    }
+
+    @Test func indentTakesACountAndTheFilesUnit() {
+        let buffer = Buffer("a\n", at: 0)
+        buffer.engine.indentUnit = "\t"
+        buffer.type("2>")
+        #expect(buffer.text == "\t\ta\n")
+    }
+
+    /// `<` takes off a level, a tab or a unit of spaces, and a line indented
+    /// by less than a unit comes out at the margin rather than staying put.
+    @Test func outdentStopsAtTheMargin() {
+        let buffer = Buffer("        a\n  b\nc\n\tc\n", at: 0)
+        buffer.selection = NSRange(location: 0, length: (buffer.text as NSString).length)
+        buffer.press("<")
+        #expect(buffer.text == "    a\nb\nc\nc\n")
+    }
+
+    /// `g c` comments lines out at their shallowest indent, so the block keeps
+    /// its shape — and the same keys put it back.
+    @Test func gcCommentsLinesOutAndBackIn() {
+        let original = "    if x {\n        y()\n\n    }\n"
+        let buffer = Buffer(original, at: 0)
+        buffer.engine.commentSyntax = .line("//")
+        buffer.selection = NSRange(location: 0, length: (original as NSString).length)
+        buffer.type("gc")
+        #expect(buffer.text == "    // if x {\n    //     y()\n\n    // }\n")
+        buffer.type("gc")
+        #expect(buffer.text == original)
+    }
+
+    /// A block where only some lines are comments is commented as a whole,
+    /// not toggled line by line.
+    @Test func aPartlyCommentedBlockIsCommented() {
+        let buffer = Buffer("# a\nb\n", at: 0)
+        buffer.engine.commentSyntax = .line("#")
+        buffer.selection = NSRange(location: 0, length: 6)
+        buffer.type("gc")
+        #expect(buffer.text == "# # a\n# b\n")
+    }
+
+    /// Languages with only a block comment wrap what is between the first and
+    /// last character, keeping the indent and the newline outside it.
+    @Test func blockCommentsWrapAndUnwrap() {
+        let buffer = Buffer("  a { b }\n", at: 0)
+        buffer.engine.commentSyntax = .block("/*", "*/")
+        buffer.type("gc")
+        #expect(buffer.text == "  /* a { b } */\n")
+        buffer.type("gc")
+        #expect(buffer.text == "  a { b }\n")
+    }
+
+    /// Without a comment syntax — JSON, plain text — nothing is changed.
+    @Test func gcDoesNothingWhereThereAreNoComments() {
+        let buffer = Buffer("a\n", at: 0)
+        buffer.type("gc")
+        #expect(buffer.text == "a\n")
+    }
+
+    /// `m m` goes to the bracket that closes the one under the cursor —
+    /// counting nesting — and back again.
+    @Test func mmJumpsToTheMatchingBracket() {
+        let text = "f(a(b), c)"
+        let buffer = Buffer(text, at: 1)
+        buffer.type("mm")
+        #expect(buffer.caret == 9)
+        buffer.type("mm")
+        #expect(buffer.caret == 1)
+    }
+
+    /// Not on a bracket: the first one after the cursor on the line.
+    @Test func mmFindsTheNextBracketOnTheLine() {
+        let buffer = Buffer("let x = [1, [2]]", at: 0)
+        buffer.type("mm")
+        #expect(buffer.caret == 15)
+    }
+
+    @Test func mmStaysPutWithNoBracket() {
+        let buffer = Buffer("plain words", at: 3)
+        buffer.type("mm")
+        #expect(buffer.caret == 3)
+    }
+}
+
+/// Which languages comment how — the table `g c` reads.
+@Suite struct CommentSyntaxTests {
+    @Test func languagesCommentTheirOwnWay() {
+        func syntax(_ name: String) -> CommentSyntax? {
+            EditorLanguage.commentSyntax(for: URL(fileURLWithPath: "/tmp/" + name))
+        }
+        #expect(syntax("a.swift") == .line("//"))
+        #expect(syntax("a.py") == .line("#"))
+        #expect(syntax("a.lua") == .line("--"))
+        #expect(syntax("Makefile") == .line("#"))
+        #expect(syntax("a.html") == .block("<!--", "-->"))
+        #expect(syntax("a.typ") == .line("//"))
+        #expect(syntax("a.json") == nil)
+    }
+}

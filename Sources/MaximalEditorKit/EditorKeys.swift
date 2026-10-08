@@ -52,6 +52,13 @@ public enum EditorKeys {
         ("O", .openAbove, "Open Line Above"),
         ("v", .extendSelection, "Extend Selection"),
         (";", .collapseSelection, "Collapse Selection"),
+
+        // Code.
+        (">", .indent, "Indent"),
+        ("<", .outdent, "Outdent"),
+        ("g c", .toggleComment, "Toggle Comment"),
+        // Helix's key: `%` here is select all, as it is there.
+        ("m m", .matchBracket, "Matching Bracket"),
     ]
 
     /// The action id for a command, so the keys and the registrations agree by
@@ -68,7 +75,9 @@ public enum EditorKeys {
         bindings.map { SurfaceKey($0.key, id(for: $0.command)) }
             + [SurfaceKey("/", "editor.find"),
                SurfaceKey("n", "editor.findNext"),
-               SurfaceKey("N", "editor.findPrevious")]
+               SurfaceKey("N", "editor.findPrevious"),
+               SurfaceKey("u", "editor.undo"),
+               SurfaceKey("C-r", "editor.redo")]
     }
 
     /// The editor with the keyboard, if one has it.
@@ -121,6 +130,29 @@ public enum EditorKeys {
             },
             scope: .document
         ) { _ in EditorFind.shared.step(forward: false) })
+
+        // The view's own history, which every edit — typed or commanded —
+        // already goes through, so there is nothing for the engine to keep.
+        registry.register(action: Action(
+            id: "editor.undo", title: "Undo", systemImage: "arrow.uturn.backward",
+            appliesTo: .custom { _ in focused?.undoManager?.canUndo == true },
+            scope: .document, surfaces: [.palette]
+        ) { ctx in
+            guard let editor = focused else { return }
+            for _ in 0..<max(ctx.count, 1) where editor.undoManager?.canUndo == true {
+                editor.undoManager?.undo()
+            }
+        })
+        registry.register(action: Action(
+            id: "editor.redo", title: "Redo", systemImage: "arrow.uturn.forward",
+            appliesTo: .custom { _ in focused?.undoManager?.canRedo == true },
+            scope: .document, surfaces: [.palette]
+        ) { ctx in
+            guard let editor = focused else { return }
+            for _ in 0..<max(ctx.count, 1) where editor.undoManager?.canRedo == true {
+                editor.undoManager?.redo()
+            }
+        })
 
         for binding in bindings {
             registry.register(action: Action(
