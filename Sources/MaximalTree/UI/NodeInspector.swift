@@ -13,6 +13,7 @@ import SwiftUI
 struct NodeInspector: View {
     let nodeID: NodeID
     @Environment(HostContext.self) private var host
+    @Environment(AppModel.self) private var model
 
     @State private var draftName = ""
     @State private var editing: NodeID?
@@ -94,8 +95,6 @@ struct NodeInspector: View {
     }
 
     private func commitRename() {
-        let trimmed = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != host.node(nodeID)?.label else { return }
-        host.apply(.rename(nodeID, to: trimmed))
+        model.invoke(RenameNode.self, .init(node: nodeID, name: draftName))
     }
 }

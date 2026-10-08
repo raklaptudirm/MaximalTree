@@ -247,19 +247,6 @@ final class SidebarState {
 
 /// What letting go of dragged nodes over another node asks for.
 enum SidebarDrop {
-    /// Adoption when the target keeps members, a move when it only contains.
-    ///
-    /// The target decides, because the target is the one that means something
-    /// by the drop. A folder on disk takes a file by moving it there; an
-    /// aggregator takes a channel by remembering it, and the channel stays
-    /// wherever else it already was. Dropped onto the end of the collection:
-    /// a row is "into this", and where among the members is the collection's
-    /// own view to offer.
-    static func mutation(dropping ids: [NodeID], onto target: NodeID,
-                         accepts: AcceptedChildren?) -> GraphMutation {
-        accepts == nil ? .move(ids, into: target) : .adopt(ids, into: target, at: nil)
-    }
-
     /// Where dragged rows came from, as far as the sidebar's groups go.
     enum Origin: Equatable {
         case topLevel

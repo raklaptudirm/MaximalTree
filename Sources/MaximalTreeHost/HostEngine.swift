@@ -66,6 +66,10 @@ final class HostEngine {
         registry.hostBroker.installPlacements { uri in
             await MainActor.run { workspaces.placedChildren(of: uri) }
         }
+        // What the host's own views do to a node, so that whatever drives the
+        // engine — a key, a script, a shell elsewhere — can do it too.
+        registry.register(RenameNode())
+        registry.register(DropNodes())
     }
 
     /// Build the graph and bring back the active workspace. Once, after every

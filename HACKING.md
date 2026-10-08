@@ -460,6 +460,13 @@ and to anything that would put it back — so writing is something an *action* d
 the write vocabulary lives on `ActionContext`: `apply`, `canApply`, `mount`,
 `beginRename`, `ingest`, `notify`.
 
+The host's own views keep the same rule. Committing a name in the sidebar or the
+inspector invokes `node.rename`, and dropping rows on a row invokes `node.drop` — typed
+commands the engine registers (`NodeCommands.swift`), so a key, a script, `mtree` or a
+shell elsewhere reaches them by id with an argument. A view may still *ask*
+(`canApply`), since a drop has to say at once whether it is taken; doing it is the
+command's.
+
 `notify` is on both, deliberately. A report carries no authority: the host answers it
 by re-reading from whoever owns the node, which is the same path an edit made outside
 the app takes. So a canvas may say "this changed" and may not say what it changed to.
@@ -1083,10 +1090,6 @@ Known gaps, roughly in order:
   engine and the plugins' cores build without UI, and on Linux, and run headless
   (`mtree`); what remains is an iOS build; see [Other shells](#other-shells).
 - **Smaller**: richer inspector composition, multi-select in the directory grid.
-- **The host's own views write directly** — `NodeInspector` and `SidebarTree` call
-  `host.apply` for rename and drag-to-move, which [Who may write](#who-may-write)
-  forbids a plugin canvas. They should be commands: it would make them scriptable, and
-  a second shell needs them to be.
 - **Applicability is closures** — forty `appliesTo: .custom` against sixteen `.type`.
   Correct in-process, and the obstacle for a shell that isn't Swift: a predicate can't
   cross a wire. The answer is that the core evaluates it and the shell asks what

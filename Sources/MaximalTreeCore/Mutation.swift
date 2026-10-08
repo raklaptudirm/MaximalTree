@@ -3,7 +3,7 @@ import Foundation
 /// The host's minimal, universal mutation vocabulary for a forest of nodes. Kept
 /// deliberately small — only operations the shell wants to drive generically across
 /// providers. Anything richer or provider-specific stays a plugin `Action`.
-public enum GraphMutation: Sendable {
+public enum GraphMutation: Sendable, Equatable {
     case rename(NodeID, to: String)
     case delete([NodeID])
     /// Reparent nodes under a new container (the tree's drag-and-drop). Identity

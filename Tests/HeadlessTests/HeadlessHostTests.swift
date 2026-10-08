@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-import MaximalTreeKit
+@_spi(Host) import MaximalTreeKit
 @testable import MaximalTreeHost
 @testable import FileSystem
 
@@ -10,7 +10,7 @@ import MaximalTreeKit
 @Suite struct HeadlessHostTests {
     /// A folder of its own, with a file and a folder in it, and a library
     /// beside it.
-    private struct Place {
+    struct Place {
         let root: URL
         var uri: String { root.absoluteString }
         var library: URL { root.deletingLastPathComponent().appendingPathComponent(root.lastPathComponent + ".json") }
@@ -25,7 +25,7 @@ import MaximalTreeKit
         }
     }
 
-    private func host(_ place: Place) -> HeadlessHost {
+    func host(_ place: Place) -> HeadlessHost {
         HeadlessHost(library: place.library) { FileSystemCore.register(with: $0) }
     }
 
@@ -85,5 +85,22 @@ import MaximalTreeKit
         let again = host(place)
         let mounted = try #require(NodeID(place.uri))
         #expect(again.roots.contains(mounted), "roots: \(again.roots.map(\.uri))")
+    }
+}
+
+extension HeadlessHostTests {
+    /// The sidebar's rename, with no sidebar: by id, with an argument, and the
+    /// file has its new name on disk when it answers.
+    @Test func aFileIsRenamedThroughTheEngine() async throws {
+        let place = try Place()
+        let host = host(place)
+        let file = place.root.appendingPathComponent("a.txt").absoluteString
+        _ = try await host.node(file)
+
+        try await host.host.perform(RenameNode.self, .init(node: try #require(NodeID(file)), name: "b.txt"))
+        await host.settle()
+
+        #expect(FileManager.default.fileExists(atPath: place.root.appendingPathComponent("b.txt").path))
+        #expect(!FileManager.default.fileExists(atPath: place.root.appendingPathComponent("a.txt").path))
     }
 }

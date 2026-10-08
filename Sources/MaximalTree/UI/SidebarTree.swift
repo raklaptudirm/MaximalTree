@@ -234,10 +234,12 @@ private struct NodeRow: View {
                     .flatMap { $0.split(separator: "\n") }
                     .compactMap { NodeID(String($0)) }
                 guard !ids.isEmpty else { return false }
-                let mutation = SidebarDrop.mutation(dropping: ids, onto: nodeID,
-                                                    accepts: node?.accepts)
+                // Whether it is taken is asked here, since a drop has to say
+                // so at once; doing it is the command's.
+                let mutation = DropNodes.mutation(dropping: ids, onto: nodeID,
+                                                  accepts: node?.accepts)
                 guard host.canApply(mutation) else { return false }
-                host.apply(mutation)
+                model.invoke(DropNodes.self, .init(nodes: ids, onto: nodeID))
                 return true
             }))
         .contextMenu { contextMenuItems }
@@ -339,9 +341,7 @@ private struct NodeRow: View {
 
     private func commitRename(of node: Node?) {
         host._setPendingRename(nil)
-        let name = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, name != node?.label else { return }
-        host.apply(.rename(nodeID, to: name))
+        model.invoke(RenameNode.self, .init(node: nodeID, name: renameDraft))
     }
 }
 

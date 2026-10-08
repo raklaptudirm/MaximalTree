@@ -160,6 +160,19 @@ final class Dispatcher {
         later(reportingAs: command.id) { try await command.run(input, in: context) }
     }
 
+    /// Run a command with its argument from a surface — a name committed, rows
+    /// dropped — and tell the reader if it didn't work, as a key's command
+    /// does. The view says what was asked for; whether and how is the
+    /// command's.
+    func invoke<C: Command>(_ command: C.Type, _ input: C.Input) {
+        guard let registered = registry.command(C.id) else {
+            report(CommandError.noSuchCommand(command: C.id), from: C.id)
+            return
+        }
+        let context = ActionContext(host: host, targets: nil)
+        later(reportingAs: C.id) { try await registered.run(input, in: context) }
+    }
+
     /// Run a command by id and wait for its answer — the door for a caller
     /// that wants the result, and takes the failure with it.
     func run(commandID id: String, input: Any) async throws -> Any {

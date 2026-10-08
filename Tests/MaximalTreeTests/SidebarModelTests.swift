@@ -93,7 +93,7 @@ import Foundation
 
     /// A target that keeps members adopts; one that only contains, moves.
     @Test func dropsOntoACollectionAdopt() {
-        let mutation = SidebarDrop.mutation(dropping: [id("x")], onto: id("coll"), accepts: .any)
+        let mutation = DropNodes.mutation(dropping: [id("x")], onto: id("coll"), accepts: .any)
         guard case .adopt(let ids, let into, let at) = mutation else {
             Issue.record("expected an adoption, got \(mutation)"); return
         }
@@ -101,7 +101,7 @@ import Foundation
     }
 
     @Test func dropsOntoAContainerStillMove() {
-        let mutation = SidebarDrop.mutation(dropping: [id("x")], onto: id("dir"), accepts: nil)
+        let mutation = DropNodes.mutation(dropping: [id("x")], onto: id("dir"), accepts: nil)
         guard case .move(let ids, let into) = mutation else {
             Issue.record("expected a move, got \(mutation)"); return
         }

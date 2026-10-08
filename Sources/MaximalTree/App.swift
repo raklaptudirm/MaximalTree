@@ -680,6 +680,9 @@ final class AppModel: HostShell {
     func invoke(_ command: AnyCommand, in context: ActionContext) {
         dispatch.invoke(command, in: context)
     }
+    func invoke<C: Command>(_ command: C.Type, _ input: C.Input) {
+        dispatch.invoke(command, input)
+    }
     func runCommand(_ id: String, count: Int = 1) { dispatch.runCommand(id, count: count) }
     func runCommand(_ id: String, with argument: CommandValue) {
         dispatch.runCommand(id, with: argument)
