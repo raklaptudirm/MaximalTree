@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import MaximalTreeKit
 
 /// How a workspace's sidebar was written before placements: an ordered tree

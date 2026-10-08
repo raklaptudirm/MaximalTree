@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import MaximalTreeKit
 
 /// What a key press is pointing at: a pane means the node it shows, a list the

@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 @_spi(Host) import MaximalTreeKit
 
 /// What the engine needs from the shell around it: the few things only a

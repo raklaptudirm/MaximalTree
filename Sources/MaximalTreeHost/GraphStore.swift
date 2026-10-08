@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 @_spi(Host) import MaximalTreeKit
 
 /// What plugins contributed that has nothing to do with drawing — providers,
