@@ -653,6 +653,57 @@ public struct MaximalEditor: NSViewRepresentable {
             super.keyDown(with: event)
         }
 
+        // MARK: Typing
+        //
+        // The rules are `Typing`'s; these ask them first and fall back to the
+        // engine's own behaviour when they decline, so a rule that has nothing
+        // to say can never lose a keystroke.
+
+        /// Whether this is code, for the typing rules that only make sense in
+        /// code — pairing, a brace's level, soft tabs. From the style.
+        var typesCode = false
+        /// Set while `apply` puts a command's edit in, so the typing rules
+        /// leave it alone: it was worked out already, and was not typed.
+        private var isApplying = false
+
+        /// One character typed — not a paste, not a completion, not the middle
+        /// of composing one in an input method.
+        public override func insertText(_ string: Any, replacementRange: NSRange) {
+            if !isApplying, replacementRange.location == NSNotFound, !hasMarkedText(),
+               let typed = string as? String,
+               let outcome = Typing.typed(typed, in: text ?? "", selection: textSelection,
+                                          indentUnit: editing.indentUnit, code: typesCode) {
+                apply(outcome)
+                return
+            }
+            super.insertText(string, replacementRange: replacementRange)
+        }
+
+        public override func insertNewline(_ sender: Any?) {
+            guard !hasMarkedText() else { return super.insertNewline(sender) }
+            // A line is its own undo step, as the engine makes it.
+            breakUndoCoalescing()
+            apply(Typing.newline(in: text ?? "", selection: textSelection,
+                                 indentUnit: editing.indentUnit, code: typesCode))
+            breakUndoCoalescing()
+        }
+
+        /// Tab is one indent — spaces, where the file indents with spaces.
+        public override func insertTab(_ sender: Any?) {
+            guard typesCode, editing.indentUnit != "\t" else { return super.insertTab(sender) }
+            super.insertText(editing.indentUnit, replacementRange: NSRange(location: NSNotFound, length: 0))
+        }
+
+        public override func deleteBackward(_ sender: Any?) {
+            if !hasMarkedText(),
+               let outcome = Typing.deleteBackward(in: text ?? "", selection: textSelection,
+                                                   indentUnit: editing.indentUnit, code: typesCode) {
+                apply(outcome)
+                return
+            }
+            super.deleteBackward(sender)
+        }
+
         /// Where the caret lands `delta` *wrapped* lines away, or nil when the
         /// layout cannot say.
         ///
@@ -702,7 +753,9 @@ public struct MaximalEditor: NSViewRepresentable {
             if let edit = outcome.edit,
                !(edit.range.length == 0 && edit.replacement.isEmpty) {
                 // Through the text view, so undo and the highlighter see it.
+                isApplying = true
                 insertText(edit.replacement, replacementRange: edit.range)
+                isApplying = false
             }
             let length = (text as NSString?)?.length ?? 0
             let start = min(max(outcome.selection.location, 0), length)
@@ -781,6 +834,7 @@ public struct MaximalEditor: NSViewRepresentable {
         textView.widthTracksTextView = style.wrapLines
         (textView as? EditorTextView)?.lastAppliedStyleWraps = style.wrapLines
         (textView as? EditorTextView)?.editing.indentUnit = style.indentUnit
+        (textView as? EditorTextView)?.typesCode = style.editsCode
         textView.showsLineNumbers = style.showsLineNumbers
         // Wrapped text has nowhere to go sideways, so it must not offer a
         // scroller for going there. It can still *overflow*: the reserved box
